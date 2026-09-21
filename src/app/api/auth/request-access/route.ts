@@ -53,6 +53,9 @@ export async function POST(request: NextRequest) {
     account_role: "user",
   }, { onConflict: "id", ignoreDuplicates: true });
   if (profileError) {
+    // Do not leave an Auth-only user behind: that would create a request the
+    // Master cannot safely approve or even see.
+    await admin.auth.admin.deleteUser(created.user.id);
     return NextResponse.json({ error: "Cadastro criado, mas a solicitação não pôde ser registrada. Tente novamente." }, { status: 500 });
   }
 

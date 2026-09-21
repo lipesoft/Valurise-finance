@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSupabaseAdminClient, getVerifiedMaster } from "@/lib/supabase/admin";
 
+// Master data is account-specific and must never be served from a cache.
+export const dynamic = "force-dynamic";
+
 const actionSchema = z.object({
   userId: z.string().uuid(),
   action: z.enum(["approve", "disable", "restore", "trash", "delete_permanently"]),
@@ -21,20 +24,32 @@ export async function GET(request: NextRequest) {
     admin.from("profiles").select("id, full_name, username, public_id, account_status, account_role, created_at, disabled_at, trashed_at"),
   ]);
   if (usersError || profilesError) return NextResponse.json({ error: "Não foi possível carregar usuários." }, { status: 500 });
-  const authUserById = new Map((users.users ?? []).map((user) => [user.id, user]));
+  const profileById = new Map((profiles ?? []).map((profile) => [profile.id, profile]));
   return NextResponse.json({
-    // The profile trigger is the source of truth for access requests. Starting
-    // from profiles makes a freshly pending account visible even while Auth's
-    // paginated list is catching up.
-    users: (profiles ?? []).map((profile) => {
-      const authUser = authUserById.get(profile.id);
+    // The database trigger normally creates a profile for every Auth user.
+    // Starting from Auth as well means a historical account can never stay on
+    // the waiting screen without becoming visible to the Master.
+    users: (users.users ?? []).map((authUser) => {
+      const profile = profileById.get(authUser.id);
+      const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
+      const fallbackProfile = profile ?? {
+        id: authUser.id,
+        full_name: typeof metadata.full_name === "string" ? metadata.full_name : null,
+        username: typeof metadata.username === "string" ? metadata.username : null,
+        public_id: null,
+        account_status: "pending",
+        account_role: "user",
+        created_at: authUser.created_at,
+        disabled_at: null,
+        trashed_at: null,
+      };
       return {
-      id: profile.id,
-      email: authUser?.email,
-      lastSignInAt: authUser?.last_sign_in_at,
-      createdAt: profile.created_at,
-      profile,
-    };
+        id: fallbackProfile.id,
+        email: authUser.email,
+        lastSignInAt: authUser.last_sign_in_at,
+        createdAt: fallbackProfile.created_at,
+        profile: fallbackProfile,
+      };
     }),
   });
 }
@@ -61,14 +76,22 @@ export async function POST(request: NextRequest) {
     }
   } else {
     const accountStatus = statusByAction[action];
+    const { data: target, error: targetError } = await admin.auth.admin.getUserById(userId);
+    if (targetError || !target.user) {
+      return NextResponse.json({ error: "Conta não encontrada." }, { status: 404 });
+    }
+    const metadata = (target.user.user_metadata ?? {}) as Record<string, unknown>;
     const profileUpdate = await admin
       .from("profiles")
-      .update({
+      .upsert({
+        id: userId,
+        full_name: typeof metadata.full_name === "string" ? metadata.full_name : null,
+        username: typeof metadata.username === "string" ? metadata.username : null,
         account_status: accountStatus,
+        account_role: "user",
         disabled_at: action === "disable" ? new Date().toISOString() : null,
         trashed_at: action === "trash" ? new Date().toISOString() : null,
-      })
-      .eq("id", userId);
+      }, { onConflict: "id" });
     error = profileUpdate.error;
     if (!error && (action === "disable" || action === "trash")) {
       const ban = await admin.auth.admin.updateUserById(userId, { ban_duration: "876000h" });
