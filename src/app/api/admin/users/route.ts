@@ -21,15 +21,21 @@ export async function GET(request: NextRequest) {
     admin.from("profiles").select("id, full_name, username, public_id, account_status, account_role, created_at, disabled_at, trashed_at"),
   ]);
   if (usersError || profilesError) return NextResponse.json({ error: "Não foi possível carregar usuários." }, { status: 500 });
-  const profileById = new Map((profiles ?? []).map((profile) => [profile.id, profile]));
+  const authUserById = new Map((users.users ?? []).map((user) => [user.id, user]));
   return NextResponse.json({
-    users: (users.users ?? []).map((user) => ({
-      id: user.id,
-      email: user.email,
-      lastSignInAt: user.last_sign_in_at,
-      createdAt: user.created_at,
-      profile: profileById.get(user.id) ?? null,
-    })),
+    // The profile trigger is the source of truth for access requests. Starting
+    // from profiles makes a freshly pending account visible even while Auth's
+    // paginated list is catching up.
+    users: (profiles ?? []).map((profile) => {
+      const authUser = authUserById.get(profile.id);
+      return {
+      id: profile.id,
+      email: authUser?.email,
+      lastSignInAt: authUser?.last_sign_in_at,
+      createdAt: profile.created_at,
+      profile,
+    };
+    }),
   });
 }
 
