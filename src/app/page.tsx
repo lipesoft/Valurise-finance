@@ -4,6 +4,7 @@ import Image from "next/image";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "framer-motion";
 import {
   ArrowDownLeft,
+  ArrowRight,
   ArrowUpRight,
   BarChart3,
   Bell,
@@ -14,15 +15,19 @@ import {
   ChevronRight,
   CirclePlus,
   CreditCard,
+  Eye,
+  EyeOff,
   Home,
   CircleHelp,
   Landmark,
+  LockKeyhole,
   LogOut,
   Menu,
   PiggyBank,
   Plus,
   ReceiptText,
   Search,
+  ShieldCheck,
   SlidersHorizontal,
   Target,
   Tags,
@@ -194,7 +199,7 @@ function Login({ done }: { done: (u: User) => void }) {
   const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">(
     typeof window !== "undefined" && new URLSearchParams(window.location.search).has("reset-password") ? "reset" : "login",
   );
-  const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState("");
+  const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState(""), [showPassword, setShowPassword] = useState(false);
   const supabase = getSupabaseBrowserClient();
   async function finishSupabaseUser(authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
     if (!supabase) return;
@@ -263,64 +268,33 @@ function Login({ done }: { done: (u: User) => void }) {
   }
   return (
     <MotionConfig reducedMotion="user">
-    <main className="login-shell grid min-h-dvh place-items-center overflow-hidden p-5">
-      <LoginAmbient />
-      <motion.form
-        onSubmit={submit}
-        className="login-card panel relative z-10 w-full max-w-sm rounded-3xl p-6"
-        initial={{ opacity: 0, y: 12, scale: 0.99 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.36, ease: motionTokens.ease.enter }}
-      >
-        <motion.div
-          className="inline-flex"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.24, delay: 0.08 }}
-        >
-          <Image src="/valurise-icon.webp" alt="Valurise" width={1254} height={1254} className="h-16 w-16 rounded-2xl" priority />
-        </motion.div>
-        <h1 className="mt-8 text-2xl font-semibold">Bem-vindo de volta.</h1>
-        <p className="muted mt-2 text-sm">{mode === "signup" ? "Solicite seu acesso ao Valurise." : mode === "forgot" ? "Enviaremos um link seguro para seu e-mail." : mode === "reset" ? "Escolha uma nova senha segura." : "Seu espaço financeiro, só seu."}</p>
-        {mode === "signup" && <><input value={name} onChange={(x) => setName(x.target.value)} className="field mt-7" placeholder="Seu nome" /><input value={username} onChange={(x) => setUsername(x.target.value)} className="field mt-3" placeholder="Usuário" /></>}
-        <input
-          value={u}
-          onChange={(x) => setU(x.target.value)}
-          className={`field ${mode === "signup" ? "mt-3" : "mt-7"}`}
-          type={mode === "login" ? "text" : "email"}
-          placeholder={mode === "login" ? "Seu usuário ou e-mail" : "Seu e-mail"}
-          autoComplete={mode === "login" ? "username" : "email"}
-        />
-        {mode !== "forgot" && <input
-          value={p}
-          onChange={(x) => setP(x.target.value)}
-          className="field mt-3"
-          type="password"
-          placeholder={mode === "reset" ? "Nova senha" : "Senha"}
-        />}
-        <AnimatePresence>
-          {e && (
-            <motion.p
-              className="mt-3 text-sm text-[var(--danger)]"
-              initial={{ opacity: 0, y: -2 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: motionTokens.duration.fast }}
-            >
-              {e}
-            </motion.p>
-          )}
-        </AnimatePresence>
-        {notice && <p className="mt-3 text-sm text-[var(--accent)]">{notice}</p>}
-        <button className="primary mt-5 h-12 w-full rounded-xl text-sm font-semibold">
-          {mode === "signup" ? "Solicitar cadastro" : mode === "forgot" ? "Enviar link" : mode === "reset" ? "Salvar nova senha" : "Entrar"}
-        </button>
-        {supabase && <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs text-[var(--accent)]">
-          {mode !== "login" && <button type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}
-          {mode === "login" && <><button type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button type="button" onClick={() => { setMode("signup"); setE(""); }}>Criar conta</button></>}
-        </div>}
-      </motion.form>
-    </main>
+      <main className="login-shell min-h-dvh overflow-x-hidden px-5 py-5 sm:grid sm:place-items-center sm:p-7">
+        <LoginAmbient />
+        <div className="login-layout relative z-10 mx-auto flex w-full max-w-md flex-col py-1 sm:py-0">
+          <motion.header className="login-topbar flex items-center justify-between" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.24, delay: 0.08 }}>
+            <span className="login-security-badge"><span className="login-security-dot" />Acesso protegido</span>
+            <span className="login-help" aria-label="Login Valurise"><CircleHelp size={18} /></span>
+          </motion.header>
+          <motion.section className="login-brand text-center" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.34, ease: motionTokens.ease.enter, delay: 0.06 }}>
+            <div className="login-mark-wrap"><span className="login-mark-glow" /><Image src="/valurise-icon.webp" alt="Valurise" width={512} height={512} className="login-mark" priority /></div>
+            <h1>VALURISE</h1>
+            <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
+          </motion.section>
+          <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+            <div className="login-card-heading"><h2>{mode === "signup" ? "Solicite seu acesso" : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? "Seu cadastro será enviado para aprovação." : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
+            <div className="login-fields">
+              {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => setName(x.target.value)} className="field" placeholder="Como podemos te chamar?" autoComplete="name" /><label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => setUsername(x.target.value)} className="field" placeholder="Escolha seu usuário" autoComplete="username" /></>}
+              {mode !== "reset" && <><label className="login-field-label" htmlFor="login-identifier">{mode === "login" ? "Identificação" : "E-mail"}</label><input id="login-identifier" value={u} onChange={(x) => setU(x.target.value)} className="field" type={mode === "login" ? "text" : "email"} placeholder={mode === "login" ? "Seu usuário ou e-mail" : "voce@exemplo.com"} autoComplete={mode === "login" ? "username" : "email"} /></>}
+              {mode !== "forgot" && <><label className="login-field-label" htmlFor="login-password">{mode === "reset" ? "Nova senha" : "Senha"}</label><div className="login-password-wrap"><LockKeyhole className="login-field-icon" size={18} aria-hidden="true" /><input id="login-password" value={p} onChange={(x) => setP(x.target.value)} className="field login-password" type={showPassword ? "text" : "password"} placeholder={mode === "reset" ? "Crie uma nova senha" : "Digite sua senha"} autoComplete={mode === "reset" ? "new-password" : "current-password"} /><button className="login-password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></>}
+            </div>
+            <AnimatePresence>{e && <motion.p className="login-feedback login-feedback-error" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: motionTokens.duration.fast }}>{e}</motion.p>}</AnimatePresence>
+            {notice && <p className="login-feedback login-feedback-success">{notice}</p>}
+            <button className="login-submit primary" type="submit"><span>{mode === "signup" ? "Solicitar cadastro" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span><ArrowRight size={18} aria-hidden="true" /></button>
+            {supabase && <div className="login-actions">{mode !== "login" && <button type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}{mode === "login" && <><button type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button type="button" onClick={() => { setMode("signup"); setE(""); }}>Criar conta</button></>}</div>}
+          </motion.form>
+          <motion.footer className="login-trust" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.28, delay: 0.28 }}><ShieldCheck size={15} aria-hidden="true" /> Dados protegidos com autenticação segura</motion.footer>
+        </div>
+      </main>
     </MotionConfig>
   );
 }
