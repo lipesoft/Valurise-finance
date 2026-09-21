@@ -366,11 +366,30 @@ function App({ user, logout }: { user: User; logout: () => void }) {
           ProfilePreference
         >();
         if (stale) return;
+        const supabase = getSupabaseBrowserClient();
+        const { data: databaseProfile } = supabase
+          ? await supabase
+              .from("profiles")
+              .select("public_id, avatar_path")
+              .maybeSingle()
+          : { data: null };
+        if (stale) return;
         const state = remote || {
           data: localData,
           transactions: localTx,
           profile: localProfile,
         };
+        // The shareable ID is database-owned. A local fallback only supports
+        // the unconfigured development experience and is never used to invite.
+        if (databaseProfile?.public_id) {
+          state.profile = {
+            ...state.profile,
+            publicId: databaseProfile.public_id,
+            ...(databaseProfile.avatar_path
+              ? { photo: databaseProfile.avatar_path }
+              : {}),
+          };
+        }
         setData(state.data);
         setTx(state.transactions);
         setProfile(state.profile);
@@ -407,6 +426,17 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     setProfile(next);
     localStorage.setItem(key + ":profile", JSON.stringify(next));
     void saveValuriseState({ data, transactions: tx, profile: next });
+    const supabase = getSupabaseBrowserClient();
+    if (supabase) {
+      void supabase.auth.getUser().then(({ data: auth }) => {
+        if (auth.user) {
+          void supabase
+            .from("profiles")
+            .update({ avatar_path: next.photo || null })
+            .eq("id", auth.user.id);
+        }
+      });
+    }
   };
   const createCategory = (name: string) => {
     const clean = name.trim();
@@ -1128,16 +1158,20 @@ function ProfileSheet({
         <section className="border-t border-[var(--border)] pt-4">
           <b className="text-sm">Segurança e dados</b>
           <button
-            onClick={() =>
-              toast(
-                "A alteração de senha será liberada quando a autenticação Supabase for conectada.",
-              )
-            }
+            onClick={async () => {
+              const supabase = getSupabaseBrowserClient();
+              if (!supabase) return toast("A autenticação segura ainda não está disponível.");
+              const { data } = await supabase.auth.getUser();
+              if (!data.user?.email) return toast("A autenticação segura ainda não está disponível.");
+              const { error } = await supabase.auth.resetPasswordForEmail(data.user.email, { redirectTo: `${window.location.origin}/?reset-password=1` });
+              toast(error ? "Não foi possível enviar o link de senha." : "Enviamos um link seguro para seu e-mail.");
+            }}
             className="mt-3 flex w-full items-center justify-between rounded-xl bg-[var(--panel2)] px-4 py-3 text-left text-sm"
           >
             <span>Alterar senha</span>
-            <span className="muted text-xs">Em breve</span>
+            <span className="muted text-xs">Enviar link</span>
           </button>
+          {user.role === "master" && <MasterUsers toast={toast} />}
           {confirmReset ? (
             <div className="mt-3 rounded-xl border border-[var(--danger)]/40 p-3">
               <p className="text-sm">
@@ -1177,6 +1211,42 @@ function ProfileSheet({
       </section>
     </Sheet>
   );
+}
+type MasterUser = { id: string; email?: string; lastSignInAt?: string; createdAt: string; profile: { full_name?: string; username?: string; account_status?: AccountStatus; account_role?: string } | null };
+function MasterUsers({ toast }: { toast: (text: string) => void }) {
+  const [users, setUsers] = useState<MasterUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<string | null>(null);
+  const load = async () => {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+    const { data } = await supabase.auth.getSession();
+    if (!data.session?.access_token) return;
+    const response = await fetch("/api/admin/users", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
+    const body = await response.json();
+    if (response.ok) setUsers(body.users || []);
+    else toast(body.error || "Não foi possível carregar usuários.");
+    setLoading(false);
+  };
+  // The master sheet intentionally loads once on opening; its explicit Atualizar
+  // action handles later refreshes without tying this effect to transient props.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, []);
+  const act = async (userId: string, action: "approve" | "disable" | "restore" | "trash" | "delete_permanently") => {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+    const { data } = await supabase.auth.getSession();
+    if (!data.session?.access_token) return;
+    setBusy(`${userId}:${action}`);
+    const response = await fetch("/api/admin/users", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify({ userId, action }) });
+    const body = await response.json();
+    setBusy(null);
+    if (!response.ok) return toast(body.error || "Não foi possível atualizar esta conta.");
+    toast("Conta atualizada.");
+    void load();
+  };
+  return <section className="mt-4 border-t border-[var(--border)] pt-4"><div className="flex items-center justify-between"><div><b className="text-sm">Painel Master</b><p className="muted mt-1 text-xs">Aprova acessos e administra contas sem ler dados financeiros.</p></div><button onClick={() => void load()} className="text-xs text-[var(--accent)]">Atualizar</button></div>{loading ? <p className="muted mt-3 text-xs">Carregando usuários…</p> : <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">{users.map((item) => { const status = item.profile?.account_status || "pending"; const label = item.profile?.full_name || item.email || "Usuário"; const working = busy?.startsWith(item.id); const confirmingDelete = deleteCandidate === item.id; return <article key={item.id} className="rounded-xl bg-[var(--panel2)] p-3"><div className="flex items-start justify-between gap-3"><span className="min-w-0"><b className="block truncate text-sm">{label}</b><small className="muted block truncate">{item.email} · {status}</small></span>{status === "pending" && <button disabled={working} onClick={() => void act(item.id, "approve")} className="rounded-lg bg-[var(--accent)] px-2 py-1 text-xs font-medium text-[var(--accentfg)]">Aprovar</button>}</div><div className="mt-2 flex gap-3 text-xs"><button disabled={working} onClick={() => void act(item.id, status === "trashed" ? "restore" : "trash")} className="muted hover:text-[var(--fg)]">{status === "trashed" ? "Restaurar" : "Lixeira"}</button>{status !== "trashed" && <button disabled={working} onClick={() => void act(item.id, status === "disabled" ? "restore" : "disable")} className="muted hover:text-[var(--fg)]">{status === "disabled" ? "Reativar" : "Desativar"}</button>}{status === "trashed" && (confirmingDelete ? <><button disabled={working} onClick={() => { setDeleteCandidate(null); void act(item.id, "delete_permanently"); }} className="font-medium text-[var(--danger)]">Confirmar exclusão</button><button disabled={working} onClick={() => setDeleteCandidate(null)} className="muted">Cancelar</button></> : <button disabled={working} onClick={() => setDeleteCandidate(item.id)} className="text-[var(--danger)]">Excluir definitivo</button>)}</div>{confirmingDelete && <p className="mt-2 text-xs text-[var(--danger)]">Esta ação apaga a conta e todos os dados financeiros dela.</p>}</article>; })}</div>}</section>;
 }
 function Dashboard({
   user,
@@ -4732,7 +4802,27 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast }: any) {
             ? "A sincronização segura está disponível para sessões autenticadas pelo Supabase."
             : "A sincronização entre dispositivos será ativada ao configurar as credenciais do Supabase. Até lá, use o backup JSON antes de trocar de dispositivo."}
         </p>
+        <LegalPreferences toast={toast} />
       </section>
     </section>
   );
+}
+function LegalPreferences({ toast }: { toast: (text: string) => void }) {
+  const [saving, setSaving] = useState(false);
+  const saveConsent = async (preference: "accepted" | "essential_only") => {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return toast("Conecte o Supabase para salvar esta preferência.");
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) return toast("Faça login novamente para salvar esta preferência.");
+    setSaving(true);
+    const { error } = await supabase.from("user_consents").upsert({
+      user_id: auth.user.id,
+      privacy_accepted_at: new Date().toISOString(),
+      terms_accepted_at: new Date().toISOString(),
+      cookie_preference: preference,
+    });
+    setSaving(false);
+    toast(error ? "Não foi possível salvar suas preferências." : "Preferências de privacidade salvas.");
+  };
+  return <div className="mt-4 border-t border-[var(--border)] pt-4"><p className="muted text-xs leading-5">A Valurise usa apenas dados necessários ao funcionamento e sincronização da sua conta. Você pode manter somente cookies essenciais ou permitir preferências de experiência.</p><div className="mt-3 flex flex-wrap gap-2"><button disabled={saving} onClick={() => void saveConsent("essential_only")} className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs">Somente essenciais</button><button disabled={saving} onClick={() => void saveConsent("accepted")} className="rounded-xl border border-[var(--accent)] px-3 py-2 text-xs text-[var(--accent)]">Aceitar preferências</button></div><div className="mt-3 flex gap-3 text-xs text-[var(--accent)]"><button onClick={() => toast("Política de privacidade: seus dados financeiros são privados e protegidos por usuário.")}>Política de privacidade</button><button onClick={() => toast("Termos de uso: use a Valurise somente para organizar seus próprios dados financeiros.")}>Termos de uso</button></div></div>;
 }
