@@ -202,7 +202,7 @@ function Login({ done }: { done: (u: User) => void }) {
   const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">(
     typeof window !== "undefined" && new URLSearchParams(window.location.search).has("reset-password") ? "reset" : "login",
   );
-  const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState(""), [showPassword, setShowPassword] = useState(false);
+  const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState(""), [requestSent, setRequestSent] = useState(false), [showPassword, setShowPassword] = useState(false);
   const supabase = getSupabaseBrowserClient();
   async function finishSupabaseUser(authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
     if (!supabase) return;
@@ -244,13 +244,10 @@ function Login({ done }: { done: (u: User) => void }) {
     }
     if (supabase && mode === "signup") {
       if (!name.trim() || !username.trim()) return setE("Informe seu nome e um usuário.");
-      const { data, error } = await supabase.auth.signUp({
-        email: u.trim(), password: p,
-        options: { emailRedirectTo: `${window.location.origin}/?email-confirmed=1${new URLSearchParams(window.location.search).get("invite") ? `&invite=${encodeURIComponent(new URLSearchParams(window.location.search).get("invite") || "")}` : ""}`, data: { full_name: name.trim(), username: username.trim().toLowerCase() } },
-      });
-      if (error || !data.user) return setE(error?.message || "Não foi possível solicitar o cadastro.");
-      setNotice("Cadastro recebido. Aguarde a aprovação do Master.");
-      await finishSupabaseUser(data.user);
+      const response = await fetch("/api/auth/request-access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fullName: name.trim(), username: username.trim(), email: u.trim(), password: p }) });
+      const payload = await response.json();
+      if (!response.ok) return setE(payload.error || "Não foi possível solicitar o cadastro.");
+      setRequestSent(true);
       return;
     }
     if (supabase && mode === "forgot") {
@@ -279,7 +276,7 @@ function Login({ done }: { done: (u: User) => void }) {
             <h1>VALURISE</h1>
             <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
           </motion.section>
-          <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Esperando aprovação do Master</h2><p className="muted mt-3 text-sm leading-6">Sua solicitação foi registrada. Assim que ela for aprovada, você poderá entrar usando o e-mail ou usuário e a senha que escolheu.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
             <div className="login-card-heading"><h2>{mode === "signup" ? "Solicite seu acesso" : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? "Seu cadastro será enviado para aprovação." : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
             <div className="login-fields">
               {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => setName(x.target.value)} className="field" placeholder="Como podemos te chamar?" autoComplete="name" /><label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => setUsername(x.target.value)} className="field" placeholder="Escolha seu usuário" autoComplete="username" /></>}
@@ -290,7 +287,7 @@ function Login({ done }: { done: (u: User) => void }) {
             {notice && <p className="login-feedback login-feedback-success">{notice}</p>}
             <button className="login-submit primary" type="submit"><span>{mode === "signup" ? "Solicitar cadastro" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span><ArrowRight size={18} aria-hidden="true" /></button>
             {supabase && <div className="login-actions">{mode !== "login" && <button type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}{mode === "login" && <><button type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button type="button" onClick={() => { setMode("signup"); setE(""); }}>Criar conta</button></>}</div>}
-          </motion.form>
+          </motion.form>}
           <motion.footer className="login-trust" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.28, delay: 0.28 }}><ShieldCheck size={15} aria-hidden="true" /> Dados protegidos com autenticação segura</motion.footer>
         </div>
       </main>
