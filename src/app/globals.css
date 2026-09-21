@@ -1,0 +1,221 @@
+@import "tailwindcss";
+@theme inline {
+  --font-sans: var(--font-jakarta);
+}
+:root {
+  --bg: #12131a;
+  --panel: #1e1f26;
+  --panel2: #292931;
+  --fg: #e8e7ed;
+  --muted: #aaa9b1;
+  --border: rgba(255, 255, 255, 0.09);
+  --accent: #4edea3;
+  --accentfg: #003824;
+  --danger: #ffb4ab;
+}
+.light {
+  --bg: #f5f7fa;
+  --panel: #fff;
+  --panel2: #edf1f5;
+  --fg: #18212b;
+  --muted: #637080;
+  --border: #dbe2ea;
+  --accent: #008b5c;
+  --accentfg: #fff;
+  --danger: #b42318;
+  background: var(--bg);
+  color: var(--fg);
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-jakarta), Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+button {
+  cursor: pointer;
+  transition:
+    background-color 160ms ease-in-out,
+    border-color 160ms ease-in-out,
+    color 160ms ease-in-out,
+    filter 160ms ease-in-out,
+    transform 100ms ease-in-out;
+}
+button:active {
+  transform: scale(0.97);
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  transition:
+    border-color 180ms ease-in-out,
+    box-shadow 180ms ease-in-out,
+    background-color 180ms ease-in-out;
+}
+.muted {
+  color: var(--muted);
+}
+.field {
+  height: 48px;
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--fg);
+  border-radius: 12px;
+  padding: 0 12px;
+  outline: none;
+  transition:
+    border-color 150ms ease-in-out,
+    box-shadow 150ms ease-in-out,
+    background-color 150ms ease-in-out;
+}
+.field:focus {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.field::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.field option {
+  background: var(--panel);
+  color: var(--fg);
+}
+.primary {
+  background: var(--accent);
+  color: var(--accentfg);
+}
+.light .panel {
+  box-shadow: 0 8px 24px rgba(28, 39, 50, 0.05);
+}
+.login-shell {
+  position: relative;
+  isolation: isolate;
+  background: #11131a;
+}
+.login-ambient,
+.login-overlay {
+  position: absolute;
+  inset: 0;
+}
+.login-ambient {
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.login-blob {
+  position: absolute;
+  border-radius: 48% 52% 45% 55% / 55% 42% 58% 45%;
+  filter: blur(110px);
+  will-change: transform;
+}
+.login-blob-one {
+  top: -18rem;
+  left: -15rem;
+  width: 38rem;
+  height: 38rem;
+  background: rgba(0, 139, 92, 0.28);
+}
+.login-blob-two {
+  right: -14rem;
+  bottom: -19rem;
+  width: 34rem;
+  height: 34rem;
+  background: rgba(78, 222, 163, 0.19);
+}
+.login-blob-three {
+  top: 16%;
+  right: 6%;
+  width: 22rem;
+  height: 22rem;
+  background: rgba(0, 93, 62, 0.18);
+  filter: blur(130px);
+}
+.login-particles {
+  position: absolute;
+  inset: 0;
+}
+.login-particle {
+  position: absolute;
+  display: block;
+  border-radius: 999px;
+  background: #a8ffd5;
+  box-shadow: 0 0 10px rgba(78, 222, 163, 0.12);
+  will-change: transform;
+}
+.login-overlay {
+  z-index: 1;
+  background:
+    radial-gradient(circle at center, rgba(17, 19, 26, 0.02), rgba(17, 19, 26, 0.35)),
+    linear-gradient(135deg, rgba(9, 10, 15, 0.18), rgba(9, 10, 15, 0.04));
+}
+.login-card {
+  background: rgba(30, 31, 38, 0.88);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(20px);
+}
+button:hover {
+  filter: brightness(1.04);
+}
+::-webkit-scrollbar {
+  display: none;
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--panel2) 0%,
+    color-mix(in srgb, var(--panel2) 80%, var(--fg)) 50%,
+    var(--panel2) 100%
+  );
+  background-size: 200% 100%;
+  animation: valurise-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes valurise-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+@media (max-width: 640px) {
+  .login-blob-one {
+    top: -14rem;
+    left: -16rem;
+    width: 31rem;
+    height: 31rem;
+  }
+  .login-blob-two {
+    right: -16rem;
+    bottom: -15rem;
+    width: 28rem;
+    height: 28rem;
+  }
+  .login-blob-three {
+    top: 23%;
+    right: -11rem;
+    width: 19rem;
+    height: 19rem;
+  }
+  .login-particle-desktop {
+    display: none;
+  }
+}
