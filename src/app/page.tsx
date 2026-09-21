@@ -305,26 +305,18 @@ function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
   const [message, setMessage] = useState("");
   return (
     <MotionConfig reducedMotion="user">
-      <main className="min-h-dvh bg-[var(--bg)]">
-        <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] backdrop-blur-xl">
-          <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
-            <div className="flex items-center gap-3">
-              <Image src="/valurise-icon.webp" alt="Valurise" width={72} height={72} className="h-9 w-9 object-contain" priority />
-              <div><b className="block text-sm tracking-tight">VALURISE</b><span className="muted text-[11px]">Administração da plataforma</span></div>
-            </div>
-            <button onClick={logout} className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs font-medium">Sair</button>
-          </div>
-        </header>
-        <motion.section className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-12" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: motionTokens.duration.normal, ease: motionTokens.ease.enter }}>
-          <span className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)]"><ShieldCheck size={14} /> CONSOLE MASTER</span>
-          <h1 className="mt-5 text-3xl font-semibold tracking-tight sm:text-4xl">Olá, {user.name}.</h1>
-          <p className="muted mt-2 max-w-2xl text-sm leading-6">Aqui você controla acessos à Valurise. Dados financeiros, lançamentos e dashboards dos usuários não ficam disponíveis nesta área.</p>
-          {message && <div role="status" className="mt-5 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/10 px-4 py-3 text-sm text-[var(--accent)]">{message}</div>}
-          <section className="panel mt-7 rounded-3xl p-5 sm:p-6">
-            <MasterUsers toast={setMessage} />
-          </section>
-          <p className="muted mt-5 text-xs leading-5">Aprovar libera o acesso. Desativar bloqueia temporariamente. Lixeira mantém a conta recuperável; a exclusão definitiva só é possível a partir da lixeira.</p>
-        </motion.section>
+      <main className="min-h-dvh bg-[var(--bg)] lg:flex">
+        <aside className="hidden w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_94%,black)] px-4 py-6 lg:fixed lg:inset-y-0 lg:flex">
+          <div className="flex items-center gap-2 px-2"><Image src="/valurise-icon.webp" alt="Valurise" width={56} height={56} className="h-7 w-7 object-contain" priority /><b className="text-sm tracking-tight">VALURISE</b></div>
+          <span className="mt-7 inline-flex w-fit items-center gap-1.5 rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px] font-semibold text-[#e0c298]"><span className="h-1.5 w-1.5 rounded-full bg-[#e0c298]" />MASTER ADMIN</span>
+          <p className="muted mt-7 px-2 text-[10px] font-semibold tracking-widest">GOVERNANÇA</p>
+          <nav className="mt-3 space-y-1 text-sm"><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><ShieldCheck size={17}/>Painel de governança</span><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><ReceiptText size={17}/>Usuários e clientes</span><span className="flex items-center gap-3 rounded-xl bg-[var(--panel2)] px-3 py-2.5 font-medium text-[var(--accent)]"><Bell size={17}/>Solicitações e convites</span><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><Search size={17}/>Auditoria e logs</span><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><SlidersHorizontal size={17}/>Configurações globais</span></nav>
+          <div className="mt-auto rounded-2xl bg-[var(--panel)] p-3"><small className="muted block text-[10px] font-semibold tracking-wider">SEGURANÇA</small><span className="mt-1 flex items-center gap-1.5 text-xs text-[var(--accent)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />Acesso protegido</span></div>
+        </aside>
+        <div className="min-w-0 flex-1 lg:pl-64">
+          <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] backdrop-blur-xl"><div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4 sm:px-6"><div className="flex items-center gap-3 lg:hidden"><Image src="/valurise-icon.webp" alt="Valurise" width={72} height={72} className="h-9 w-9 object-contain" priority /><b className="text-sm tracking-tight">VALURISE</b></div><span className="hidden items-center gap-2 rounded-full bg-[var(--panel)] px-3 py-2 text-xs lg:inline-flex"><span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />Sistema operacional</span><div className="ml-auto flex items-center gap-3"><span aria-label="Notificações do Master" className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]"><Bell size={18}/></span><button onClick={logout} className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs font-medium">Sair</button></div></div></header>
+          <motion.section className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-12" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: motionTokens.duration.normal, ease: motionTokens.ease.enter }}><span className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)]"><ShieldCheck size={14} /> PAINEL MASTER · ACESSO RESTRITO</span><div className="mt-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Gestão de titulares<br className="hidden sm:block" /> e solicitações</h1><p className="muted mt-3 max-w-xl text-sm leading-6">Controle de acessos da Valurise. Esta área não exibe dados financeiros dos usuários.</p></div><span className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs text-[var(--muted)]">Master: {user.name}</span></div>{message && <div role="status" className="mt-5 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/10 px-4 py-3 text-sm text-[var(--accent)]">{message}</div>}<section className="panel mt-7 rounded-3xl p-5 sm:p-6"><MasterUsers toast={setMessage} /></section><p className="muted mt-5 text-xs leading-5">Aprovar libera o acesso. Desativar bloqueia temporariamente. Lixeira mantém a conta recuperável; a exclusão definitiva só é possível a partir da lixeira.</p></motion.section>
+        </div>
       </main>
     </MotionConfig>
   );
