@@ -210,13 +210,20 @@ function Login({ done }: { done: (u: User) => void }) {
     x.preventDefault();
     setE(""); setNotice("");
     if (supabase && mode === "login") {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: u.trim(),
-        password: p,
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: u.trim(), password: p }),
       });
-      if (error || !data.user)
-        return setE(error?.message || "Não foi possível entrar.");
-      await finishSupabaseUser(data.user);
+      const payload = await response.json();
+      if (!response.ok || !payload.session)
+        return setE(payload.error || "Não foi possível entrar.");
+      const { error } = await supabase.auth.setSession({
+        access_token: payload.session.access_token,
+        refresh_token: payload.session.refresh_token,
+      });
+      if (error || !payload.user) return setE("Não foi possível iniciar a sessão.");
+      await finishSupabaseUser(payload.user);
       return;
     }
     if (supabase && mode === "signup") {
@@ -272,8 +279,9 @@ function Login({ done }: { done: (u: User) => void }) {
           value={u}
           onChange={(x) => setU(x.target.value)}
           className={`field ${mode === "signup" ? "mt-3" : "mt-7"}`}
-          type="email"
-          placeholder="Seu e-mail"
+          type={mode === "login" ? "text" : "email"}
+          placeholder={mode === "login" ? "Seu usuário ou e-mail" : "Seu e-mail"}
+          autoComplete={mode === "login" ? "username" : "email"}
         />
         {mode !== "forgot" && <input
           value={p}
