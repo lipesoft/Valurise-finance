@@ -1,3 +1,13 @@
-import { NextResponse } from 'next/server'
-const users: Record<string,{password?:string;name:string}>={filiperodrigues:{password:process.env.VALURISE_FILIPE_PASSWORD||process.env.LUME_FILIPE_PASSWORD,name:'Filipe'},grazielleborges:{password:process.env.VALURISE_GRAZIELLE_PASSWORD||process.env.LUME_GRAZIELLE_PASSWORD,name:'Grazielle'}}
-export async function POST(request:Request){const {username,password}=await request.json();const user=users[username];if(!user?.password||password!==user.password)return NextResponse.json({error:'Usuário ou senha inválidos.'},{status:401});return NextResponse.json({user:{username,name:user.name}})}
+import { NextResponse } from "next/server";
+
+/**
+ * Kept only so older clients receive a clear response while they refresh.
+ * Authentication is exclusively handled by Supabase Auth; this route must
+ * never validate passwords from deployment environment variables.
+ */
+export async function POST() {
+  return NextResponse.json(
+    { error: "Use a autenticação segura da Valurise." },
+    { status: 410 },
+  );
+}

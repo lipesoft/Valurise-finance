@@ -157,8 +157,6 @@ export default function Page() {
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     if (!supabase) {
-      const raw = localStorage.getItem("lume-user");
-      if (raw) setUser(JSON.parse(raw));
       setCheckingAuth(false);
       return;
     }
@@ -178,7 +176,6 @@ export default function Page() {
     }).finally(() => setCheckingAuth(false));
   }, []);
   const logout = () => {
-    localStorage.removeItem("lume-user");
     void getSupabaseBrowserClient()?.auth.signOut();
     setUser(null);
   };
@@ -247,16 +244,7 @@ function Login({ done }: { done: (u: User) => void }) {
       window.history.replaceState({}, "", "/");
       return;
     }
-    if (supabase) return setE("Preencha os dados solicitados.");
-    const r = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: u, password: p }),
-    });
-    const d = await r.json();
-    if (!r.ok) return setE(d.error);
-    localStorage.setItem("lume-user", JSON.stringify(d.user));
-    done(d.user);
+    return setE("A autenticação segura não está configurada.");
   }
   return (
     <MotionConfig reducedMotion="user">
