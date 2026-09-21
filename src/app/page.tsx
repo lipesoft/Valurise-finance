@@ -8,6 +8,7 @@ import {
   ArrowUpRight,
   BarChart3,
   Bell,
+  Bot,
   CalendarDays,
   ChartNoAxesCombined,
   Check,
@@ -27,6 +28,7 @@ import {
   Plus,
   ReceiptText,
   Search,
+  SendHorizontal,
   ShieldCheck,
   SlidersHorizontal,
   Target,
@@ -757,6 +759,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             createCategory={createCategory}
             createInvestment={createInvestment}
             close={() => setSheet(false)}
+            openSettings={() => { setSheet(false); setView("settings"); }}
             saved={(n) => {
               saveTx([...n, ...tx]);
               const transaction = n[0];
@@ -3549,7 +3552,80 @@ function Reports({ tx, data, month }: any) {
     </section>
   );
 }
-function Launcher({ data, close, saved, createCategory, createInvestment }: any) {
+type PersonalChatMessage = { id: string; role: "user" | "assistant"; content: string };
+function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (kind: Kind) => void; openSettings: () => void }) {
+  const [messages, setMessages] = useState<PersonalChatMessage[]>([
+    { id: "welcome", role: "assistant", content: "Olá! Posso ajudar você a entender sua vida financeira ou registrar uma movimentação." },
+  ]);
+  const [input, setInput] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [provider, setProvider] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const loadConnection = async () => {
+      const supabase = getSupabaseBrowserClient();
+      const { data } = await supabase?.auth.getSession() || {};
+      if (!data?.session?.access_token) return;
+      const response = await fetch("/api/personal-ai/connection", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
+      const result = await response.json();
+      if (response.ok && result.connection) {
+        setConnected(true);
+        setProvider(result.connection.provider);
+      }
+    };
+    void loadConnection();
+  }, []);
+
+  const send = async () => {
+    const content = input.trim();
+    if (!content || loading) return;
+    const next = [...messages, { id: crypto.randomUUID(), role: "user" as const, content }];
+    setMessages(next); setInput(""); setError("");
+    if (!connected) {
+      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: "Sua IA pessoal ainda não está conectada. Você pode usar os atalhos abaixo para registrar uma movimentação ou configurar OpenAI/Gemini em Configurações." }]);
+      return;
+    }
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    if (!data?.session?.access_token) return setError("Sua sessão expirou. Entre novamente para conversar.");
+    setLoading(true);
+    try {
+      const response = await fetch("/api/personal-ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+        body: JSON.stringify({ messages: next.slice(-12).map(({ role, content: text }) => ({ role, content: text })) }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível responder agora.");
+      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: result.reply }]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível responder agora.");
+    } finally { setLoading(false); }
+  };
+  return <section className="flex max-h-[75dvh] min-h-[32rem] flex-col">
+    <div className="flex items-start gap-3 border-b border-[var(--border)] pb-4">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
+      <div className="min-w-0 flex-1"><b className="block text-lg">Conversa financeira</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : "Gemini"} conectado à sua conta.` : "Atalhos funcionam sem IA. Conecte sua IA pessoal quando quiser."}</p></div>
+      {!connected && <button onClick={openSettings} className="shrink-0 text-xs font-semibold text-[var(--accent)]">Configurar IA</button>}
+    </div>
+    <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+      {messages.map((message) => <div key={message.id} className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === "user" ? "primary ml-auto rounded-br-md" : "bg-[var(--panel2)] rounded-bl-md"}`}>{message.content}</div>)}
+      {loading && <div className="w-fit rounded-2xl rounded-bl-md bg-[var(--panel2)] px-4 py-3 text-sm"><span className="inline-flex gap-1"><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:150ms]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:300ms]" /></span></div>}
+    </div>
+    {error && <p className="mt-3 text-xs text-[var(--danger)]">{error}</p>}
+    <div className="mt-4 flex flex-wrap gap-2">
+      {choices.map(([kind, label, Icon]) => <button key={label} onClick={() => startMovement(kind)} className="flex items-center gap-2 rounded-full bg-[var(--panel2)] px-3 py-2 text-xs font-medium hover:ring-1 hover:ring-[var(--accent)]"><Icon size={14} className="text-[var(--accent)]" />{label}</button>)}
+    </div>
+    <form className="mt-3 flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--panel2)] p-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      <input value={input} onChange={(event) => setInput(event.target.value)} className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida ou use um atalho"} />
+      <button type="submit" disabled={!input.trim() || loading} aria-label="Enviar mensagem" className="primary grid h-10 w-10 shrink-0 place-items-center rounded-xl disabled:opacity-50"><SendHorizontal size={17} /></button>
+    </form>
+    <p className="muted mt-2 text-center text-[10px]">A IA não realiza transações. Revogue a conexão a qualquer momento em Configurações.</p>
+  </section>;
+}
+function Launcher({ data, close, saved, createCategory, createInvestment, openSettings }: any) {
   const [k, setK] = useState<Kind | null>(null),
     [step, setStep] = useState(0),
     [amount, setAmount] = useState(""),
@@ -3628,25 +3704,7 @@ function Launcher({ data, close, saved, createCategory, createInvestment }: any)
   if (!k)
     return (
       <Sheet close={close}>
-        <b className="text-lg">Registrar movimentação</b>
-        <p className="muted mt-1 text-sm">
-          Escolha o que aconteceu com seu dinheiro.
-        </p>
-        <div className="mt-5 grid grid-cols-2 gap-2">
-          {choices.map(([x, label, I]) => (
-            <button
-              onClick={() => {
-                setK(x);
-                setStep(0);
-              }}
-              className="panel rounded-xl p-4 text-left transition hover:ring-1 hover:ring-[var(--accent)]"
-              key={label}
-            >
-              <I className="text-[var(--accent)]" size={20} />
-              <b className="mt-3 block text-sm">{label}</b>
-            </button>
-          ))}
-        </div>
+        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} openSettings={openSettings} />
       </Sheet>
     );
   if (showCat)
@@ -4883,8 +4941,54 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast }: any) {
         </p>
         <LegalPreferences toast={toast} />
       </section>
+      <PersonalAISettings toast={toast} />
     </section>
   );
+}
+function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
+  const [provider, setProvider] = useState<"openai" | "gemini">("openai");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("gpt-5");
+  const [insightsEnabled, setInsightsEnabled] = useState(true);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const load = async () => {
+      const supabase = getSupabaseBrowserClient();
+      const { data } = await supabase?.auth.getSession() || {};
+      if (!data?.session?.access_token) return;
+      const response = await fetch("/api/personal-ai/connection", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
+      const result = await response.json();
+      if (response.ok && result.connection) {
+        setConnected(true); setProvider(result.connection.provider); setModel(result.connection.model);
+        setInsightsEnabled(result.connection.insights_enabled); setNotificationsEnabled(result.connection.notifications_enabled);
+      }
+    };
+    void load();
+  }, []);
+  const save = async () => {
+    if (apiKey.trim().length < 12) return toast("Informe uma API key válida.");
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    if (!data?.session?.access_token) return toast("Faça login novamente para conectar sua IA.");
+    setBusy(true);
+    const response = await fetch("/api/personal-ai/connection", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify({ provider, apiKey, model, insightsEnabled, notificationsEnabled }) });
+    const result = await response.json(); setBusy(false);
+    if (!response.ok) return toast(result.error || "Não foi possível salvar sua conexão.");
+    setApiKey(""); setConnected(true); toast("IA pessoal conectada com segurança.");
+  };
+  const disconnect = async () => {
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    if (!data?.session?.access_token) return;
+    setBusy(true);
+    const response = await fetch("/api/personal-ai/connection", { method: "DELETE", headers: { Authorization: `Bearer ${data.session.access_token}` } });
+    setBusy(false);
+    if (!response.ok) return toast("Não foi possível remover a conexão.");
+    setConnected(false); setApiKey(""); toast("Conexão de IA removida.");
+  };
+  return <section className="panel mt-4 rounded-2xl p-5"><div className="flex items-start gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span><div><b className="block">IA pessoal</b><p className="muted mt-1 text-sm">Conecte sua própria conta OpenAI ou Gemini. O uso e os custos ficam na sua conta do provedor.</p></div></div><div className="mt-5 grid gap-3"><label className="text-sm">Provedor<select value={provider} onChange={(event) => { const next = event.target.value as "openai" | "gemini"; setProvider(next); setModel(next === "openai" ? "gpt-5" : "gemini-3.8-flash"); }} className="field mt-1"><option value="openai">OpenAI</option><option value="gemini">Gemini</option></select></label><label className="text-sm">Modelo<input value={model} onChange={(event) => setModel(event.target.value)} className="field mt-1" placeholder={provider === "openai" ? "gpt-5" : "gemini-3.8-flash"} /></label><label className="text-sm">API key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="field mt-1" type="password" autoComplete="off" placeholder={connected ? "Digite uma nova chave para substituir" : "Cole sua API key"} /></label><label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Insights no chat</b><small className="muted">Usar seus dados para respostas contextualizadas.</small></span><input checked={insightsEnabled} onChange={(event) => setInsightsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label><label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Notificações por IA</b><small className="muted">Deixa a preferência salva para alertas opt-in.</small></span><input checked={notificationsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label></div><p className="muted mt-4 text-xs leading-5">Sua chave é criptografada antes de ser armazenada e nunca volta ao navegador. A IA recebe apenas um resumo limitado dos seus dados para responder; ela não pode criar ou alterar movimentações.</p><div className="mt-4 flex flex-wrap gap-2"><button disabled={busy} onClick={() => void save()} className="primary rounded-xl px-4 py-3 text-sm font-semibold">{busy ? "Aplicando…" : connected ? "Atualizar conexão" : "Aplicar conexão"}</button>{connected && <button disabled={busy} onClick={() => void disconnect()} className="rounded-xl px-4 py-3 text-sm text-[var(--danger)] hover:bg-[var(--panel2)]">Remover IA</button>}</div></section>;
 }
 function LegalPreferences({ toast }: { toast: (text: string) => void }) {
   const [saving, setSaving] = useState(false);
