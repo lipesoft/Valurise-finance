@@ -272,10 +272,6 @@ function Login({ done }: { done: (u: User) => void }) {
       <main className="login-shell min-h-dvh overflow-x-hidden px-5 py-5 sm:grid sm:place-items-center sm:p-7">
         <LoginAmbient />
         <div className="login-layout relative z-10 mx-auto flex w-full max-w-md flex-col py-1 sm:py-0">
-          <motion.header className="login-topbar flex items-center justify-between" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.24, delay: 0.08 }}>
-            <span className="login-security-badge"><span className="login-security-dot" />Acesso protegido</span>
-            <span className="login-help" aria-label="Login Valurise"><CircleHelp size={18} /></span>
-          </motion.header>
           <motion.section className="login-brand text-center" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.34, ease: motionTokens.ease.enter, delay: 0.06 }}>
             <div className="login-mark-wrap"><span className="login-mark-glow" /><Image src="/valurise-icon.webp" alt="Valurise" width={512} height={512} className="login-mark" priority /></div>
             <h1>VALURISE</h1>

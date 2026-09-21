@@ -173,39 +173,6 @@ select:focus-visible {
   min-height: calc(100dvh - 2.5rem);
   justify-content: center;
 }
-.login-topbar {
-  margin-bottom: 26px;
-}
-.login-security-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.055);
-  color: rgba(229, 231, 235, 0.78);
-  padding: 6px 10px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-.login-security-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent);
-}
-.login-help {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.045);
-  color: var(--muted);
-}
 .login-brand {
   margin: 0 auto;
   max-width: 310px;
@@ -343,11 +310,9 @@ select:focus-visible {
 }
 @media (min-width: 640px) {
   .login-layout { min-height: auto; }
-  .login-topbar { margin-bottom: 30px; }
   .login-card { padding: 24px; }
 }
 @media (max-height: 720px) and (max-width: 639px) {
-  .login-topbar { margin-bottom: 15px; }
   .login-mark-wrap { width: 60px; height: 60px; margin-bottom: 10px; }
   .login-mark { width: 54px; height: 54px; }
   .login-brand p { margin-top: 4px; }
