@@ -3573,6 +3573,11 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
       if (response.ok && result.connection) {
         setConnected(true);
         setProvider(result.connection.provider);
+        const historyResponse = await fetch("/api/personal-ai/chat", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
+        const history = await historyResponse.json();
+        if (historyResponse.ok && Array.isArray(history.messages) && history.messages.length) {
+          setMessages(history.messages);
+        }
       }
     };
     void loadConnection();

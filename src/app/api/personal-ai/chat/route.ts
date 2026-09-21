@@ -19,6 +19,20 @@ function geminiText(payload: unknown) {
   return value.candidates?.[0]?.content?.parts?.map((item) => item.text || "").join("\n").trim();
 }
 
+export async function GET(request: NextRequest) {
+  const user = await getVerifiedActiveUser(request.headers.get("authorization"));
+  if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+  const admin = getSupabaseAdminClient();
+  const { data, error } = await admin
+    .from("personal_ai_messages")
+    .select("id, role, content")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false })
+    .limit(24);
+  if (error) return NextResponse.json({ error: "Não foi possível carregar a conversa." }, { status: 500 });
+  return NextResponse.json({ messages: [...(data || [])].reverse() });
+}
+
 export async function POST(request: NextRequest) {
   const user = await getVerifiedActiveUser(request.headers.get("authorization"));
   if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
