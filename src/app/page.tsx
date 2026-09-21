@@ -198,6 +198,14 @@ function Login({ done }: { done: (u: User) => void }) {
   const supabase = getSupabaseBrowserClient();
   async function finishSupabaseUser(authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
     if (!supabase) return;
+    const inviteToken = new URLSearchParams(window.location.search).get("invite");
+    if (inviteToken) {
+      const { data: session } = await supabase.auth.getSession();
+      if (session.session) {
+        const redeemed = await supabase.rpc("redeem_access_invite", { p_token: inviteToken });
+        if (!redeemed.error) window.history.replaceState({}, "", "/");
+      }
+    }
     const { data: profile } = await supabase.from("profiles").select("full_name, account_status, account_role").eq("id", authUser.id).maybeSingle();
     done({
       username: authUser.id,
@@ -230,7 +238,7 @@ function Login({ done }: { done: (u: User) => void }) {
       if (!name.trim() || !username.trim()) return setE("Informe seu nome e um usuário.");
       const { data, error } = await supabase.auth.signUp({
         email: u.trim(), password: p,
-        options: { emailRedirectTo: `${window.location.origin}/?email-confirmed=1`, data: { full_name: name.trim(), username: username.trim().toLowerCase() } },
+        options: { emailRedirectTo: `${window.location.origin}/?email-confirmed=1${new URLSearchParams(window.location.search).get("invite") ? `&invite=${encodeURIComponent(new URLSearchParams(window.location.search).get("invite") || "")}` : ""}`, data: { full_name: name.trim(), username: username.trim().toLowerCase() } },
       });
       if (error || !data.user) return setE(error?.message || "Não foi possível solicitar o cadastro.");
       setNotice("Cadastro recebido. Aguarde a aprovação do Master.");
@@ -1215,6 +1223,7 @@ function MasterUsers({ toast }: { toast: (text: string) => void }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<string | null>(null);
+  const [inviteLink, setInviteLink] = useState("");
   const load = async () => {
     const supabase = getSupabaseBrowserClient();
     if (!supabase) return;
@@ -1243,7 +1252,18 @@ function MasterUsers({ toast }: { toast: (text: string) => void }) {
     toast("Conta atualizada.");
     void load();
   };
-  return <section className="mt-4 border-t border-[var(--border)] pt-4"><div className="flex items-center justify-between"><div><b className="text-sm">Painel Master</b><p className="muted mt-1 text-xs">Aprova acessos e administra contas sem ler dados financeiros.</p></div><button onClick={() => void load()} className="text-xs text-[var(--accent)]">Atualizar</button></div>{loading ? <p className="muted mt-3 text-xs">Carregando usuários…</p> : <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">{users.map((item) => { const status = item.profile?.account_status || "pending"; const label = item.profile?.full_name || item.email || "Usuário"; const working = busy?.startsWith(item.id); const confirmingDelete = deleteCandidate === item.id; return <article key={item.id} className="rounded-xl bg-[var(--panel2)] p-3"><div className="flex items-start justify-between gap-3"><span className="min-w-0"><b className="block truncate text-sm">{label}</b><small className="muted block truncate">{item.email} · {status}</small></span>{status === "pending" && <button disabled={working} onClick={() => void act(item.id, "approve")} className="rounded-lg bg-[var(--accent)] px-2 py-1 text-xs font-medium text-[var(--accentfg)]">Aprovar</button>}</div><div className="mt-2 flex gap-3 text-xs"><button disabled={working} onClick={() => void act(item.id, status === "trashed" ? "restore" : "trash")} className="muted hover:text-[var(--fg)]">{status === "trashed" ? "Restaurar" : "Lixeira"}</button>{status !== "trashed" && <button disabled={working} onClick={() => void act(item.id, status === "disabled" ? "restore" : "disable")} className="muted hover:text-[var(--fg)]">{status === "disabled" ? "Reativar" : "Desativar"}</button>}{status === "trashed" && (confirmingDelete ? <><button disabled={working} onClick={() => { setDeleteCandidate(null); void act(item.id, "delete_permanently"); }} className="font-medium text-[var(--danger)]">Confirmar exclusão</button><button disabled={working} onClick={() => setDeleteCandidate(null)} className="muted">Cancelar</button></> : <button disabled={working} onClick={() => setDeleteCandidate(item.id)} className="text-[var(--danger)]">Excluir definitivo</button>)}</div>{confirmingDelete && <p className="mt-2 text-xs text-[var(--danger)]">Esta ação apaga a conta e todos os dados financeiros dela.</p>}</article>; })}</div>}</section>;
+  const createInvite = async () => {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+    const { data } = await supabase.auth.getSession();
+    if (!data.session?.access_token) return;
+    const response = await fetch("/api/admin/invites", { method: "POST", headers: { Authorization: `Bearer ${data.session.access_token}` } });
+    const body = await response.json();
+    if (!response.ok) return toast(body.error || "Não foi possível gerar o convite.");
+    setInviteLink(body.link);
+    toast("Link de convite criado por 7 dias.");
+  };
+  return <section className="mt-4 border-t border-[var(--border)] pt-4"><div className="flex items-center justify-between"><div><b className="text-sm">Painel Master</b><p className="muted mt-1 text-xs">Aprova acessos e administra contas sem ler dados financeiros.</p></div><button onClick={() => void load()} className="text-xs text-[var(--accent)]">Atualizar</button></div><div className="mt-3 rounded-xl bg-[var(--panel2)] p-3"><div className="flex items-center justify-between gap-3"><span><b className="block text-xs">Convidar novo usuário</b><small className="muted">O cadastro continua sujeito à sua aprovação.</small></span><button onClick={() => void createInvite()} className="rounded-lg border border-[var(--accent)] px-2 py-1 text-xs text-[var(--accent)]">Gerar link</button></div>{inviteLink && <div className="mt-3 flex gap-2"><input aria-label="Link de convite" readOnly value={inviteLink} className="field min-w-0 flex-1 text-xs"/><button onClick={async () => { await navigator.clipboard?.writeText(inviteLink); toast("Link copiado."); }} className="rounded-lg bg-[var(--panel)] px-2 text-xs">Copiar</button></div>}</div>{loading ? <p className="muted mt-3 text-xs">Carregando usuários…</p> : <div className="mt-3 max-h-64 space-y-2 overflow-y-auto pr-1">{users.map((item) => { const status = item.profile?.account_status || "pending"; const label = item.profile?.full_name || item.email || "Usuário"; const working = busy?.startsWith(item.id); const confirmingDelete = deleteCandidate === item.id; return <article key={item.id} className="rounded-xl bg-[var(--panel2)] p-3"><div className="flex items-start justify-between gap-3"><span className="min-w-0"><b className="block truncate text-sm">{label}</b><small className="muted block truncate">{item.email} · {status}</small></span>{status === "pending" && <button disabled={working} onClick={() => void act(item.id, "approve")} className="rounded-lg bg-[var(--accent)] px-2 py-1 text-xs font-medium text-[var(--accentfg)]">Aprovar</button>}</div><div className="mt-2 flex gap-3 text-xs"><button disabled={working} onClick={() => void act(item.id, status === "trashed" ? "restore" : "trash")} className="muted hover:text-[var(--fg)]">{status === "trashed" ? "Restaurar" : "Lixeira"}</button>{status !== "trashed" && <button disabled={working} onClick={() => void act(item.id, status === "disabled" ? "restore" : "disable")} className="muted hover:text-[var(--fg)]">{status === "disabled" ? "Reativar" : "Desativar"}</button>}{status === "trashed" && (confirmingDelete ? <><button disabled={working} onClick={() => { setDeleteCandidate(null); void act(item.id, "delete_permanently"); }} className="font-medium text-[var(--danger)]">Confirmar exclusão</button><button disabled={working} onClick={() => setDeleteCandidate(null)} className="muted">Cancelar</button></> : <button disabled={working} onClick={() => setDeleteCandidate(item.id)} className="text-[var(--danger)]">Excluir definitivo</button>)}</div>{confirmingDelete && <p className="mt-2 text-xs text-[var(--danger)]">Esta ação apaga a conta e todos os dados financeiros dela.</p>}</article>; })}</div>}</section>;
 }
 function Dashboard({
   user,
