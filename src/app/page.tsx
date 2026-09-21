@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "framer-motion";
 import {
@@ -1226,7 +1226,7 @@ function MasterUsers({ toast }: { toast: (text: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState("");
-  const load = async () => {
+  const load = useCallback(async () => {
     const supabase = getSupabaseBrowserClient();
     if (!supabase) return;
     const { data } = await supabase.auth.getSession();
@@ -1236,11 +1236,35 @@ function MasterUsers({ toast }: { toast: (text: string) => void }) {
     if (response.ok) setUsers(body.users || []);
     else toast(body.error || "Não foi possível carregar usuários.");
     setLoading(false);
-  };
-  // The master sheet intentionally loads once on opening; its explicit Atualizar
-  // action handles later refreshes without tying this effect to transient props.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void load(); }, []);
+  }, [toast]);
+  useEffect(() => {
+    void load();
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+
+    // Postgres Changes uses a WebSocket. The subscription is deliberately
+    // limited to profiles: financial tables are never exposed to the Master.
+    const channel = supabase
+      .channel("valurise-master-registration-requests")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "profiles" },
+        (payload) => {
+          const profile = payload.new as {
+            account_status?: AccountStatus;
+            account_role?: string;
+          };
+          if (profile.account_status !== "pending" || profile.account_role === "master") return;
+          toast("Novo pedido de acesso recebido.");
+          void load();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [load, toast]);
   const act = async (userId: string, action: "approve" | "disable" | "restore" | "trash" | "delete_permanently") => {
     const supabase = getSupabaseBrowserClient();
     if (!supabase) return;
