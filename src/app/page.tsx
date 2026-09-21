@@ -115,6 +115,7 @@ type Data = {
     currentCents: number;
     targetDate?: string;
     accountId?: string;
+    sharedGoalId?: string;
   }[];
   tags?: string[];
   recurringBills?: {
@@ -2693,7 +2694,21 @@ function Goals({ data, save, toast }: any) {
   const [targetDate, setTargetDate] = useState("");
   const [contributionFor, setContributionFor] = useState("");
   const [contribution, setContribution] = useState("");
+  const [sharingGoal, setSharingGoal] = useState<any | null>(null);
+  const [recipientId, setRecipientId] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [invites, setInvites] = useState<any[]>([]);
   const items = data.goals || [];
+  const loadInvites = async () => {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+    const { data: rows } = await supabase
+      .from("shared_goal_invites")
+      .select("id, status, shared_goals(name, target_cents, target_date)")
+      .eq("status", "pending");
+    setInvites(rows || []);
+  };
+  useEffect(() => { void loadInvites(); }, []);
   const add = () => {
     const targetCents = Math.round(Number(target.replace(",", ".")) * 100);
     if (!name.trim() || !targetCents) return;
@@ -2733,6 +2748,57 @@ function Goals({ data, save, toast }: any) {
     setContribution("");
     setContributionFor("");
   };
+  const share = async () => {
+    if (!sharingGoal || !recipientId.trim()) return;
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return toast("Conecte o Supabase para compartilhar metas.");
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) return toast("Faça login novamente para compartilhar uma meta.");
+    setSharing(true);
+    let sharedGoalId = sharingGoal.sharedGoalId;
+    if (!sharedGoalId) {
+      const created = await supabase
+        .from("shared_goals")
+        .insert({
+          owner_id: auth.user.id,
+          name: sharingGoal.name,
+          target_cents: sharingGoal.targetCents,
+          target_date: sharingGoal.targetDate || null,
+        })
+        .select("id")
+        .single();
+      if (created.error || !created.data) {
+        setSharing(false);
+        return toast("Não foi possível preparar o compartilhamento.");
+      }
+      sharedGoalId = created.data.id;
+    }
+    const invitation = await supabase.rpc("invite_to_shared_goal", {
+      p_goal_id: sharedGoalId,
+      p_recipient_public_id: recipientId.trim(),
+    });
+    setSharing(false);
+    if (invitation.error) return toast(invitation.error.message || "ID Valurise não encontrado.");
+    save({
+      ...data,
+      goals: items.map((item: any) =>
+        item.id === sharingGoal.id ? { ...item, sharedGoalId } : item,
+      ),
+    });
+    setRecipientId("");
+    setSharingGoal(null);
+    toast("Convite de meta enviado.");
+  };
+  const respondInvite = async (inviteId: string, accept: boolean) => {
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+    const { error } = await supabase.rpc("respond_shared_goal_invite", {
+      p_invite_id: inviteId,
+      p_accept: accept,
+    });
+    toast(error ? "Não foi possível responder ao convite." : accept ? "Meta compartilhada adicionada." : "Convite recusado.");
+    void loadInvites();
+  };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
@@ -2744,6 +2810,7 @@ function Goals({ data, save, toast }: any) {
       <p className="muted mt-2 text-sm">
         Acompanhe objetivos financeiros no seu ritmo.
       </p>
+      {invites.length > 0 && <section className="panel mt-4 rounded-2xl p-4"><b className="text-sm">Convites de metas</b><div className="mt-3 space-y-2">{invites.map((invite) => <div key={invite.id} className="flex items-center justify-between gap-3 rounded-xl bg-[var(--panel2)] p-3"><span className="min-w-0"><b className="block truncate text-sm">{invite.shared_goals?.name || "Meta compartilhada"}</b><small className="muted">Convite para acompanhar em conjunto</small></span><span className="flex shrink-0 gap-2"><button onClick={() => void respondInvite(invite.id, false)} className="muted text-xs">Recusar</button><button onClick={() => void respondInvite(invite.id, true)} className="rounded-lg bg-[var(--accent)] px-2 py-1 text-xs font-medium text-[var(--accentfg)]">Aceitar</button></span></div>)}</div></section>}
       {items.length ? (
         <div className="mt-5 space-y-3">
           {items.map((item: any) => {
@@ -2785,12 +2852,7 @@ function Goals({ data, save, toast }: any) {
                     /mês
                   </p>
                 )}
-                <button
-                  onClick={() => setContributionFor(item.id)}
-                  className="mt-3 text-sm font-medium text-[var(--accent)]"
-                >
-                  + Adicionar dinheiro
-                </button>
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2"><button onClick={() => setContributionFor(item.id)} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button><button onClick={() => setSharingGoal(item)} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button></div>
               </article>
             );
           })}
@@ -2867,6 +2929,7 @@ function Goals({ data, save, toast }: any) {
           </section>
         </Sheet>
       )}
+      {sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Ela só verá esta meta depois de aceitar o convite; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
     </section>
   );
 }
