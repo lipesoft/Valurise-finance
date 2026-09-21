@@ -66,7 +66,8 @@ type View =
   | "planning"
   | "reports"
   | "settings";
-type User = { username: string; name: string };
+type AccountStatus = "pending" | "active" | "disabled" | "trashed";
+type User = { username: string; name: string; status?: AccountStatus; role?: "user" | "master" };
 type ProfilePreference = { photo?: string; publicId: string };
 type AppNotification = {
   id: string;
@@ -151,58 +152,101 @@ const defaults = [
 ];
 export default function Page() {
   const [user, setUser] = useState<User | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
   useEffect(() => {
-    const raw = localStorage.getItem("lume-user");
-    if (raw) setUser(JSON.parse(raw));
     const supabase = getSupabaseBrowserClient();
-    void supabase?.auth.getUser().then(({ data }) => {
+    if (!supabase) {
+      const raw = localStorage.getItem("lume-user");
+      if (raw) setUser(JSON.parse(raw));
+      setCheckingAuth(false);
+      return;
+    }
+    void supabase.auth.getUser().then(async ({ data }) => {
       if (!data.user) return;
-      const authenticatedUser = {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("full_name, account_status, account_role")
+        .eq("id", data.user.id)
+        .maybeSingle();
+      setUser({
         username: data.user.id,
-        name: String(data.user.user_metadata?.full_name || "").trim() || data.user.email?.split("@")[0] || "Você",
-      };
-      localStorage.setItem("lume-user", JSON.stringify(authenticatedUser));
-      setUser(authenticatedUser);
-    });
+        name: profile?.full_name || String(data.user.user_metadata?.full_name || "").trim() || data.user.email?.split("@")[0] || "Você",
+        status: (profile?.account_status as AccountStatus | undefined) || "pending",
+        role: profile?.account_role === "master" ? "master" : "user",
+      });
+    }).finally(() => setCheckingAuth(false));
   }, []);
+  const logout = () => {
+    localStorage.removeItem("lume-user");
+    void getSupabaseBrowserClient()?.auth.signOut();
+    setUser(null);
+  };
+  if (checkingAuth) return <main className="grid min-h-dvh place-items-center bg-[var(--bg)]"><span className="muted text-sm">Abrindo sua conta…</span></main>;
+  if (user && user.status && user.status !== "active") return <AccountWaiting user={user} logout={logout} />;
   return user ? (
     <App
       user={user}
-      logout={() => {
-        localStorage.removeItem("lume-user");
-        void getSupabaseBrowserClient()?.auth.signOut();
-        setUser(null);
-      }}
+      logout={logout}
     />
   ) : (
     <Login done={setUser} />
   );
 }
 function Login({ done }: { done: (u: User) => void }) {
-  const [u, setU] = useState(""),
-    [p, setP] = useState(""),
-    [e, setE] = useState("");
+  const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">(
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("reset-password") ? "reset" : "login",
+  );
+  const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState("");
+  const supabase = getSupabaseBrowserClient();
+  async function finishSupabaseUser(authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
+    if (!supabase) return;
+    const { data: profile } = await supabase.from("profiles").select("full_name, account_status, account_role").eq("id", authUser.id).maybeSingle();
+    done({
+      username: authUser.id,
+      name: profile?.full_name || String(authUser.user_metadata?.full_name || "").trim() || authUser.email?.split("@")[0] || "Você",
+      status: (profile?.account_status as AccountStatus | undefined) || "pending",
+      role: profile?.account_role === "master" ? "master" : "user",
+    });
+  }
   async function submit(x: React.FormEvent) {
     x.preventDefault();
-    const supabase = getSupabaseBrowserClient();
-    if (supabase && u.includes("@")) {
+    setE(""); setNotice("");
+    if (supabase && mode === "login") {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: u.trim(),
         password: p,
       });
       if (error || !data.user)
         return setE(error?.message || "Não foi possível entrar.");
-      const authenticatedUser = {
-        username: data.user.id,
-        name:
-          String(data.user.user_metadata?.full_name || "").trim() ||
-          data.user.email?.split("@")[0] ||
-          "Você",
-      };
-      localStorage.setItem("lume-user", JSON.stringify(authenticatedUser));
-      done(authenticatedUser);
+      await finishSupabaseUser(data.user);
       return;
     }
+    if (supabase && mode === "signup") {
+      if (!name.trim() || !username.trim()) return setE("Informe seu nome e um usuário.");
+      const { data, error } = await supabase.auth.signUp({
+        email: u.trim(), password: p,
+        options: { emailRedirectTo: `${window.location.origin}/?email-confirmed=1`, data: { full_name: name.trim(), username: username.trim().toLowerCase() } },
+      });
+      if (error || !data.user) return setE(error?.message || "Não foi possível solicitar o cadastro.");
+      setNotice("Cadastro recebido. Aguarde a aprovação do Master.");
+      await finishSupabaseUser(data.user);
+      return;
+    }
+    if (supabase && mode === "forgot") {
+      const { error } = await supabase.auth.resetPasswordForEmail(u.trim(), { redirectTo: `${window.location.origin}/?reset-password=1` });
+      if (error) return setE(error.message);
+      setNotice("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.");
+      return;
+    }
+    if (supabase && mode === "reset") {
+      const { error } = await supabase.auth.updateUser({ password: p });
+      if (error) return setE(error.message);
+      setNotice("Senha atualizada. Você já pode entrar.");
+      setMode("login");
+      window.history.replaceState({}, "", "/");
+      return;
+    }
+    if (supabase) return setE("Preencha os dados solicitados.");
     const r = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -233,20 +277,22 @@ function Login({ done }: { done: (u: User) => void }) {
           <Image src="/valurise-icon.webp" alt="Valurise" width={1254} height={1254} className="h-16 w-16 rounded-2xl" priority />
         </motion.div>
         <h1 className="mt-8 text-2xl font-semibold">Bem-vindo de volta.</h1>
-        <p className="muted mt-2 text-sm">Seu espaço financeiro, só seu.</p>
+        <p className="muted mt-2 text-sm">{mode === "signup" ? "Solicite seu acesso ao Valurise." : mode === "forgot" ? "Enviaremos um link seguro para seu e-mail." : mode === "reset" ? "Escolha uma nova senha segura." : "Seu espaço financeiro, só seu."}</p>
+        {mode === "signup" && <><input value={name} onChange={(x) => setName(x.target.value)} className="field mt-7" placeholder="Seu nome" /><input value={username} onChange={(x) => setUsername(x.target.value)} className="field mt-3" placeholder="Usuário" /></>}
         <input
           value={u}
           onChange={(x) => setU(x.target.value)}
-          className="field mt-7"
-          placeholder="Usuário ou e-mail"
+          className={`field ${mode === "signup" ? "mt-3" : "mt-7"}`}
+          type="email"
+          placeholder="Seu e-mail"
         />
-        <input
+        {mode !== "forgot" && <input
           value={p}
           onChange={(x) => setP(x.target.value)}
           className="field mt-3"
           type="password"
-          placeholder="Senha"
-        />
+          placeholder={mode === "reset" ? "Nova senha" : "Senha"}
+        />}
         <AnimatePresence>
           {e && (
             <motion.p
@@ -260,13 +306,22 @@ function Login({ done }: { done: (u: User) => void }) {
             </motion.p>
           )}
         </AnimatePresence>
+        {notice && <p className="mt-3 text-sm text-[var(--accent)]">{notice}</p>}
         <button className="primary mt-5 h-12 w-full rounded-xl text-sm font-semibold">
-          Entrar
+          {mode === "signup" ? "Solicitar cadastro" : mode === "forgot" ? "Enviar link" : mode === "reset" ? "Salvar nova senha" : "Entrar"}
         </button>
+        {supabase && <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs text-[var(--accent)]">
+          {mode !== "login" && <button type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}
+          {mode === "login" && <><button type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button type="button" onClick={() => { setMode("signup"); setE(""); }}>Criar conta</button></>}
+        </div>}
       </motion.form>
     </main>
     </MotionConfig>
   );
+}
+function AccountWaiting({ user, logout }: { user: User; logout: () => void }) {
+  const copy = user.status === "pending" ? { title: "Esperando aprovação do Master", text: "Seu cadastro foi recebido. Você será avisado assim que seu acesso for aprovado." } : user.status === "trashed" ? { title: "Conta na lixeira", text: "Esta conta foi removida temporariamente. Fale com o Master para restaurá-la." } : { title: "Conta desativada", text: "Seu acesso está desativado. Fale com o Master se precisar de ajuda." };
+  return <main className="login-shell grid min-h-dvh place-items-center overflow-hidden p-5"><LoginAmbient /><section className="login-card panel relative z-10 w-full max-w-sm rounded-3xl p-7 text-center"><Image src="/valurise-icon.webp" alt="Valurise" width={512} height={512} className="mx-auto h-16 w-16" priority /><h1 className="mt-7 text-xl font-semibold">{copy.title}</h1><p className="muted mt-3 text-sm leading-6">{copy.text}</p><button onClick={logout} className="mt-7 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm">Sair desta conta</button></section></main>;
 }
 function App({ user, logout }: { user: User; logout: () => void }) {
   const key = `lume:v2:${user.username}`;
