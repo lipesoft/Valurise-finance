@@ -19,6 +19,11 @@ function geminiText(payload: unknown) {
   return value.candidates?.[0]?.content?.parts?.map((item) => item.text || "").join("\n").trim();
 }
 
+function deepSeekText(payload: unknown) {
+  const value = payload as { choices?: Array<{ message?: { content?: string | null } }> };
+  return value.choices?.[0]?.message?.content?.trim();
+}
+
 export async function GET(request: NextRequest) {
   const user = await getVerifiedActiveUser(request.headers.get("authorization"));
   if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
@@ -68,7 +73,7 @@ export async function POST(request: NextRequest) {
       });
       if (!response.ok) return NextResponse.json({ error: "A OpenAI recusou a solicitação. Revise a chave, o modelo e os créditos da sua conta." }, { status: 422 });
       reply = openAiText(await response.json()) || "";
-    } else {
+    } else if (connection.provider === "gemini") {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(connection.model)}:generateContent`, {
         method: "POST",
         signal: abort.signal,
@@ -81,6 +86,26 @@ export async function POST(request: NextRequest) {
       });
       if (!response.ok) return NextResponse.json({ error: "O Gemini recusou a solicitação. Revise a chave, o modelo e os créditos da sua conta." }, { status: 422 });
       reply = geminiText(await response.json()) || "";
+    } else if (connection.provider === "deepseek") {
+      const response = await fetch("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        signal: abort.signal,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: connection.model,
+          messages: [
+            { role: "system", content: `${personalAiInstruction}\n\nRETRATO FINANCEIRO LIMITADO E ATUAL:\n${snapshot}` },
+            ...messages.map((item) => ({ role: item.role, content: item.content })),
+          ],
+          temperature: 0.25,
+          max_tokens: 700,
+          stream: false,
+        }),
+      });
+      if (!response.ok) return NextResponse.json({ error: "O DeepSeek recusou a solicitação. Revise a chave, o modelo e os créditos da sua conta." }, { status: 422 });
+      reply = deepSeekText(await response.json()) || "";
+    } else {
+      return NextResponse.json({ error: "O provedor de IA conectado não é suportado." }, { status: 422 });
     }
     if (!reply) return NextResponse.json({ error: "A IA não retornou uma resposta utilizável." }, { status: 502 });
     const current = messages.at(-1)!;

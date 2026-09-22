@@ -3615,7 +3615,7 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
     const next = [...messages, { id: crypto.randomUUID(), role: "user" as const, content }];
     setMessages(next); setInput(""); setError("");
     if (!connected) {
-      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: "Sua IA pessoal ainda não está conectada. Você pode usar os atalhos abaixo para registrar uma movimentação ou configurar OpenAI/Gemini em Configurações." }]);
+      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: "Sua IA pessoal ainda não está conectada. Você pode usar os atalhos abaixo para registrar uma movimentação ou configurar OpenAI, Gemini ou DeepSeek em Configurações." }]);
       return;
     }
     const supabase = getSupabaseBrowserClient();
@@ -3638,7 +3638,7 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
   return <section className="flex max-h-[75dvh] min-h-[32rem] flex-col">
     <div className="flex items-start gap-3 border-b border-[var(--border)] pb-4">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-      <div className="min-w-0 flex-1"><b className="block text-lg">Conversa financeira</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : "Gemini"} conectado à sua conta.` : "Atalhos funcionam sem IA. Conecte sua IA pessoal quando quiser."}</p></div>
+      <div className="min-w-0 flex-1"><b className="block text-lg">Conversa financeira</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Atalhos funcionam sem IA. Conecte sua IA pessoal quando quiser."}</p></div>
       {!connected && <button onClick={openSettings} className="shrink-0 text-xs font-semibold text-[var(--accent)]">Configurar IA</button>}
     </div>
     <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
@@ -4977,7 +4977,7 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast }: any) {
   );
 }
 function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
-  const [provider, setProvider] = useState<"openai" | "gemini">("openai");
+  const [provider, setProvider] = useState<"openai" | "gemini" | "deepseek">("openai");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-5");
   const [insightsEnabled, setInsightsEnabled] = useState(true);
@@ -5019,7 +5019,40 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     if (!response.ok) return toast("Não foi possível remover a conexão.");
     setConnected(false); setApiKey(""); toast("Conexão de IA removida.");
   };
-  return <section className="panel mt-4 rounded-2xl p-5"><div className="flex items-start gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span><div><b className="block">IA pessoal</b><p className="muted mt-1 text-sm">Conecte sua própria conta OpenAI ou Gemini. O uso e os custos ficam na sua conta do provedor.</p></div></div><div className="mt-5 grid gap-3"><label className="text-sm">Provedor<select value={provider} onChange={(event) => { const next = event.target.value as "openai" | "gemini"; setProvider(next); setModel(next === "openai" ? "gpt-5" : "gemini-3.8-flash"); }} className="field mt-1"><option value="openai">OpenAI</option><option value="gemini">Gemini</option></select></label><label className="text-sm">Modelo<input value={model} onChange={(event) => setModel(event.target.value)} className="field mt-1" placeholder={provider === "openai" ? "gpt-5" : "gemini-3.8-flash"} /></label><label className="text-sm">API key<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="field mt-1" type="password" autoComplete="off" placeholder={connected ? "Digite uma nova chave para substituir" : "Cole sua API key"} /></label><label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Insights no chat</b><small className="muted">Usar seus dados para respostas contextualizadas.</small></span><input checked={insightsEnabled} onChange={(event) => setInsightsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label><label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Notificações por IA</b><small className="muted">Deixa a preferência salva para alertas opt-in.</small></span><input checked={notificationsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label></div><p className="muted mt-4 text-xs leading-5">Sua chave é criptografada antes de ser armazenada e nunca volta ao navegador. A IA recebe apenas um resumo limitado dos seus dados para responder; ela não pode criar ou alterar movimentações.</p><div className="mt-4 flex flex-wrap gap-2"><button disabled={busy} onClick={() => void save()} className="primary rounded-xl px-4 py-3 text-sm font-semibold">{busy ? "Aplicando…" : connected ? "Atualizar conexão" : "Aplicar conexão"}</button>{connected && <button disabled={busy} onClick={() => void disconnect()} className="rounded-xl px-4 py-3 text-sm text-[var(--danger)] hover:bg-[var(--panel2)]">Remover IA</button>}</div></section>;
+  return (
+    <section className="panel mt-4 rounded-2xl p-5">
+      <div className="flex items-start gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
+        <div><b className="block">IA pessoal</b><p className="muted mt-1 text-sm">Conecte sua própria conta OpenAI, Gemini ou DeepSeek. O uso e os custos ficam na sua conta do provedor.</p></div>
+      </div>
+      <div className="mt-5 grid gap-3">
+        <label className="text-sm">Provedor
+          <select value={provider} onChange={(event) => {
+            const next = event.target.value as "openai" | "gemini" | "deepseek";
+            setProvider(next);
+            setModel(next === "openai" ? "gpt-5" : next === "gemini" ? "gemini-3.8-flash" : "deepseek-chat");
+          }} className="field mt-1">
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Gemini</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+        </label>
+        <label className="text-sm">Modelo
+          <input value={model} onChange={(event) => setModel(event.target.value)} className="field mt-1" placeholder={provider === "openai" ? "gpt-5" : provider === "gemini" ? "gemini-3.8-flash" : "deepseek-chat"} />
+        </label>
+        <label className="text-sm">API key
+          <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="field mt-1" type="password" autoComplete="off" placeholder={connected ? "Digite uma nova chave para substituir" : "Cole sua API key"} />
+        </label>
+        <label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Insights no chat</b><small className="muted">Usar seus dados para respostas contextualizadas.</small></span><input checked={insightsEnabled} onChange={(event) => setInsightsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label>
+        <label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Notificações por IA</b><small className="muted">Deixa a preferência salva para alertas opt-in.</small></span><input checked={notificationsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label>
+      </div>
+      <p className="muted mt-4 text-xs leading-5">Sua chave é criptografada antes de ser armazenada e nunca volta ao navegador. A IA recebe apenas um resumo limitado dos seus dados para responder; ela não pode criar ou alterar movimentações.</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button disabled={busy} onClick={() => void save()} className="primary rounded-xl px-4 py-3 text-sm font-semibold">{busy ? "Aplicando…" : connected ? "Atualizar conexão" : "Aplicar conexão"}</button>
+        {connected && <button disabled={busy} onClick={() => void disconnect()} className="rounded-xl px-4 py-3 text-sm text-[var(--danger)] hover:bg-[var(--panel2)]">Remover IA</button>}
+      </div>
+    </section>
+  );
 }
 function LegalPreferences({ toast }: { toast: (text: string) => void }) {
   const [saving, setSaving] = useState(false);

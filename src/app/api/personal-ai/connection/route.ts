@@ -4,7 +4,7 @@ import { encryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
 
 const connectionSchema = z.object({
-  provider: z.enum(["openai", "gemini"]),
+  provider: z.enum(["openai", "gemini", "deepseek"]),
   apiKey: z.string().trim().min(12).max(512),
   model: z.string().trim().min(2).max(100).regex(/^[a-zA-Z0-9._:-]+$/),
   insightsEnabled: z.boolean().default(true),

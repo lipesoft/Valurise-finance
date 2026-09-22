@@ -1,6 +1,6 @@
 # Valurise
 
-Organizador financeiro pessoal mobile-first, em português do Brasil. O Dashboard é a home e o lançador guiado registra ações; opcionalmente, cada usuário pode conectar sua própria conta OpenAI ou Gemini para conversar sobre seus dados.
+Organizador financeiro pessoal mobile-first, em português do Brasil. O Dashboard é a home e o lançador guiado registra ações; opcionalmente, cada usuário pode conectar sua própria conta OpenAI, Gemini ou DeepSeek para conversar sobre seus dados.
 
 ## Stack
 
@@ -22,7 +22,7 @@ Crie um projeto Supabase, preencha `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUP
 
 ## IA pessoal opcional
 
-Em **Configurações → IA pessoal**, o usuário escolhe OpenAI ou Gemini e informa a própria API key. A chave é criptografada com `VALURISE_AI_ENCRYPTION_KEY`, usada somente no servidor e nunca devolvida ao navegador. O chat envia um retrato financeiro limitado do próprio usuário; ele não cria nem altera movimentações.
+Em **Configurações → IA pessoal**, o usuário escolhe OpenAI, Gemini ou DeepSeek e informa a própria API key. A chave é criptografada com `VALURISE_AI_ENCRYPTION_KEY`, usada somente no servidor e nunca devolvida ao navegador. O chat envia um retrato financeiro limitado do próprio usuário; ele não cria nem altera movimentações.
 
 ## Deploy
 
