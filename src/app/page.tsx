@@ -5030,7 +5030,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
           <select value={provider} onChange={(event) => {
             const next = event.target.value as "openai" | "gemini" | "deepseek";
             setProvider(next);
-            setModel(next === "openai" ? "gpt-5" : next === "gemini" ? "gemini-3.8-flash" : "deepseek-chat");
+            setModel(next === "openai" ? "gpt-5" : next === "gemini" ? "gemini-3.8-flash" : "deepseek-flash");
           }} className="field mt-1">
             <option value="openai">OpenAI</option>
             <option value="gemini">Gemini</option>
@@ -5038,7 +5038,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
           </select>
         </label>
         <label className="text-sm">Modelo
-          <input value={model} onChange={(event) => setModel(event.target.value)} className="field mt-1" placeholder={provider === "openai" ? "gpt-5" : provider === "gemini" ? "gemini-3.8-flash" : "deepseek-chat"} />
+          <input value={model} onChange={(event) => setModel(event.target.value)} className="field mt-1" placeholder={provider === "openai" ? "gpt-5" : provider === "gemini" ? "gemini-3.8-flash" : "deepseek-flash"} />
         </label>
         <label className="text-sm">API key
           <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="field mt-1" type="password" autoComplete="off" placeholder={connected ? "Digite uma nova chave para substituir" : "Cole sua API key"} />
