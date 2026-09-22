@@ -2807,21 +2807,16 @@ function Goals({ data, save, toast }: any) {
     setSharing(true);
     let sharedGoalId = sharingGoal.sharedGoalId;
     if (!sharedGoalId) {
-      const created = await supabase
-        .from("shared_goals")
-        .insert({
-          owner_id: auth.user.id,
-          name: sharingGoal.name,
-          target_cents: sharingGoal.targetCents,
-          target_date: sharingGoal.targetDate || null,
-        })
-        .select("id")
-        .single();
+      const created = await supabase.rpc("create_shared_goal", {
+        p_name: sharingGoal.name,
+        p_target_cents: sharingGoal.targetCents,
+        p_target_date: sharingGoal.targetDate || null,
+      });
       if (created.error || !created.data) {
         setSharing(false);
-        return toast("Não foi possível preparar o compartilhamento.");
+        return toast("Não foi possível criar a meta compartilhada. Tente novamente.");
       }
-      sharedGoalId = created.data.id;
+      sharedGoalId = created.data;
     }
     const invitation = await supabase.rpc("invite_to_shared_goal", {
       p_goal_id: sharedGoalId,
