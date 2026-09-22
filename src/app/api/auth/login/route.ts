@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
+import { normalizeUsername } from "@/lib/auth/username";
 
 const payloadSchema = z.object({
   identifier: z.string().trim().min(1).max(120),
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
       const { data: profile } = await admin
         .from("profiles")
         .select("id")
-        .eq("username", identifier.toLowerCase())
+        .eq("username", normalizeUsername(identifier))
         .maybeSingle();
       if (!profile?.id) return invalidCredentials();
       const { data: authUser } = await admin.auth.admin.getUserById(profile.id);

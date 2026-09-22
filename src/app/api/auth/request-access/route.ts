@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
+import { normalizeUsername } from "@/lib/auth/username";
 
 const requestSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
-  username: z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,32}$/),
+  username: z.string(),
   email: z.string().trim().email().max(254),
   password: z.string().min(8).max(200),
 });
@@ -15,12 +16,19 @@ const requestSchema = z.object({
  * Auth and is never stored by Valurise. Only a Master approval can unban it.
  */
 export async function POST(request: NextRequest) {
-  const parsed = requestSchema.safeParse(await request.json().catch(() => null));
+  const body = await request.json().catch(() => null);
+  const parsed = requestSchema.safeParse(body && {
+    ...body,
+    username: normalizeUsername(typeof body.username === "string" ? body.username : ""),
+  });
   if (!parsed.success) {
     return NextResponse.json({ error: "Confira nome, e-mail, usuário e senha (mínimo de 8 caracteres)." }, { status: 400 });
   }
 
   const { fullName, username, email, password } = parsed.data;
+  if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
+    return NextResponse.json({ error: "Escolha um usuário com pelo menos 3 caracteres." }, { status: 400 });
+  }
   const admin = getSupabaseAdminClient();
   const { data: existingUsername } = await admin
     .from("profiles")
