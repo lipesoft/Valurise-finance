@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "framer-motion";
 import {
@@ -25,6 +25,7 @@ import {
   LogOut,
   Menu,
   PiggyBank,
+  Pencil,
   Plus,
   ReceiptText,
   Search,
@@ -33,6 +34,7 @@ import {
   SlidersHorizontal,
   Target,
   Tags,
+  Trash2,
   WalletCards,
   X,
 } from "lucide-react";
@@ -335,10 +337,16 @@ function App({ user, logout }: { user: User; logout: () => void }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [profile, setProfile] = useState<ProfilePreference>({ publicId: "" });
+  const dataRef = useRef(data);
+  const txRef = useRef(tx);
+  const profileRef = useRef(profile);
   const [theme, setTheme] = useState("dark");
   const [systemPrefersLight, setSystemPrefersLight] = useState(false);
   const [toast, setToast] = useState("");
   const [month, setMonth] = useState(startOfMonth(new Date()));
+  useEffect(() => { dataRef.current = data; }, [data]);
+  useEffect(() => { txRef.current = tx; }, [tx]);
+  useEffect(() => { profileRef.current = profile; }, [profile]);
   useEffect(() => {
     let stale = false;
     void (async () => {
@@ -410,19 +418,22 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     return () => window.clearTimeout(timer);
   }, [toast]);
   const saveData = (next: Data) => {
+    dataRef.current = next;
     setData(next);
     localStorage.setItem(key + ":data", JSON.stringify(next));
-    void saveValuriseState({ data: next, transactions: tx, profile });
+    void saveValuriseState({ data: next, transactions: txRef.current, profile: profileRef.current });
   };
   const saveTx = (next: FinanceTransaction[]) => {
+    txRef.current = next;
     setTx(next);
     localStorage.setItem(key + ":tx", JSON.stringify(next));
-    void saveValuriseState({ data, transactions: next, profile });
+    void saveValuriseState({ data: dataRef.current, transactions: next, profile: profileRef.current });
   };
   const saveProfile = (next: ProfilePreference) => {
+    profileRef.current = next;
     setProfile(next);
     localStorage.setItem(key + ":profile", JSON.stringify(next));
-    void saveValuriseState({ data, transactions: tx, profile: next });
+    void saveValuriseState({ data: dataRef.current, transactions: txRef.current, profile: next });
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       void supabase.auth.getUser().then(({ data: auth }) => {
@@ -484,7 +495,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     theme === "light" || (theme === "system" && systemPrefersLight);
   return (
     <MotionConfig reducedMotion="user">
-    <main className={useLightTheme ? "light min-h-dvh" : "min-h-dvh"}>
+    <main className={useLightTheme ? "light min-h-dvh overflow-x-clip" : "min-h-dvh overflow-x-clip"}>
       <aside className="panel fixed inset-y-0 hidden w-60 border-y-0 border-l-0 p-5 lg:block">
         <Brand />
         <LayoutGroup id="desktop-navigation">
@@ -573,7 +584,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
         </motion.div>
       )}
       </AnimatePresence>
-      <section className="mx-auto max-w-6xl pb-[calc(11rem+env(safe-area-inset-bottom))] lg:ml-60 lg:pb-40">
+      <section className="min-w-0 pb-[calc(11rem+env(safe-area-inset-bottom))] lg:ml-60 lg:pb-40">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-[var(--border)] bg-[var(--bg)]/95 px-4 backdrop-blur-xl lg:px-10">
           <div className="lg:hidden">
             <Brand />
@@ -700,7 +711,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
           <Goals data={data} save={saveData} toast={setToast} />
         )}
         {view === "categories" && (
-          <Categories data={data} tx={tx} month={month} save={saveData} toast={setToast} />
+          <Categories data={data} tx={tx} month={month} save={saveData} saveTx={saveTx} toast={setToast} />
         )}{" "}
         {view === "planning" && (
           <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} />
@@ -2429,8 +2440,22 @@ function SectionTitle({
     </div>
   );
 }
+function ItemActions({ onEdit, onDelete, label, className = "mt-3" }: { onEdit: () => void; onDelete: () => void; label: string; className?: string }) {
+  return <div className={`${className} flex items-center gap-3 text-xs`}>
+    <button onClick={onEdit} className="inline-flex items-center gap-1.5 font-medium text-[var(--accent)]" aria-label={`Editar ${label}`}><Pencil size={14} />Editar</button>
+    <button onClick={onDelete} className="inline-flex items-center gap-1.5 font-medium text-[var(--danger)]" aria-label={`Excluir ${label}`}><Trash2 size={14} />Excluir</button>
+  </div>;
+}
+function DeleteConfirm({ title, description, confirm, close }: { title: string; description: string; confirm: () => void; close: () => void }) {
+  return <Sheet close={close}><section className="space-y-4"><div><b className="text-lg">{title}</b><p className="muted mt-2 text-sm leading-6">{description}</p></div><div className="flex gap-2"><button onClick={close} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium">Cancelar</button><button onClick={confirm} className="h-11 flex-1 rounded-xl bg-[var(--danger)] px-3 text-sm font-semibold text-white">Excluir</button></div></section></Sheet>;
+}
+function centsInput(value?: number) {
+  return value === undefined ? "" : (value / 100).toFixed(2).replace(".", ",");
+}
 function Investments({ data, save, toast }: any) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState<any | null>(null);
   const [name, setName] = useState("");
   const [contributed, setContributed] = useState("");
   const [current, setCurrent] = useState("");
@@ -2439,33 +2464,31 @@ function Investments({ data, save, toast }: any) {
   const [aporteFor, setAporteFor] = useState("");
   const [aporte, setAporte] = useState("");
   const items = data.investments || [];
-  const add = () => {
+  const persist = () => {
     const cents = Math.round(Number(contributed.replace(",", ".")) * 100);
     if (!name.trim() || !cents) return;
+    const item = {
+      id: editing?.id || crypto.randomUUID(),
+      name: name.trim(),
+      contributedCents: cents,
+      currentCents: current ? Math.round(Number(current.replace(",", ".")) * 100) : undefined,
+      assetClass,
+      expectedAnnualRate: rate ? Number(rate.replace(",", ".")) : undefined,
+    };
     save({
       ...data,
-      investments: [
-        ...items,
-        {
-          id: crypto.randomUUID(),
-          name: name.trim(),
-          contributedCents: cents,
-          currentCents: current
-            ? Math.round(Number(current.replace(",", ".")) * 100)
-            : undefined,
-          assetClass,
-          expectedAnnualRate: rate ? Number(rate.replace(",", ".")) : undefined,
-        },
-      ],
+      investments: editing ? items.map((value: any) => value.id === editing.id ? item : value) : [...items, item],
     });
-    toast("Investimento salvo com sucesso.");
+    toast(editing ? "Investimento atualizado com sucesso." : "Investimento salvo com sucesso.");
     setName("");
     setContributed("");
     setCurrent("");
     setAssetClass("Renda fixa");
     setRate("");
     setAdding(false);
+    setEditing(null);
   };
+  const startEdit = (item: any) => { setEditing(item); setName(item.name); setContributed(centsInput(item.contributedCents)); setCurrent(centsInput(item.currentCents)); setAssetClass(item.assetClass || "Renda fixa"); setRate(item.expectedAnnualRate?.toString().replace(".", ",") || ""); };
   const addAporte = () => {
     const cents = Math.round(Number(aporte.replace(",", ".")) * 100);
     if (!aporteFor || !cents) return;
@@ -2533,6 +2556,7 @@ function Investments({ data, save, toast }: any) {
               >
                 + Registrar aporte
               </button>
+              <ItemActions label={`o investimento ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />
             </article>
           ))}
         </div>
@@ -2569,10 +2593,10 @@ function Investments({ data, save, toast }: any) {
           </button>
         </section>
       )}
-      {adding && (
-        <Sheet close={() => setAdding(false)}>
+      {(adding || editing) && (
+        <Sheet close={() => { setAdding(false); setEditing(null); }}>
           <section className="space-y-3">
-            <b className="text-lg">Novo investimento</b>
+            <b className="text-lg">{editing ? "Editar investimento" : "Novo investimento"}</b>
             <input
               className="field"
               value={name}
@@ -2616,42 +2640,39 @@ function Investments({ data, save, toast }: any) {
               placeholder="Rentabilidade anual estimada % (opcional)"
             />
             <button
-              onClick={add}
+              onClick={persist}
               className="primary h-11 w-full rounded-xl text-sm"
             >
-              Salvar investimento
+              {editing ? "Salvar alterações" : "Salvar investimento"}
             </button>
           </section>
         </Sheet>
       )}
+      {deleting && <DeleteConfirm title="Excluir investimento?" description={`“${deleting.name}” será removido da sua carteira. Essa ação não altera lançamentos já existentes.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, investments: items.filter((item: any) => item.id !== deleting.id) }); toast("Investimento excluído."); setDeleting(null); }} />}
     </section>
   );
 }
 function Budgets({ data, tx, month, save, toast }: any) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState<any | null>(null);
   const [category, setCategory] = useState("");
   const [limit, setLimit] = useState("");
   const items = data.budgets || [];
-  const add = () => {
+  const persist = () => {
     const cents = Math.round(Number(limit.replace(",", ".")) * 100);
     if (!category.trim() || !cents) return;
     save({
       ...data,
-      budgets: [
-        ...items,
-        {
-          id: crypto.randomUUID(),
-          category: category.trim(),
-          limitCents: cents,
-          month: format(month, "yyyy-MM"),
-        },
-      ],
+      budgets: editing ? items.map((item: any) => item.id === editing.id ? { ...item, category: category.trim(), limitCents: cents } : item) : [...items, { id: crypto.randomUUID(), category: category.trim(), limitCents: cents, month: format(month, "yyyy-MM") }],
     });
-    toast("Orçamento criado com sucesso.");
+    toast(editing ? "Orçamento atualizado com sucesso." : "Orçamento criado com sucesso.");
     setCategory("");
     setLimit("");
     setAdding(false);
+    setEditing(null);
   };
+  const startEdit = (item: any) => { setEditing(item); setCategory(item.category); setLimit(centsInput(item.limitCents)); };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
@@ -2694,6 +2715,7 @@ function Budgets({ data, tx, month, save, toast }: any) {
                 <p className="muted mt-2 text-sm">
                   {formatBRL(spent)} de {formatBRL(item.limitCents)} neste mês
                 </p>
+                <ItemActions label={`o orçamento de ${item.category}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />
               </article>
             );
           })}
@@ -2701,10 +2723,10 @@ function Budgets({ data, tx, month, save, toast }: any) {
       ) : (
         <Empty text="Nenhum orçamento criado." />
       )}
-      {adding && (
-        <Sheet close={() => setAdding(false)}>
+      {(adding || editing) && (
+        <Sheet close={() => { setAdding(false); setEditing(null); }}>
           <section className="space-y-3">
-            <b className="text-lg">Criar orçamento</b>
+            <b className="text-lg">{editing ? "Editar orçamento" : "Criar orçamento"}</b>
             <input
               className="field"
               value={category}
@@ -2725,19 +2747,22 @@ function Budgets({ data, tx, month, save, toast }: any) {
               placeholder="Limite mensal"
             />
             <button
-              onClick={add}
+              onClick={persist}
               className="primary h-11 w-full rounded-xl text-sm"
             >
-              Criar orçamento
+              {editing ? "Salvar alterações" : "Criar orçamento"}
             </button>
           </section>
         </Sheet>
       )}
+      {deleting && <DeleteConfirm title="Excluir orçamento?" description={`O limite de “${deleting.category}” deixará de ser acompanhado neste mês; seus lançamentos continuam preservados.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, budgets: items.filter((item: any) => item.id !== deleting.id) }); toast("Orçamento excluído."); setDeleting(null); }} />}
     </section>
   );
 }
 function Goals({ data, save, toast }: any) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState<any | null>(null);
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
   const [current, setCurrent] = useState("");
@@ -2759,30 +2784,22 @@ function Goals({ data, save, toast }: any) {
     setInvites(rows || []);
   };
   useEffect(() => { void loadInvites(); }, []);
-  const add = () => {
+  const persist = () => {
     const targetCents = Math.round(Number(target.replace(",", ".")) * 100);
     if (!name.trim() || !targetCents) return;
     save({
       ...data,
-      goals: [
-        ...items,
-        {
-          id: crypto.randomUUID(),
-          name: name.trim(),
-          targetCents,
-          currentCents:
-            Math.round(Number(current.replace(",", ".")) * 100) || 0,
-          targetDate: targetDate || undefined,
-        },
-      ],
+      goals: editing ? items.map((item: any) => item.id === editing.id ? { ...item, name: name.trim(), targetCents, currentCents: Math.round(Number(current.replace(",", ".")) * 100) || 0, targetDate: targetDate || undefined } : item) : [...items, { id: crypto.randomUUID(), name: name.trim(), targetCents, currentCents: Math.round(Number(current.replace(",", ".")) * 100) || 0, targetDate: targetDate || undefined }],
     });
-    toast("Meta criada com sucesso.");
+    toast(editing ? "Meta atualizada com sucesso." : "Meta criada com sucesso.");
     setName("");
     setTarget("");
     setCurrent("");
     setTargetDate("");
     setAdding(false);
+    setEditing(null);
   };
+  const startEdit = (item: any) => { setEditing(item); setName(item.name); setTarget(centsInput(item.targetCents)); setCurrent(centsInput(item.currentCents)); setTargetDate(item.targetDate || ""); };
   const contribute = () => {
     const cents = Math.round(Number(contribution.replace(",", ".")) * 100);
     if (!contributionFor || !cents) return;
@@ -2898,6 +2915,7 @@ function Goals({ data, save, toast }: any) {
                   </p>
                 )}
                 <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2"><button onClick={() => setContributionFor(item.id)} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button><button onClick={() => setSharingGoal(item)} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button></div>
+                <ItemActions label={`a meta ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />
               </article>
             );
           })}
@@ -2932,10 +2950,10 @@ function Goals({ data, save, toast }: any) {
           </button>
         </section>
       )}
-      {adding && (
-        <Sheet close={() => setAdding(false)}>
+      {(adding || editing) && (
+        <Sheet close={() => { setAdding(false); setEditing(null); }}>
           <section className="space-y-3">
-            <b className="text-lg">Criar meta</b>
+            <b className="text-lg">{editing ? "Editar meta" : "Criar meta"}</b>
             <input
               className="field"
               value={name}
@@ -2966,15 +2984,16 @@ function Goals({ data, save, toast }: any) {
               />
             </label>
             <button
-              onClick={add}
+              onClick={persist}
               className="primary h-11 w-full rounded-xl text-sm"
             >
-              Criar meta
+              {editing ? "Salvar alterações" : "Criar meta"}
             </button>
           </section>
         </Sheet>
       )}
       {sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Ela só verá esta meta depois de aceitar o convite; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
+      {deleting && <DeleteConfirm title="Excluir meta?" description={`A meta “${deleting.name}” e o seu progresso individual serão removidos. Isso não apaga lançamentos da sua conta.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, goals: items.filter((item: any) => item.id !== deleting.id) }); toast("Meta excluída."); setDeleting(null); }} />}
     </section>
   );
 }
@@ -2983,6 +3002,8 @@ function Empty({ text }: any) {
 }
 function Planning({ data, tx, month, save, toast }: any) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState<any | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(month);
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
@@ -3026,15 +3047,13 @@ function Planning({ data, tx, month, save, toast }: any) {
       bill.paidMonth !== currentMonth &&
       bill.dueDay >= today.getDate(),
   ).length;
-  const add = () => {
+  const persist = () => {
     const amountCents = Math.round(Number(amount.replace(",", ".")) * 100);
     const due = Number(dueDay);
     if (!name.trim() || !amountCents || due < 1 || due > 31) return;
     save({
       ...data,
-      recurringBills: [
-        ...bills,
-        {
+      recurringBills: editing ? bills.map((bill: any) => bill.id === editing.id ? { ...bill, name: name.trim(), amountCents, dueDay: due, category: category.trim() || undefined } : bill) : [...bills, {
           id: crypto.randomUUID(),
           name: name.trim(),
           amountCents,
@@ -3042,16 +3061,17 @@ function Planning({ data, tx, month, save, toast }: any) {
           category: category.trim() || undefined,
           frequency: "monthly",
           active: true,
-        },
-      ],
+        }],
     });
-    toast("Conta recorrente criada com sucesso.");
+    toast(editing ? "Conta recorrente atualizada." : "Conta recorrente criada com sucesso.");
     setName("");
     setAmount("");
     setDueDay("");
     setCategory("");
     setAdding(false);
+    setEditing(null);
   };
+  const startEdit = (bill: any) => { setEditing(bill); setName(bill.name); setAmount(centsInput(bill.amountCents)); setDueDay(String(bill.dueDay)); setCategory(bill.category || ""); };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
@@ -3123,7 +3143,7 @@ function Planning({ data, tx, month, save, toast }: any) {
                     {bill.category ? ` · ${bill.category}` : ""}
                   </small>
                 </span>
-                <b className="text-sm">{formatBRL(bill.amountCents)}</b>
+                <span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b><ItemActions className="mt-1 justify-end" label={`a conta recorrente ${bill.name}`} onEdit={() => startEdit(bill)} onDelete={() => setDeleting(bill)} /></span>
               </div>
             ))}
           </div>
@@ -3133,10 +3153,10 @@ function Planning({ data, tx, month, save, toast }: any) {
       </section>
       <CardInvoicePreview data={data} tx={tx} />
       <MonthlyReview data={data} save={save} />
-      {adding && (
-        <Sheet close={() => setAdding(false)}>
+      {(adding || editing) && (
+        <Sheet close={() => { setAdding(false); setEditing(null); }}>
           <section className="space-y-3">
-            <b className="text-lg">Nova conta recorrente</b>
+            <b className="text-lg">{editing ? "Editar conta recorrente" : "Nova conta recorrente"}</b>
             <input
               className="field"
               value={name}
@@ -3170,14 +3190,15 @@ function Planning({ data, tx, month, save, toast }: any) {
               ))}
             </datalist>
             <button
-              onClick={add}
+              onClick={persist}
               className="primary h-11 w-full rounded-xl text-sm"
             >
-              Criar conta recorrente
+              {editing ? "Salvar alterações" : "Criar conta recorrente"}
             </button>
           </section>
         </Sheet>
       )}
+      {deleting && <DeleteConfirm title="Excluir conta recorrente?" description={`“${deleting.name}” deixará de ser considerado nos próximos vencimentos e compromissos.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, recurringBills: bills.filter((bill: any) => bill.id !== deleting.id) }); toast("Conta recorrente excluída."); setDeleting(null); }} />}
     </section>
   );
 }
@@ -4143,6 +4164,8 @@ function Onboard({ user, finish }: any) {
 }
 function Institutions({ data, save, toast }: any) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<{ institution: Institution; account?: any } | null>(null);
+  const [deleting, setDeleting] = useState<{ institution: Institution; account?: any } | null>(null);
   const [n, setN] = useState("");
   const [accountName, setAccountName] = useState("");
   const [targetInstitution, setTargetInstitution] = useState("");
@@ -4169,6 +4192,15 @@ function Institutions({ data, save, toast }: any) {
     setExtraAccount("");
     setAdding(false);
   };
+  const saveEdit = () => {
+    if (!editing || !n.trim()) return;
+    const institutions = data.institutions.map((institution: Institution) => {
+      if (institution.id !== editing.institution.id) return institution;
+      if (!editing.account) return { ...institution, name: n.trim() };
+      return { ...institution, accounts: institution.accounts.map((account: any) => account.id === editing.account.id ? { ...account, name: n.trim() } : account) };
+    });
+    save({ ...data, institutions }); toast(editing.account ? "Conta atualizada com sucesso." : "Instituição atualizada com sucesso."); setEditing(null); setN("");
+  };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
@@ -4184,10 +4216,11 @@ function Institutions({ data, save, toast }: any) {
         <div className="mt-6 space-y-3">
           {data.institutions.map((i: Institution) => (
             <div className="panel rounded-2xl p-4" key={i.id}>
-              <b>{i.name}</b>
+              <div className="flex items-start justify-between gap-3"><b className="min-w-0 truncate">{i.name}</b><ItemActions className="mt-0 shrink-0" label={`a instituição ${i.name}`} onEdit={() => { setEditing({ institution: i }); setN(i.name); }} onDelete={() => setDeleting({ institution: i })} /></div>
               <p className="muted mt-1 text-sm">
                 {i.accounts.map((x) => x.name).join(", ") || "Sem conta"}
               </p>
+              {i.accounts.length > 0 && <div className="mt-3 divide-y divide-[var(--border)]">{i.accounts.map((account: any) => <div key={account.id} className="flex items-center justify-between gap-3 py-2"><span className="min-w-0"><b className="block truncate text-sm">{account.name}</b><small className="muted">Saldo inicial: {formatBRL(account.balance || 0)}</small></span><ItemActions className="mt-0 shrink-0" label={`a conta ${account.name}`} onEdit={() => { setEditing({ institution: i, account }); setN(account.name); }} onDelete={() => setDeleting({ institution: i, account })} /></div>)}</div>}
             </div>
           ))}
         </div>
@@ -4284,45 +4317,48 @@ function Institutions({ data, save, toast }: any) {
           </section>
         </Sheet>
       )}
+      {editing && <Sheet close={() => { setEditing(null); setN(""); }}><section className="space-y-3"><b className="text-lg">Editar {editing.account ? "conta" : "instituição"}</b><input autoFocus className="field" value={n} onChange={(event) => setN(event.target.value)} placeholder={editing.account ? "Nome da conta" : "Nome da instituição"}/><button onClick={saveEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
+      {deleting && <DeleteConfirm title={`Excluir ${deleting.account ? "conta" : "instituição"}?`} description={deleting.account ? `A conta “${deleting.account.name}” será removida. Confirme somente se não houver lançamentos que dependam dela.` : `A instituição “${deleting.institution.name}”, suas contas e cartões serão removidos da sua organização. Lançamentos históricos permanecem no extrato.`} close={() => setDeleting(null)} confirm={() => { const institutions = data.institutions.flatMap((institution: Institution) => { if (institution.id !== deleting.institution.id) return [institution]; if (!deleting.account) return []; return [{ ...institution, accounts: institution.accounts.filter((account: any) => account.id !== deleting.account.id) }]; }); save({ ...data, institutions }); toast(deleting.account ? "Conta excluída." : "Instituição excluída."); setDeleting(null); }} />}
     </section>
   );
 }
 function Cards({ data, save, toast }: any) {
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<{ institution: Institution; card: any } | null>(null);
+  const [deleting, setDeleting] = useState<{ institution: Institution; card: any } | null>(null);
   const [institutionId, setInstitutionId] = useState("");
   const [nickname, setNickname] = useState("");
   const [limit, setLimit] = useState("");
   const [closingDay, setClosingDay] = useState("");
   const [dueDay, setDueDay] = useState("");
 
-  const addCard = () => {
+  const saveCard = () => {
     if (!institutionId || !Number(limit.replace(",", "."))) return;
     const institutions = data.institutions.map((institution: Institution) =>
       institution.id === institutionId
         ? {
             ...institution,
-            cards: [
-              ...institution.cards,
-              {
-                id: crypto.randomUUID(),
+            cards: editing ? institution.cards.map((card: any) => card.id === editing.card.id ? {
+                ...card,
                 name: nickname.trim() || "Crédito",
                 limit: Math.round(Number(limit.replace(",", ".")) * 100),
                 closingDay: closingDay || undefined,
                 dueDay: dueDay || undefined,
                 bestPurchaseDay: bestPurchaseDay(closingDay)?.toString(),
-              },
-            ],
+              } : card) : [...institution.cards, { id: crypto.randomUUID(), name: nickname.trim() || "Crédito", limit: Math.round(Number(limit.replace(",", ".")) * 100), closingDay: closingDay || undefined, dueDay: dueDay || undefined, bestPurchaseDay: bestPurchaseDay(closingDay)?.toString() }],
           }
         : institution,
     );
     save({ ...data, institutions });
-    toast("Cartão criado com sucesso.");
+    toast(editing ? "Cartão atualizado com sucesso." : "Cartão criado com sucesso.");
     setNickname("");
     setLimit("");
     setClosingDay("");
     setDueDay("");
     setAdding(false);
+    setEditing(null);
   };
+  const startEdit = ({ institution, card }: { institution: Institution; card: any }) => { setEditing({ institution, card }); setInstitutionId(institution.id); setNickname(card.name); setLimit(centsInput(card.limit)); setClosingDay(card.closingDay || ""); setDueDay(card.dueDay || ""); setAdding(true); };
 
   const cards = data.institutions.flatMap((institution: Institution) =>
     institution.cards.map((card) => ({ institution, card })),
@@ -4357,16 +4393,17 @@ function Cards({ data, save, toast }: any) {
                   Melhor dia para comprar: dia {card.bestPurchaseDay}
                 </p>
               )}
+              <ItemActions label={`o cartão ${card.name}`} onEdit={() => startEdit({ institution, card })} onDelete={() => setDeleting({ institution, card })} />
             </article>
           ))}
         </div>
       ) : (
         <Empty text="Você ainda não possui cartões cadastrados." />
       )}
-      {data.institutions.length && adding ? (
-        <Sheet close={() => setAdding(false)}>
+      {data.institutions.length && (adding || editing) ? (
+        <Sheet close={() => { setAdding(false); setEditing(null); }}>
           <section className="space-y-3">
-            <b className="text-sm">Adicionar cartão</b>
+            <b className="text-sm">{editing ? "Editar cartão" : "Adicionar cartão"}</b>
             <select
               value={institutionId}
               onChange={(event) => setInstitutionId(event.target.value)}
@@ -4407,10 +4444,10 @@ function Cards({ data, save, toast }: any) {
               placeholder="Dia de vencimento (opcional)"
             />
             <button
-              onClick={addCard}
+              onClick={saveCard}
               className="primary h-11 w-full rounded-xl text-sm"
             >
-              Adicionar cartão
+              {editing ? "Salvar alterações" : "Adicionar cartão"}
             </button>
           </section>
         </Sheet>
@@ -4421,13 +4458,24 @@ function Cards({ data, save, toast }: any) {
           </p>
         )
       )}
+      {deleting && <DeleteConfirm title="Excluir cartão?" description={`O cartão “${deleting.card.name}” será removido de ${deleting.institution.name}. Compras já registradas no extrato não serão apagadas.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, institutions: data.institutions.map((institution: Institution) => institution.id === deleting.institution.id ? { ...institution, cards: institution.cards.filter((card: any) => card.id !== deleting.card.id) } : institution) }); toast("Cartão excluído."); setDeleting(null); }} />}
     </section>
   );
 }
-function Categories({ data, tx, month, save, toast }: any) {
+function Categories({ data, tx, month, save, saveTx, toast }: any) {
   const [n, setN] = useState("");
   const [tag, setTag] = useState("");
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<{ kind: "category" | "tag"; value: string } | null>(null);
+  const [deleting, setDeleting] = useState<{ kind: "category" | "tag"; value: string } | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const applyEdit = () => {
+    if (!editing || !editValue.trim()) return;
+    const oldValue = editing.value, nextValue = editValue.trim();
+    if (editing.kind === "category") { save({ ...data, categories: data.categories.map((item: string) => item === oldValue ? nextValue : item), budgets: (data.budgets || []).map((item: any) => item.category === oldValue ? { ...item, category: nextValue } : item) }); saveTx(tx.map((item: FinanceTransaction) => item.category === oldValue ? { ...item, category: nextValue } : item)); }
+    else save({ ...data, tags: (data.tags || []).map((item: string) => item === oldValue ? nextValue : item) });
+    toast(`${editing.kind === "category" ? "Categoria" : "Etiqueta"} atualizada com sucesso.`); setEditing(null); setEditValue("");
+  };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
@@ -4443,7 +4491,7 @@ function Categories({ data, tx, month, save, toast }: any) {
             className="rounded-full bg-[var(--panel2)] px-3 py-2 text-sm"
             key={x}
           >
-            {x}
+            <span>{x}</span><button className="ml-2 text-[var(--accent)]" aria-label={`Editar categoria ${x}`} onClick={() => { setEditing({ kind: "category", value: x }); setEditValue(x); }}><Pencil size={12} /></button><button className="ml-1 text-[var(--danger)]" aria-label={`Excluir categoria ${x}`} onClick={() => setDeleting({ kind: "category", value: x })}><Trash2 size={12} /></button>
           </span>
         ))}
       </div>
@@ -4459,7 +4507,7 @@ function Categories({ data, tx, month, save, toast }: any) {
                 key={item}
                 className="rounded-full bg-[var(--panel2)] px-3 py-1.5 text-xs"
               >
-                #{item}
+                #{item}<button className="ml-2 text-[var(--accent)]" aria-label={`Editar etiqueta ${item}`} onClick={() => { setEditing({ kind: "tag", value: item }); setEditValue(item); }}><Pencil size={12} /></button><button className="ml-1 text-[var(--danger)]" aria-label={`Excluir etiqueta ${item}`} onClick={() => setDeleting({ kind: "tag", value: item })}><Trash2 size={12} /></button>
               </span>
             ))}
           </div>
@@ -4512,6 +4560,8 @@ function Categories({ data, tx, month, save, toast }: any) {
           </section>
         </Sheet>
       )}
+      {editing && <Sheet close={() => setEditing(null)}><section className="space-y-3"><b className="text-lg">Editar {editing.kind === "category" ? "categoria" : "etiqueta"}</b><input autoFocus className="field" value={editValue} onChange={(event) => setEditValue(event.target.value)} /><button onClick={applyEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
+      {deleting && <DeleteConfirm title={`Excluir ${deleting.kind === "category" ? "categoria" : "etiqueta"}?`} description={deleting.kind === "category" ? `A categoria “${deleting.value}” sairá da lista. Lançamentos anteriores continuarão no extrato com a classificação original.` : `A etiqueta “${deleting.value}” será removida da lista de etiquetas disponíveis.`} close={() => setDeleting(null)} confirm={() => { if (deleting.kind === "category") save({ ...data, categories: data.categories.filter((item: string) => item !== deleting.value), budgets: (data.budgets || []).filter((item: any) => item.category !== deleting.value) }); else save({ ...data, tags: (data.tags || []).filter((item: string) => item !== deleting.value) }); toast(`${deleting.kind === "category" ? "Categoria" : "Etiqueta"} excluída.`); setDeleting(null); }} />}
     </section>
   );
 }
@@ -4615,6 +4665,11 @@ function Statement({ tx, month, save, toast }: any) {
   const [min, setMin] = useState("");
   const [max, setMax] = useState("");
   const [selected, setSelected] = useState<FinanceTransaction | null>(null);
+  const [editing, setEditing] = useState<FinanceTransaction | null>(null);
+  const [deleting, setDeleting] = useState<FinanceTransaction | null>(null);
+  const [editDescription, setEditDescription] = useState("");
+  const [editCategory, setEditCategory] = useState("");
+  const [editAmount, setEditAmount] = useState("");
   const [scope, setScope] = useState<"month" | "all">("month");
   const visible = tx.filter((item: FinanceTransaction) => {
     const haystack =
@@ -4832,6 +4887,12 @@ function Statement({ tx, month, save, toast }: any) {
             </div>
             <div className="flex gap-2">
               <button
+                onClick={() => { setEditing(selected); setEditDescription(selected.description || ""); setEditCategory(selected.category); setEditAmount(centsInput(selected.amountCents)); setSelected(null); }}
+                className="rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"
+              >
+                Editar
+              </button>
+              <button
                 onClick={() => {
                   const duplicate = {
                     ...selected,
@@ -4848,15 +4909,7 @@ function Statement({ tx, month, save, toast }: any) {
                 Duplicar
               </button>
               <button
-                onClick={() => {
-                  save(
-                    tx.filter(
-                      (item: FinanceTransaction) => item.id !== selected.id,
-                    ),
-                  );
-                  toast("Lançamento excluído.");
-                  setSelected(null);
-                }}
+                onClick={() => { setDeleting(selected); setSelected(null); }}
                 className="rounded-xl px-4 py-3 text-sm text-[var(--danger)]"
               >
                 Excluir
@@ -4865,6 +4918,8 @@ function Statement({ tx, month, save, toast }: any) {
           </section>
         </Sheet>
       )}
+      {editing && <Sheet close={() => setEditing(null)}><section className="space-y-3"><b className="text-lg">Editar lançamento</b><input className="field" value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder="Descrição"/><input className="field" value={editCategory} onChange={(event) => setEditCategory(event.target.value)} placeholder="Categoria"/><input className="field" inputMode="decimal" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} placeholder="Valor"/><button onClick={() => { const amountCents = Math.round(Number(editAmount.replace(",", ".")) * 100); if (!amountCents || !editCategory.trim()) return; save(tx.map((item: FinanceTransaction) => item.id === editing.id ? { ...item, description: editDescription.trim() || undefined, category: editCategory.trim(), amountCents } : item)); toast("Lançamento atualizado com sucesso."); setEditing(null); }} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
+      {deleting && <DeleteConfirm title="Excluir lançamento?" description={`O lançamento de ${formatBRL(deleting.amountCents)} será removido. Os totais, orçamentos e o dashboard serão recalculados.`} close={() => setDeleting(null)} confirm={() => { save(tx.filter((item: FinanceTransaction) => item.id !== deleting.id)); toast("Lançamento excluído."); setDeleting(null); }} />}
     </section>
   );
 }

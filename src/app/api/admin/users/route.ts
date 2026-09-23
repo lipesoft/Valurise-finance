@@ -26,12 +26,16 @@ export async function GET(request: NextRequest) {
   if (usersError || profilesError) return NextResponse.json({ error: "Não foi possível carregar usuários." }, { status: 500 });
   const profileById = new Map((profiles ?? []).map((profile) => [profile.id, profile]));
   return NextResponse.json({
-    // The database trigger normally creates a profile for every Auth user.
-    // Starting from Auth as well means a historical account can never stay on
-    // the waiting screen without becoming visible to the Master.
+    // Normally every Auth user has a profile created by the database trigger.
+    // We deliberately start from Auth here as well, so a historical Auth-only
+    // account cannot be left forever on the waiting screen without appearing
+    // in the Master queue.
     users: (users.users ?? []).map((authUser) => {
       const profile = profileById.get(authUser.id);
       const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
+      // A historical account may exist in Supabase Auth without a profile if
+      // its creation trigger failed. It is still a real access request, so it
+      // must be visible and approvable by the Master instead of disappearing.
       const fallbackProfile = profile ?? {
         id: authUser.id,
         full_name: typeof metadata.full_name === "string" ? metadata.full_name : null,
@@ -80,7 +84,7 @@ export async function POST(request: NextRequest) {
     if (targetError || !target.user) {
       return NextResponse.json({ error: "Conta não encontrada." }, { status: 404 });
     }
-    const metadata = (target.user.user_metadata ?? {}) as Record<string, unknown>;
+    const metadata = (target.user?.user_metadata ?? {}) as Record<string, unknown>;
     const profileUpdate = await admin
       .from("profiles")
       .upsert({
