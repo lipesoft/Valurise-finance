@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { normalizeUsername } from "@/lib/auth/username";
@@ -18,10 +19,30 @@ const invalidCredentials = () =>
  * or email exists, and no password is stored or compared by this application.
  */
 export async function POST(request: NextRequest) {
-  const parsed = payloadSchema.safeParse(await request.json());
+  const origin = request.headers.get("origin");
+  if (origin && new URL(origin).origin !== request.nextUrl.origin) return invalidCredentials();
+  if (Number(request.headers.get("content-length") || 0) > 8_000) return invalidCredentials();
+  const rawBody = await request.text().catch(() => "");
+  if (rawBody.length > 8_000) return invalidCredentials();
+  let body: unknown = null;
+  try { body = JSON.parse(rawBody); } catch { return invalidCredentials(); }
+  const parsed = payloadSchema.safeParse(body);
   if (!parsed.success) return invalidCredentials();
 
   const { identifier, password } = parsed.data;
+  const address = request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim()
+    || request.headers.get("x-real-ip") || "unknown";
+  const rateKey = createHash("sha256").update(`login-ip\0${address}`).digest("hex");
+  try {
+    const admin = getSupabaseAdminClient();
+    const { data: allowed, error } = await admin.rpc("consume_public_rate_limit", {
+      p_key: rateKey, p_max_attempts: 20, p_window_seconds: 900,
+    });
+    if (error) return NextResponse.json({ error: "Login temporariamente indisponível. Tente novamente mais tarde." }, { status: 503 });
+    if (allowed !== true) return NextResponse.json({ error: "Muitas tentativas. Aguarde 15 minutos antes de tentar novamente." }, { status: 429, headers: { "Retry-After": "900" } });
+  } catch {
+    return NextResponse.json({ error: "Autenticação indisponível." }, { status: 503 });
+  }
   let email = identifier.toLowerCase();
 
   try {

@@ -202,22 +202,22 @@ export default function Page() {
   );
 }
 function Login({ done }: { done: (u: User) => void }) {
-  const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">(
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("reset-password") ? "reset" : "login",
-  );
+  const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">("login");
+  const [inviteToken, setInviteToken] = useState("");
   const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState(""), [requestSent, setRequestSent] = useState(false), [showPassword, setShowPassword] = useState(false);
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const supabase = getSupabaseBrowserClient();
   const suggestedUsername = normalizeUsername(username);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("invite") || "";
+    setInviteToken(token);
+    if (params.has("reset-password")) setMode("reset");
+    else if (token) setMode("signup");
+  }, []);
   async function finishSupabaseUser(authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
     if (!supabase) return;
-    const inviteToken = new URLSearchParams(window.location.search).get("invite");
-    if (inviteToken) {
-      const { data: session } = await supabase.auth.getSession();
-      if (session.session) {
-        const redeemed = await supabase.rpc("redeem_access_invite", { p_token: inviteToken });
-        if (!redeemed.error) window.history.replaceState({}, "", "/");
-      }
-    }
     const { data: profile } = await supabase.from("profiles").select("full_name, account_status, account_role").eq("id", authUser.id).maybeSingle();
     done({
       username: authUser.id,
@@ -248,15 +248,18 @@ function Login({ done }: { done: (u: User) => void }) {
     }
     if (supabase && mode === "signup") {
       if (!name.trim() || !username.trim()) return setE("Informe seu nome e um usuário.");
-      const response = await fetch("/api/auth/request-access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fullName: name.trim(), username: suggestedUsername, email: u.trim(), password: p }) });
+      if (!privacyAccepted || !termsAccepted) return setE("Leia e aceite a Política de Privacidade e os Termos de Uso.");
+      const response = await fetch("/api/auth/request-access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fullName: name.trim(), username: suggestedUsername, email: u.trim(), password: p, privacyAccepted, termsAccepted, ...(inviteToken ? { inviteToken } : {}) }) });
       const payload = await response.json();
       if (!response.ok) return setE(payload.error || "Não foi possível solicitar o cadastro.");
       setRequestSent(true);
+      if (inviteToken) window.history.replaceState({}, "", "/");
       return;
     }
     if (supabase && mode === "forgot") {
-      const { error } = await supabase.auth.resetPasswordForEmail(u.trim(), { redirectTo: `${window.location.origin}/?reset-password=1` });
-      if (error) return setE(error.message);
+      const response = await fetch("/api/auth/password-reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: u.trim() }) });
+      const payload = await response.json();
+      if (!response.ok) return setE(payload.error || "Não foi possível solicitar a recuperação.");
       setNotice("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.");
       return;
     }
@@ -280,17 +283,18 @@ function Login({ done }: { done: (u: User) => void }) {
             <h1>VALURISE</h1>
             <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
           </motion.section>
-          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Esperando aprovação do Master</h2><p className="muted mt-3 text-sm leading-6">Sua solicitação foi registrada. Assim que ela for aprovada, você poderá entrar usando o e-mail ou usuário e a senha que escolheu.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
-            <div className="login-card-heading"><h2>{mode === "signup" ? "Solicite seu acesso" : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? "Seu cadastro será enviado para aprovação." : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
+          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Esperando aprovação do Master</h2><p className="muted mt-3 text-sm leading-6">Se os dados ainda não estiverem vinculados a uma conta, sua solicitação será analisada pelo Master. Se você já tem cadastro, entre ou recupere sua senha.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+            <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Seu cadastro será vinculado ao convite e enviado para aprovação." : "Seu cadastro será enviado para aprovação.") : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
             <div className="login-fields">
               {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => setName(x.target.value)} className="field" placeholder="Como podemos te chamar?" autoComplete="name" /><label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => setUsername(x.target.value)} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" />{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
               {mode !== "reset" && <><label className="login-field-label" htmlFor="login-identifier">{mode === "login" ? "Identificação" : "E-mail"}</label><input id="login-identifier" value={u} onChange={(x) => setU(x.target.value)} className="field" type={mode === "login" ? "text" : "email"} placeholder={mode === "login" ? "Seu usuário ou e-mail" : "voce@exemplo.com"} autoComplete={mode === "login" ? "username" : "email"} /></>}
               {mode !== "forgot" && <><label className="login-field-label" htmlFor="login-password">{mode === "reset" ? "Nova senha" : "Senha"}</label><div className="login-password-wrap"><LockKeyhole className="login-field-icon" size={18} aria-hidden="true" /><input id="login-password" value={p} onChange={(x) => setP(x.target.value)} className="field login-password" type={showPassword ? "text" : "password"} placeholder={mode === "reset" ? "Crie uma nova senha" : "Digite sua senha"} autoComplete={mode === "reset" ? "new-password" : "current-password"} /><button className="login-password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></>}
             </div>
+            {mode === "signup" && <div className="consent-options"><label className="consent-option"><input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} /><span>Li e aceito a <a href="/privacidade" target="_blank" rel="noreferrer">Política de Privacidade</a>.</span></label><label className="consent-option"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} /><span>Li e aceito os <a href="/termos" target="_blank" rel="noreferrer">Termos de Uso</a>.</span></label></div>}
             <AnimatePresence>{e && <motion.p className="login-feedback login-feedback-error" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: motionTokens.duration.fast }}>{e}</motion.p>}</AnimatePresence>
             {notice && <p className="login-feedback login-feedback-success">{notice}</p>}
             <button className="login-submit primary" type="submit"><span>{mode === "signup" ? "Solicitar cadastro" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span><ArrowRight size={18} aria-hidden="true" /></button>
-            {supabase && <div className="login-actions">{mode !== "login" && <button type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}{mode === "login" && <><button type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button type="button" onClick={() => { setMode("signup"); setE(""); }}>Criar conta</button></>}</div>}
+            {supabase && <div className="login-actions">{mode !== "login" && <button type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}{mode === "login" && <><button type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button type="button" onClick={() => { setMode("signup"); setE(""); setPrivacyAccepted(false); setTermsAccepted(false); }}>Criar conta</button></>}</div>}
           </motion.form>}
           <motion.footer className="login-trust" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.28, delay: 0.28 }}><ShieldCheck size={15} aria-hidden="true" /> Dados protegidos com autenticação segura</motion.footer>
         </div>
@@ -315,7 +319,7 @@ function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
           <div className="mt-auto rounded-2xl bg-[var(--panel)] p-3"><small className="muted block text-[10px] font-semibold tracking-wider">SEGURANÇA</small><span className="mt-1 flex items-center gap-1.5 text-xs text-[var(--accent)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />Acesso protegido</span></div>
         </aside>
         <div className="min-w-0 flex-1 lg:pl-64">
-          <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] backdrop-blur-xl"><div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4 sm:px-6"><div className="flex items-center gap-3 lg:hidden"><Image src="/valurise-icon.webp" alt="Valurise" width={72} height={72} className="h-9 w-9 object-contain" priority /><b className="text-sm tracking-tight">VALURISE</b></div><span className="hidden items-center gap-2 rounded-full bg-[var(--panel)] px-3 py-2 text-xs lg:inline-flex"><span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />Sistema operacional</span><div className="ml-auto flex items-center gap-3"><span aria-label="Notificações do Master" className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]"><Bell size={18}/></span><button onClick={logout} className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs font-medium">Sair</button></div></div></header>
+          <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] backdrop-blur-xl"><div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4 sm:px-6"><div className="flex items-center gap-3 lg:hidden"><Image src="/valurise-icon.webp" alt="Valurise" width={72} height={72} className="h-9 w-9 object-contain" priority /><b className="text-sm tracking-tight">VALURISE</b></div><span className="hidden items-center gap-2 rounded-full bg-[var(--panel)] px-3 py-2 text-xs lg:inline-flex"><span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />Painel de governança</span><div className="ml-auto flex items-center gap-3"><span aria-label="Notificações do Master" className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]"><Bell size={18}/></span><button onClick={logout} className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs font-medium">Sair</button></div></div></header>
           <motion.section className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-12" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: motionTokens.duration.normal, ease: motionTokens.ease.enter }}><span className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)]"><ShieldCheck size={14} /> PAINEL MASTER · ACESSO RESTRITO</span><div className="mt-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Gestão de titulares<br className="hidden sm:block" /> e solicitações</h1><p className="muted mt-3 max-w-xl text-sm leading-6">Controle de acessos da Valurise. Esta área não exibe dados financeiros dos usuários.</p></div><span className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs text-[var(--muted)]">Master: {user.name}</span></div>{message && <div role="status" className="mt-5 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/10 px-4 py-3 text-sm text-[var(--accent)]">{message}</div>}<section className="panel mt-7 rounded-3xl p-5 sm:p-6"><MasterUsers toast={setMessage} /></section><p className="muted mt-5 text-xs leading-5">Aprovar libera o acesso. Desativar bloqueia temporariamente. Lixeira mantém a conta recuperável; a exclusão definitiva só é possível a partir da lixeira.</p></motion.section>
         </div>
       </main>
@@ -323,12 +327,16 @@ function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
   );
 }
 function App({ user, logout }: { user: User; logout: () => void }) {
-  const key = `lume:v2:${user.username}`;
+  const key = `valurise:v2:${user.username}`;
+  const legacyKey = `lume:v2:${user.username}`;
   const [data, setData] = useState<Data>({
     categories: [],
     institutions: [],
     onboarded: false,
   });
+  const [stateReady, setStateReady] = useState(false);
+  const [stateLoadError, setStateLoadError] = useState(false);
+  const [stateConflict, setStateConflict] = useState(false);
   const [tx, setTx] = useState<FinanceTransaction[]>([]);
   const [view, setView] = useState<View>("dashboard");
   const [sheet, setSheet] = useState(false);
@@ -340,6 +348,9 @@ function App({ user, logout }: { user: User; logout: () => void }) {
   const dataRef = useRef(data);
   const txRef = useRef(tx);
   const profileRef = useRef(profile);
+  const stateVersionRef = useRef<number | null>(null);
+  const stateWriteQueue = useRef<Promise<void>>(Promise.resolve());
+  const stateConflictRef = useRef(false);
   const [theme, setTheme] = useState("dark");
   const [systemPrefersLight, setSystemPrefersLight] = useState(false);
   const [toast, setToast] = useState("");
@@ -349,8 +360,16 @@ function App({ user, logout }: { user: User; logout: () => void }) {
   useEffect(() => { profileRef.current = profile; }, [profile]);
   useEffect(() => {
     let stale = false;
+    setStateReady(false);
+    setStateLoadError(false);
     void (async () => {
       try {
+        for (const suffix of [":data", ":tx", ":theme", ":profile"]) {
+          const currentValue = localStorage.getItem(key + suffix);
+          const legacyValue = localStorage.getItem(legacyKey + suffix);
+          if (!currentValue && legacyValue) localStorage.setItem(key + suffix, legacyValue);
+          if (localStorage.getItem(key + suffix)) localStorage.removeItem(legacyKey + suffix);
+        }
         const localData = JSON.parse(
           localStorage.getItem(key + ":data") ||
             '{"categories":[],"institutions":[],"onboarded":false}',
@@ -365,11 +384,13 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             };
         if (!savedProfile)
           localStorage.setItem(key + ":profile", JSON.stringify(localProfile));
-        const remote = await loadValuriseState<
+        const remoteResult = await loadValuriseState<
           Data,
           FinanceTransaction,
           ProfilePreference
         >();
+        const remote = remoteResult?.state || null;
+        stateVersionRef.current = remoteResult?.version ?? null;
         if (stale) return;
         const supabase = getSupabaseBrowserClient();
         const { data: databaseProfile } = supabase
@@ -398,13 +419,29 @@ function App({ user, logout }: { user: User; logout: () => void }) {
         setData(state.data);
         setTx(state.transactions);
         setProfile(state.profile);
-        if (!remote) void saveValuriseState(state);
-      } catch {}
+        if (!remote) {
+          const result = await saveValuriseState(state, null);
+          if (result.synced) stateVersionRef.current = result.version ?? 1;
+          if (result.reason === "conflict") {
+            const latest = await loadValuriseState<Data, FinanceTransaction, ProfilePreference>();
+            if (!latest) throw new Error("Outra sessão criou seus dados durante o carregamento.");
+            stateVersionRef.current = latest.version;
+            setData(latest.state.data); setTx(latest.state.transactions); setProfile(latest.state.profile);
+            localStorage.setItem(key + ":data", JSON.stringify(latest.state.data));
+            localStorage.setItem(key + ":tx", JSON.stringify(latest.state.transactions));
+            localStorage.setItem(key + ":profile", JSON.stringify(latest.state.profile));
+          }
+          if (!result.synced && result.reason !== "not-configured" && result.reason !== "conflict") setToast("Seus dados locais abriram, mas ainda não sincronizaram. Tente novamente antes de trocar de dispositivo.");
+        }
+        if (!stale) setStateReady(true);
+      } catch {
+        if (!stale) setStateLoadError(true);
+      }
     })();
     return () => {
       stale = true;
     };
-  }, [key, user.username]);
+  }, [key, legacyKey, user.username]);
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: light)");
     const update = () => setSystemPrefersLight(media.matches);
@@ -421,19 +458,19 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     dataRef.current = next;
     setData(next);
     localStorage.setItem(key + ":data", JSON.stringify(next));
-    void saveValuriseState({ data: next, transactions: txRef.current, profile: profileRef.current });
+    persistState({ data: next, transactions: txRef.current, profile: profileRef.current });
   };
   const saveTx = (next: FinanceTransaction[]) => {
     txRef.current = next;
     setTx(next);
     localStorage.setItem(key + ":tx", JSON.stringify(next));
-    void saveValuriseState({ data: dataRef.current, transactions: next, profile: profileRef.current });
+    persistState({ data: dataRef.current, transactions: next, profile: profileRef.current });
   };
   const saveProfile = (next: ProfilePreference) => {
     profileRef.current = next;
     setProfile(next);
     localStorage.setItem(key + ":profile", JSON.stringify(next));
-    void saveValuriseState({ data: dataRef.current, transactions: txRef.current, profile: next });
+    persistState({ data: dataRef.current, transactions: txRef.current, profile: next });
     const supabase = getSupabaseBrowserClient();
     if (supabase) {
       void supabase.auth.getUser().then(({ data: auth }) => {
@@ -445,6 +482,22 @@ function App({ user, logout }: { user: User; logout: () => void }) {
         }
       });
     }
+  };
+  const persistState = (state: { data: Data; transactions: FinanceTransaction[]; profile: ProfilePreference }) => {
+    const write = async () => {
+      if (stateConflictRef.current) return;
+      const result = await saveValuriseState(state, stateVersionRef.current);
+      if (result.synced) { stateVersionRef.current = result.version ?? 1; return; }
+      if (result.reason === "conflict") {
+        stateConflictRef.current = true;
+        setStateConflict(true);
+        return;
+      }
+      if (result.reason !== "not-configured") setToast("Alteração salva neste dispositivo, mas não sincronizou com sua conta.");
+    };
+    stateWriteQueue.current = stateWriteQueue.current.catch(() => undefined).then(write).catch(() => {
+      setToast("Não foi possível sincronizar esta alteração com sua conta.");
+    });
   };
   const createCategory = (name: string) => {
     const clean = name.trim();
@@ -480,6 +533,8 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     () => getFinancialNotifications(data, tx),
     [data, tx],
   );
+  if (!stateReady)
+    return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5 text-center"><section className="panel w-full max-w-md rounded-2xl p-6"><b className="text-base">{stateLoadError ? "Não foi possível confirmar seus dados" : "Sincronizando sua conta…"}</b><p className="muted mt-2 text-sm leading-6">{stateLoadError ? "Por segurança, a Valurise não vai substituir os dados salvos. Verifique sua conexão e tente novamente." : "Estamos carregando seus dados financeiros com segurança."}</p>{stateLoadError && <button onClick={() => window.location.reload()} className="primary mt-4 min-h-11 rounded-xl px-4 text-sm font-semibold">Tentar novamente</button>}</section></main>;
   if (!data.onboarded)
     return (
       <Onboard
@@ -636,6 +691,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             </button>
           </div>
         </header>
+        {stateConflict && <section role="alert" className="mx-4 mt-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 lg:mx-10"><b className="text-sm">Seus dados foram alterados em outro dispositivo</b><p className="muted mt-1 text-xs leading-5">A sincronização foi pausada para evitar sobrescrever uma versão. Exporte a cópia local ou recarregue para continuar com a versão mais recente da conta.</p><div className="mt-3 flex flex-wrap gap-2"><button onClick={() => { const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), data: dataRef.current, transactions: txRef.current, profile: profileRef.current }, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `valurise-copia-local-${format(new Date(), "yyyy-MM-dd")}.json`; link.click(); URL.revokeObjectURL(url); }} className="min-h-11 rounded-xl bg-[var(--panel2)] px-3 text-xs">Exportar cópia local</button><button onClick={() => window.location.reload()} className="min-h-11 rounded-xl bg-[var(--panel2)] px-3 text-xs">Recarregar versão sincronizada</button></div></section>}
         {profileOpen && (
           <ProfileSheet
             user={user}
@@ -726,6 +782,8 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             saveData={saveData}
             saveTx={saveTx}
             toast={setToast}
+            logout={logout}
+            localStoragePrefix={key}
           />
         )}
         </AnimatedPage>
@@ -4923,7 +4981,7 @@ function Statement({ tx, month, save, toast }: any) {
     </section>
   );
 }
-function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast }: any) {
+function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast, logout, localStoragePrefix }: any) {
   const syncEnabled = Boolean(getSupabaseBrowserClient());
   const exportBackup = () => {
     const blob = new Blob(
@@ -5027,15 +5085,45 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast }: any) {
         </p>
         <LegalPreferences toast={toast} />
       </section>
+      <AccountDeletion logout={logout} localStoragePrefix={localStoragePrefix} />
       <PersonalAISettings toast={toast} />
     </section>
   );
 }
+function AccountDeletion({ logout, localStoragePrefix }: { logout: () => void; localStoragePrefix: string }) {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async () => {
+    if (!password || confirmation !== "EXCLUIR") return setError("Digite sua senha e a palavra EXCLUIR para continuar.");
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    const token = data?.session?.access_token;
+    if (!token) return setError("Sua sessão expirou. Entre novamente e repita a solicitação.");
+    setBusy(true); setError("");
+    const response = await fetch("/api/account/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ password, confirmation }),
+    });
+    const result = await response.json();
+    setBusy(false);
+    if (!response.ok) return setError(result.error || "Não foi possível mover a conta para a lixeira.");
+    [":data", ":tx", ":profile", ":theme"].forEach((suffix) => localStorage.removeItem(localStoragePrefix + suffix));
+    await supabase?.auth.signOut();
+    logout();
+    window.location.reload();
+  };
+  return <section className="panel mt-4 rounded-2xl p-5"><b>Remover minha conta</b><p className="muted mt-1 text-sm leading-6">Sua conta será desativada e movida para a lixeira. Os dados não serão apagados agora; o Master poderá restaurar ou excluir definitivamente a conta depois. Exporte um backup se quiser guardar uma cópia.</p><button onClick={() => { setError(""); setOpen(true); }} className="mt-4 min-h-11 rounded-xl border border-[var(--danger)]/40 px-4 text-sm text-[var(--danger)]">Solicitar remoção</button>{open && <Sheet close={() => { if (!busy) setOpen(false); }}><section className="space-y-4"><div><b className="text-lg">Mover conta para a lixeira?</b><p className="muted mt-2 text-sm leading-6">Você perderá o acesso imediatamente. Os dados serão mantidos até que o Master decida restaurar ou excluir a conta definitivamente.</p></div><label className="block text-sm">Confirme sua senha<input autoComplete="current-password" type="password" className="field mt-2" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="block text-sm">Digite EXCLUIR para confirmar<input className="field mt-2" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>{error && <p role="alert" className="text-sm text-[var(--danger)]">{error}</p>}<button disabled={busy || !password || confirmation !== "EXCLUIR"} onClick={() => void submit()} className="min-h-11 w-full rounded-xl bg-[var(--danger)] px-4 text-sm font-semibold text-[#271313] disabled:opacity-50">{busy ? "Removendo…" : "Mover para a lixeira"}</button></section></Sheet>}</section>;
+}
 function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
+  const loadedProvider = useRef<"openai" | "gemini" | "deepseek" | null>(null);
   const [provider, setProvider] = useState<"openai" | "gemini" | "deepseek">("openai");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-5");
-  const [insightsEnabled, setInsightsEnabled] = useState(true);
+  const [insightsEnabled, setInsightsEnabled] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -5048,21 +5136,22 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
       const result = await response.json();
       if (response.ok && result.connection) {
         setConnected(true); setProvider(result.connection.provider); setModel(result.connection.model);
+        loadedProvider.current = result.connection.provider;
         setInsightsEnabled(result.connection.insights_enabled); setNotificationsEnabled(result.connection.notifications_enabled);
       }
     };
     void load();
   }, []);
   const save = async () => {
-    if (apiKey.trim().length < 12) return toast("Informe uma API key válida.");
+    if ((!connected || provider !== loadedProvider.current) && apiKey.trim().length < 12) return toast("Informe uma API key válida para este provedor.");
     const supabase = getSupabaseBrowserClient();
     const { data } = await supabase?.auth.getSession() || {};
     if (!data?.session?.access_token) return toast("Faça login novamente para conectar sua IA.");
     setBusy(true);
-    const response = await fetch("/api/personal-ai/connection", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify({ provider, apiKey, model, insightsEnabled, notificationsEnabled }) });
+    const response = await fetch("/api/personal-ai/connection", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify({ provider, ...(apiKey.trim() ? { apiKey } : {}), model, insightsEnabled, notificationsEnabled }) });
     const result = await response.json(); setBusy(false);
     if (!response.ok) return toast(result.error || "Não foi possível salvar sua conexão.");
-    setApiKey(""); setConnected(true); toast("IA pessoal conectada com segurança.");
+    setApiKey(""); setConnected(true); loadedProvider.current = provider; toast("IA pessoal conectada com segurança.");
   };
   const disconnect = async () => {
     const supabase = getSupabaseBrowserClient();
@@ -5072,7 +5161,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     const response = await fetch("/api/personal-ai/connection", { method: "DELETE", headers: { Authorization: `Bearer ${data.session.access_token}` } });
     setBusy(false);
     if (!response.ok) return toast("Não foi possível remover a conexão.");
-    setConnected(false); setApiKey(""); toast("Conexão de IA removida.");
+    setConnected(false); loadedProvider.current = null; setApiKey(""); toast("Conexão de IA removida.");
   };
   return (
     <section className="panel mt-4 rounded-2xl p-5">
@@ -5098,8 +5187,8 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         <label className="text-sm">API key
           <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="field mt-1" type="password" autoComplete="off" placeholder={connected ? "Digite uma nova chave para substituir" : "Cole sua API key"} />
         </label>
-        <label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Insights no chat</b><small className="muted">Usar seus dados para respostas contextualizadas.</small></span><input checked={insightsEnabled} onChange={(event) => setInsightsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label>
-        <label className="flex items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Notificações por IA</b><small className="muted">Deixa a preferência salva para alertas opt-in.</small></span><input checked={notificationsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" className="h-4 w-4 accent-[var(--accent)]" /></label>
+        <label className="flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Contexto financeiro no chat</b><small className="muted">Autorizo enviar um resumo limitado ao provedor de IA selecionado.</small></span><input aria-label="Autorizar contexto financeiro no chat" checked={insightsEnabled} onChange={(event) => { setInsightsEnabled(event.target.checked); if (!event.target.checked) setNotificationsEnabled(false); }} type="checkbox" /></label>
+        <label className={`flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm ${!insightsEnabled ? "opacity-55" : ""}`}><span><b className="block">Notificações por IA</b><small className="muted">Disponíveis quando o contexto financeiro está autorizado.</small></span><input aria-label="Ativar notificações por IA" disabled={!insightsEnabled} checked={notificationsEnabled && insightsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" /></label>
       </div>
       <p className="muted mt-4 text-xs leading-5">Sua chave é criptografada antes de ser armazenada e nunca volta ao navegador. A IA recebe apenas um resumo limitado dos seus dados para responder; ela não pode criar ou alterar movimentações.</p>
       <div className="mt-4 flex flex-wrap gap-2">
@@ -5110,21 +5199,5 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
   );
 }
 function LegalPreferences({ toast }: { toast: (text: string) => void }) {
-  const [saving, setSaving] = useState(false);
-  const saveConsent = async (preference: "accepted" | "essential_only") => {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return toast("Conecte o Supabase para salvar esta preferência.");
-    const { data: auth } = await supabase.auth.getUser();
-    if (!auth.user) return toast("Faça login novamente para salvar esta preferência.");
-    setSaving(true);
-    const { error } = await supabase.from("user_consents").upsert({
-      user_id: auth.user.id,
-      privacy_accepted_at: new Date().toISOString(),
-      terms_accepted_at: new Date().toISOString(),
-      cookie_preference: preference,
-    });
-    setSaving(false);
-    toast(error ? "Não foi possível salvar suas preferências." : "Preferências de privacidade salvas.");
-  };
-  return <div className="mt-4 border-t border-[var(--border)] pt-4"><p className="muted text-xs leading-5">A Valurise usa apenas dados necessários ao funcionamento e sincronização da sua conta. Você pode manter somente cookies essenciais ou permitir preferências de experiência.</p><div className="mt-3 flex flex-wrap gap-2"><button disabled={saving} onClick={() => void saveConsent("essential_only")} className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs">Somente essenciais</button><button disabled={saving} onClick={() => void saveConsent("accepted")} className="rounded-xl border border-[var(--accent)] px-3 py-2 text-xs text-[var(--accent)]">Aceitar preferências</button></div><div className="mt-3 flex gap-3 text-xs text-[var(--accent)]"><button onClick={() => toast("Política de privacidade: seus dados financeiros são privados e protegidos por usuário.")}>Política de privacidade</button><button onClick={() => toast("Termos de uso: use a Valurise somente para organizar seus próprios dados financeiros.")}>Termos de uso</button></div></div>;
+  return <div className="mt-4 border-t border-[var(--border)] pt-4"><p className="muted text-xs leading-5">Consulte os documentos vigentes e altere sua escolha sobre armazenamento opcional a qualquer momento.</p><div className="mt-3 flex flex-wrap gap-3 text-xs text-[var(--accent)]"><a href="/privacidade">Política de Privacidade</a><a href="/termos">Termos de Uso</a><a href="/cookies">Cookies e armazenamento local</a></div><button onClick={() => { window.dispatchEvent(new Event("valurise:manage-cookie-consent")); toast("Preferências de cookies abertas."); }} className="mt-4 min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-xs font-medium">Gerenciar cookies</button></div>;
 }

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { financialSnapshot, personalAiInstruction } from "@/lib/personal-ai";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
+import { legalVersions } from "@/lib/legal-content";
 
 const schema = z.object({
   messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().trim().min(1).max(2000) })).min(1).max(12),
@@ -41,13 +43,25 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const user = await getVerifiedActiveUser(request.headers.get("authorization"));
   if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
-  const parsed = schema.safeParse(await request.json());
+  if (Number(request.headers.get("content-length") || 0) > 32_000) return NextResponse.json({ error: "A conversa excede o tamanho permitido." }, { status: 413 });
+  const rawBody = await request.text().catch(() => "");
+  if (rawBody.length > 32_000) return NextResponse.json({ error: "A conversa excede o tamanho permitido." }, { status: 413 });
+  let body: unknown = null;
+  try { body = JSON.parse(rawBody); } catch { return NextResponse.json({ error: "Mensagem inválida." }, { status: 400 }); }
+  const parsed = schema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "Mensagem inválida." }, { status: 400 });
 
   const admin = getSupabaseAdminClient();
-  const [{ data: connection, error: connectionError }, { data: state }] = await Promise.all([
+  const rateKey = createHash("sha256").update(`personal-ai\0${user.id}`).digest("hex");
+  const { data: allowed, error: rateError } = await admin.rpc("consume_public_rate_limit", {
+    p_key: rateKey, p_max_attempts: 60, p_window_seconds: 3600,
+  });
+  if (rateError) return NextResponse.json({ error: "Chat temporariamente indisponível. Tente novamente mais tarde." }, { status: 503 });
+  if (allowed !== true) return NextResponse.json({ error: "Você atingiu o limite de mensagens desta hora. Tente novamente mais tarde." }, { status: 429, headers: { "Retry-After": "3600" } });
+  const [{ data: connection, error: connectionError }, { data: state }, { data: consent }] = await Promise.all([
     admin.from("personal_ai_connections").select("provider, encrypted_api_key, model, insights_enabled").eq("user_id", user.id).maybeSingle(),
     admin.from("user_financial_state").select("state").eq("user_id", user.id).maybeSingle(),
+    admin.from("user_consents").select("ai_data_sharing_version, ai_data_sharing_accepted_at").eq("user_id", user.id).maybeSingle(),
   ]);
   if (connectionError || !connection) return NextResponse.json({ error: "Conecte sua IA pessoal nas Configurações antes de conversar." }, { status: 409 });
 
@@ -55,7 +69,12 @@ export async function POST(request: NextRequest) {
   const timeout = setTimeout(() => abort.abort(), 30_000);
   try {
     const apiKey = decryptPersonalAiKey(connection.encrypted_api_key);
-    const snapshot = JSON.stringify(financialSnapshot(state?.state));
+    const canUseFinancialContext = connection.insights_enabled
+      && consent?.ai_data_sharing_version === legalVersions.aiSharing
+      && Boolean(consent.ai_data_sharing_accepted_at);
+    const snapshot = canUseFinancialContext
+      ? JSON.stringify(financialSnapshot(state?.state))
+      : "O usuário não autorizou o compartilhamento do resumo financeiro. Não afirme que você viu dados da conta.";
     const messages = parsed.data.messages;
     let reply = "";
     if (connection.provider === "openai") {

@@ -1,10 +1,10 @@
-# Valurise
+# VALURISE
 
 Organizador financeiro pessoal mobile-first, em português do Brasil. O Dashboard é a home e o lançador guiado registra ações; opcionalmente, cada usuário pode conectar sua própria conta OpenAI, Gemini ou DeepSeek para conversar sobre seus dados.
 
 ## Stack
 
-Next.js App Router, TypeScript, Tailwind, Supabase/Postgres (schema e RLS), Vitest e PWA básica.
+Next.js App Router, TypeScript, Tailwind, Supabase/Postgres (Auth, RLS e sincronização), Vitest e PWA básica.
 
 ## Começar
 
@@ -14,7 +14,7 @@ copy .env.example .env.local
 npm run dev
 ```
 
-Crie um projeto Supabase, preencha `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, e execute todas as migrations em `supabase/migrations` pelo Supabase CLI ou SQL Editor. O schema usa centavos (`bigint`) para não introduzir imprecisão monetária e todas as tabelas possuem `user_id` e RLS por proprietário. Após configurar Supabase Auth, o login por e-mail sincroniza automaticamente o documento financeiro entre dispositivos; o login provisório por usuário permanece apenas como compatibilidade local.
+Crie um projeto Supabase, configure `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` e o segredo de servidor `SUPABASE_SECRET_KEY`. A aplicação aplica RLS nas tabelas financeiras e usa o Auth para isolar contas. O estado atual sincroniza os dados financeiros autenticados em `user_financial_state`, com uma cópia local e controle otimista de versão; a migração gradual para tabelas normalizadas ainda é trabalho pendente. Não rode `supabase db push` em um banco existente sem primeiro reconciliar o histórico de migrations local com o ledger de produção.
 
 ## Verificação
 
@@ -22,8 +22,8 @@ Crie um projeto Supabase, preencha `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUP
 
 ## IA pessoal opcional
 
-Em **Configurações → IA pessoal**, o usuário escolhe OpenAI, Gemini ou DeepSeek e informa a própria API key. A chave é criptografada com `VALURISE_AI_ENCRYPTION_KEY`, usada somente no servidor e nunca devolvida ao navegador. O chat envia um retrato financeiro limitado do próprio usuário; ele não cria nem altera movimentações.
+Em **Configurações → IA pessoal**, o usuário escolhe OpenAI, Gemini ou DeepSeek e informa a própria API key. A chave é criptografada com `VALURISE_AI_ENCRYPTION_KEY`, usada somente no servidor e nunca devolvida ao navegador. O envio de contexto financeiro exige consentimento separado e revogável; o chat não cria nem altera movimentações.
 
 ## Deploy
 
-Cadastre as variáveis do Supabase e `VALURISE_AI_ENCRYPTION_KEY` no projeto Vercel e execute `npx vercel --prod`. Nunca use ou exponha a chave `service_role` no navegador.
+Cadastre as variáveis do Supabase e `VALURISE_AI_ENCRYPTION_KEY` no projeto Vercel e publique pelo fluxo conectado ao Git. Nunca use ou exponha `SUPABASE_SECRET_KEY` no navegador. Os textos de privacidade e termos são rascunhos operacionais e precisam de revisão jurídica antes de serem tratados como documentos finais de conformidade.

@@ -74,6 +74,7 @@ select:focus-visible {
   color: var(--fg);
   border-radius: 12px;
   padding: 0 12px;
+  font-size: 16px;
   outline: none;
   transition:
     border-color 150ms ease-in-out,
@@ -323,8 +324,72 @@ select:focus-visible {
 button:hover {
   filter: brightness(1.04);
 }
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 42%, transparent) transparent;
+}
 ::-webkit-scrollbar {
-  display: none;
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 42%, transparent);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 68%, transparent);
+  background-clip: padding-box;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.cookie-consent {
+  position: fixed;
+  z-index: 80;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  left: max(1rem, env(safe-area-inset-left));
+  width: min(100% - 2rem, 620px);
+  margin-inline: auto;
+  padding: 16px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: 0 20px 70px rgba(0,0,0,.34);
+  backdrop-filter: blur(18px);
+}
+.consent-options {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+.consent-option {
+  display: flex;
+  min-height: 48px;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 12px;
+  background: var(--panel2);
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.consent-option input {
+  margin-top: 1px;
+}
+.consent-option a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (max-width: 640px) {
+  .field { font-size: 16px; }
 }
 .skeleton {
   background: linear-gradient(
