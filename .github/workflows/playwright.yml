@@ -1,0 +1,51 @@
+name: Verificações do projeto
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Instalar Chromium do Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Rodar lint
+        run: npm run lint
+
+      - name: Rodar testes unitários
+        run: npm test
+
+      - name: Rodar testes de navegador
+        run: npm run test:e2e
+
+      - name: Gerar build de produção
+        run: npm run build
+
+      - name: Guardar evidências de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencias-playwright
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 7

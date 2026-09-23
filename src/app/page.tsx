@@ -63,6 +63,7 @@ import { LoginAmbient } from "@/components/login-ambient";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { loadValuriseState, saveValuriseState } from "@/lib/state-sync";
 import { normalizeUsername } from "@/lib/auth/username";
+import { createValuriseBackup, parseValuriseBackup } from "@/lib/backup";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -283,7 +284,7 @@ function Login({ done }: { done: (u: User) => void }) {
             <h1>VALURISE</h1>
             <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
           </motion.section>
-          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Esperando aprovação do Master</h2><p className="muted mt-3 text-sm leading-6">Se os dados ainda não estiverem vinculados a uma conta, sua solicitação será analisada pelo Master. Se você já tem cadastro, entre ou recupere sua senha.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Verifique o próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se este for um cadastro novo, sua solicitação está aguardando aprovação do Master. Se o e-mail ou usuário já estiver associado a uma conta, nenhum pedido novo foi criado: entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
             <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Seu cadastro será vinculado ao convite e enviado para aprovação." : "Seu cadastro será enviado para aprovação.") : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
             <div className="login-fields">
               {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => setName(x.target.value)} className="field" placeholder="Como podemos te chamar?" autoComplete="name" /><label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => setUsername(x.target.value)} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" />{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
@@ -465,6 +466,15 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     setTx(next);
     localStorage.setItem(key + ":tx", JSON.stringify(next));
     persistState({ data: dataRef.current, transactions: next, profile: profileRef.current });
+  };
+  const restoreFinancialBackup = (nextData: Data, nextTransactions: FinanceTransaction[]) => {
+    dataRef.current = nextData;
+    txRef.current = nextTransactions;
+    setData(nextData);
+    setTx(nextTransactions);
+    localStorage.setItem(key + ":data", JSON.stringify(nextData));
+    localStorage.setItem(key + ":tx", JSON.stringify(nextTransactions));
+    persistState({ data: nextData, transactions: nextTransactions, profile: profileRef.current });
   };
   const saveProfile = (next: ProfilePreference) => {
     profileRef.current = next;
@@ -648,14 +658,14 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             <button
               aria-label="Buscar em todo o Valurise"
               onClick={() => setSearchOpen(true)}
-              className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)]"
+              className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)]"
             >
               <Search size={18} />
             </button>
             <button
               aria-label={`Abrir notificações${notifications.length ? ` (${notifications.length})` : ""}`}
               onClick={() => setNotificationsOpen((open) => !open)}
-              className="relative grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)]"
+              className="relative grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)]"
             >
               <Bell size={18} />
               {notifications.length > 0 && (
@@ -667,7 +677,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             <button
               aria-label="Abrir perfil"
               onClick={() => setProfileOpen(true)}
-              className="grid h-9 w-9 overflow-hidden place-items-center rounded-full bg-[var(--panel2)] text-xs font-medium"
+              className="grid h-11 w-11 overflow-hidden place-items-center rounded-full bg-[var(--panel2)] text-xs font-medium"
             >
               {profile.photo ? (
                 <Image
@@ -685,7 +695,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             <button
               aria-label="Abrir menu"
               onClick={() => setMobileMenu(true)}
-              className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)] lg:hidden"
+              className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] lg:hidden"
             >
               <Menu size={18} />
             </button>
@@ -781,6 +791,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             tx={tx}
             saveData={saveData}
             saveTx={saveTx}
+            restoreFinancialBackup={restoreFinancialBackup}
             toast={setToast}
             logout={logout}
             localStoragePrefix={key}
@@ -2466,7 +2477,7 @@ function SectionTitle({
       <button
         aria-label={`Como funciona ${title}`}
         onClick={() => setOpen(!open)}
-        className="muted grid h-8 w-8 place-items-center rounded-full bg-[var(--panel2)] hover:text-[var(--accent)]"
+        className="muted grid h-11 w-11 place-items-center rounded-full bg-[var(--panel2)] hover:text-[var(--accent)]"
       >
         <CircleHelp size={17} />
       </button>
@@ -2474,7 +2485,7 @@ function SectionTitle({
         <button
           aria-label={addLabel}
           onClick={onAdd}
-          className="primary ml-auto grid h-9 w-9 place-items-center rounded-xl shadow-sm"
+          className="primary ml-auto grid h-11 w-11 place-items-center rounded-xl shadow-sm"
         >
           <Plus size={18} />
         </button>
@@ -3764,7 +3775,7 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
   ]);
   const categoryStep =
     k === "expense" || k === "income" || k === "investment" ? 1 : -1;
-  const sourceStep = categoryStep + 1;
+  const sourceStep = k === "transfer" ? 1 : categoryStep + 1;
   const destinationStep = k === "transfer" ? sourceStep + 1 : -1;
   const detailsStep = (k === "transfer" ? destinationStep : sourceStep) + 1;
   const confirmStep = detailsStep + 1;
@@ -3772,11 +3783,13 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
     step === sourceStep
       ? k === "income"
         ? "Em qual conta você recebeu?"
-        : k === "salary"
-          ? "Em qual conta o salário entrou?"
-          : k === "investment"
-            ? "Qual conta financiou este aporte?"
-            : "Como você pagou?"
+          : k === "salary"
+            ? "Em qual conta o salário entrou?"
+            : k === "investment"
+              ? "Qual conta financiou este aporte?"
+              : k === "transfer"
+                ? "De qual conta saiu?"
+              : "Como você pagou?"
       : "Para qual conta foi?";
   const choose = (value: string) => {
     if (step === sourceStep) setSource(value);
@@ -4981,13 +4994,15 @@ function Statement({ tx, month, save, toast }: any) {
     </section>
   );
 }
-function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast, logout, localStoragePrefix }: any) {
+function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancialBackup, toast, logout, localStoragePrefix }: any) {
   const syncEnabled = Boolean(getSupabaseBrowserClient());
+  const [restoreCandidate, setRestoreCandidate] = useState<any | null>(null);
+  const [backupError, setBackupError] = useState("");
   const exportBackup = () => {
     const blob = new Blob(
       [
         JSON.stringify(
-          { exportedAt: new Date().toISOString(), data, transactions: tx },
+          createValuriseBackup(data, tx),
           null,
           2,
         ),
@@ -5000,6 +5015,16 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast, logout, 
     link.download = `valurise-backup-${format(new Date(), "yyyy-MM-dd")}.json`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+  const inspectBackup = async (file?: File) => {
+    setBackupError("");
+    if (!file) return;
+    try {
+      const backup = parseValuriseBackup<any, FinanceTransaction>(await file.text());
+      setRestoreCandidate(backup);
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : "Não foi possível ler este backup.");
+    }
   };
   const importCsv = async (file?: File) => {
     if (!file) return;
@@ -5054,27 +5079,39 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast, logout, 
       <Theme value={theme} change={setTheme} />
       <section className="panel mt-6 rounded-2xl p-5">
         <b>Seus dados</b>
-        <p className="muted mt-1 text-sm">
-          Exporte um backup completo ou importe lançamentos de uma planilha CSV
-          separada por ponto e vírgula.
+        <p className="muted mt-1 text-sm leading-6">
+          Baixe uma cópia dos dados financeiros desta conta e restaure-a quando precisar. A restauração substitui os dados financeiros atuais; conta, acesso e preferências não são alterados.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           <button
             onClick={exportBackup}
-            className="rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"
+            className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"
           >
             Exportar backup JSON
           </button>
-          <label className="primary cursor-pointer rounded-xl px-4 py-3 text-sm">
+          <label className="primary inline-flex min-h-11 cursor-pointer items-center rounded-xl px-4 py-3 text-sm">
+            Restaurar backup JSON
+            <input
+              type="file"
+              accept=".json,application/json"
+              className="sr-only"
+              onChange={(event) => {
+                void inspectBackup(event.target.files?.[0]);
+                event.currentTarget.value = "";
+              }}
+            />
+          </label>
+          <label className="inline-flex min-h-11 cursor-pointer items-center rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm">
             Importar CSV
             <input
               onChange={(event) => importCsv(event.target.files?.[0])}
-              className="hidden"
+              className="sr-only"
               type="file"
               accept=".csv,text/csv"
             />
           </label>
         </div>
+        {backupError && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{backupError}</p>}
       </section>
       <section className="panel mt-4 rounded-2xl p-5">
         <b>Privacidade</b>
@@ -5087,6 +5124,7 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, toast, logout, 
       </section>
       <AccountDeletion logout={logout} localStoragePrefix={localStoragePrefix} />
       <PersonalAISettings toast={toast} />
+      {restoreCandidate && <Sheet close={() => setRestoreCandidate(null)}><section className="space-y-4"><div><b className="text-lg">Restaurar backup?</b><p className="muted mt-2 text-sm leading-6">Isso substituirá contas, cartões, categorias, metas, orçamentos, investimentos e lançamentos atuais pelos dados do arquivo. Essa ação não pode ser desfeita dentro do app. Exporte o estado atual antes se quiser preservá-lo.</p><p className="muted mt-2 text-xs">{restoreCandidate.transactions.length} lançamento(s) no arquivo{restoreCandidate.exportedAt ? ` · exportado em ${format(new Date(restoreCandidate.exportedAt), "dd/MM/yyyy 'às' HH:mm")}` : " · formato legado"}</p></div><div className="flex gap-2"><button onClick={() => setRestoreCandidate(null)} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium">Cancelar</button><button onClick={() => { restoreFinancialBackup(restoreCandidate.data, restoreCandidate.transactions); setRestoreCandidate(null); toast("Backup restaurado e sincronização iniciada."); }} className="primary h-11 flex-1 rounded-xl text-sm font-semibold">Restaurar dados</button></div></section></Sheet>}
     </section>
   );
 }

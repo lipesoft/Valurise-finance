@@ -18,7 +18,16 @@ Crie um projeto Supabase, configure `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUP
 
 ## Verificação
 
-`npm run lint`, `npm test` e `npm run build`.
+```bash
+npm run lint
+npm test
+npm run test:e2e
+npm run build
+```
+
+Os testes de navegador usam dados locais e respostas simuladas por padrão; nenhum fluxo E2E chama o Supabase real. Para conferir a autenticação real, use um projeto e uma conta de teste dedicados, seguindo [Desenvolvimento e testes](docs/DESENVOLVIMENTO.md). Não reutilize credenciais de produção.
+
+O mapa arquitetural do código fica em `graphify-out/` (gerado localmente e ignorado pelo Git). Veja os comandos de atualização e o uso do Playwright em [Desenvolvimento e testes](docs/DESENVOLVIMENTO.md).
 
 ## IA pessoal opcional
 

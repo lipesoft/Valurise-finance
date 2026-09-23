@@ -1,0 +1,23 @@
+# Dependencies and generated output
+node_modules/
+.agents/
+.codex/
+.next/
+.vercel/
+dist/
+build/
+coverage/
+graphify-out/
+
+# Playwright artifacts and browser state
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+.playwright-cli/
+
+# Secrets and local-only data
+.env
+.env.*
+*.pem
+*.log
