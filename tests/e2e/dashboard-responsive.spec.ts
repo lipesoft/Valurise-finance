@@ -110,6 +110,17 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
       }
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
+      if (view === "Dashboard") {
+        const launcher = await page.getByRole("button", { name: "Registrar movimentação" }).boundingBox();
+        expect(launcher).not.toBeNull();
+        if (mobile) {
+          expect(launcher!.width).toBe(56);
+          expect(launcher!.height).toBe(56);
+        } else {
+          expect(launcher!.width).toBeLessThanOrEqual(320);
+        }
+      }
+
       if (view === "Contas") {
         const addButton = page.getByRole("button", { name: "Adicionar conta ou instituição" });
         await expect(addButton).toBeVisible();

@@ -804,7 +804,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
           onClick={() => setSheet(true)}
           className={
             view === "dashboard"
-              ? "panel fixed bottom-[max(18px,env(safe-area-inset-bottom))] left-4 right-4 z-20 mx-auto flex max-w-xl items-center gap-3 rounded-2xl p-3 text-left shadow-2xl lg:left-[calc(50%+120px)] lg:right-auto lg:w-[600px] lg:-translate-x-1/2"
+              ? "panel fixed bottom-[max(18px,env(safe-area-inset-bottom))] right-4 z-20 flex h-14 w-14 items-center justify-center rounded-2xl p-2 text-left shadow-2xl md:right-6 md:h-auto md:w-auto md:max-w-xs md:justify-start md:gap-3 md:p-3 lg:right-10"
               : "primary fixed bottom-[max(22px,env(safe-area-inset-bottom))] right-5 z-20 grid h-14 w-14 place-items-center rounded-full shadow-2xl lg:right-10"
           }
         >
@@ -813,7 +813,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
               <span className="primary grid h-10 w-10 place-items-center rounded-xl">
                 <FinanceChatIcon />
               </span>
-              <span>
+              <span className="hidden md:block">
                 <b className="block text-sm">Registrar movimentação</b>
                 <small className="muted">
                   O que aconteceu com seu dinheiro?
