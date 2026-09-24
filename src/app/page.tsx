@@ -158,6 +158,14 @@ const defaults = [
   "Saúde",
   "Lazer",
 ];
+const choices = [
+  ["expense", "Gastei", ArrowUpRight],
+  ["expense", "Paguei", ReceiptText],
+  ["income", "Recebi", ArrowDownLeft],
+  ["salary", "Salário", Landmark],
+  ["investment", "Investi", BarChart3],
+  ["transfer", "Transferi", WalletCards],
+] as const;
 export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -963,7 +971,6 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             createInvestment={createInvestment}
             close={() => setSheet(false)}
             approvePersonalAiAction={approvePersonalAiAction}
-            openSettings={() => { setSheet(false); setView("settings"); }}
             saved={(n) => {
               saveTx([...n, ...tx]);
               setToast("Lançamento salvo com sucesso.");
@@ -4018,7 +4025,7 @@ type PersonalChatProposal = {
   transaction_date: string;
   expires_at: string;
 };
-function PersonalFinanceChat({ openSettings, approveAction }: { openSettings: () => void; approveAction: (id: string) => Promise<void> }) {
+function PersonalFinanceChat({ startMovement, approveAction }: { startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void> }) {
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
     { id: "welcome", role: "assistant", content: "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
   ]);
@@ -4139,14 +4146,13 @@ function PersonalFinanceChat({ openSettings, approveAction }: { openSettings: ()
       }
     } finally { setDecisionBusy(null); }
   };
-  return <section className={`flex ${proposals.length ? "h-[min(78dvh,44rem)] min-h-[24rem]" : "h-[min(60dvh,38rem)] min-h-[20rem] sm:h-[min(78dvh,44rem)] sm:min-h-[24rem]"} min-w-0 flex-col overflow-hidden`}>
+  return <section className={`flex ${proposals.length ? "h-[min(78dvh,44rem)] min-h-[24rem]" : "h-[min(56dvh,36rem)] min-h-[18rem] sm:h-[min(78dvh,44rem)] sm:min-h-[24rem]"} min-w-0 flex-col overflow-hidden`}>
     <div className="flex shrink-0 items-start gap-3 border-b border-[var(--border)] pb-4 pr-8">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
       <div className="min-w-0 flex-1"><b className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
-      {!connected && <button onClick={openSettings} className="min-h-10 shrink-0 rounded-lg px-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--panel2)]">Configurar IA</button>}
     </div>
     <div aria-live="polite" className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
-      {messages.map((message) => <div key={message.id} className={`max-w-[88%] break-words rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere] ${message.role === "user" ? "primary ml-auto rounded-br-md" : "bg-[var(--panel2)] rounded-bl-md"}`}>{message.content}</div>)}
+      {messages.map((message) => <div key={message.id} className={`break-words rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere] ${message.role === "user" ? "ml-auto max-w-[88%] primary rounded-br-md" : "w-full max-w-full bg-[var(--panel2)] rounded-bl-md"}`}>{message.content}</div>)}
       {proposals.map((proposal) => <article key={proposal.id} className="w-full min-w-0 rounded-2xl border border-[var(--accent)]/35 bg-[var(--panel)] p-4 shadow-sm">
         <div className="flex items-start justify-between gap-3"><div className="min-w-0"><b className="block text-sm">Revisar proposta da Val</b><p className="muted mt-1 text-xs leading-5">Nada será registrado sem sua confirmação explícita.</p></div><span className="shrink-0 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[10px] font-semibold text-[var(--accent)]">Aguardando</span></div>
         <dl className="mt-3 grid min-w-0 grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-[var(--panel2)] p-3 text-xs"><div className="min-w-0"><dt className="muted">Tipo</dt><dd className="mt-0.5 font-medium">{proposal.action_type === "expense" ? "Despesa" : "Receita"}</dd></div><div className="min-w-0"><dt className="muted">Valor</dt><dd className="mt-0.5 break-words font-semibold">{formatBRL(proposal.amount_cents)}</dd></div><div className="min-w-0"><dt className="muted">Categoria</dt><dd className="mt-0.5 break-words">{proposal.category}</dd></div><div className="min-w-0"><dt className="muted">Data</dt><dd className="mt-0.5">{new Intl.DateTimeFormat("pt-BR").format(new Date(`${proposal.transaction_date}T12:00:00`))}</dd></div><div className="col-span-2 min-w-0"><dt className="muted">Conta</dt><dd className="mt-0.5 break-words">{proposal.account_label}</dd></div><div className="col-span-2 min-w-0"><dt className="muted">Descrição</dt><dd className="mt-0.5 break-words">{proposal.description}</dd></div></dl>
@@ -4157,14 +4163,17 @@ function PersonalFinanceChat({ openSettings, approveAction }: { openSettings: ()
       <div ref={messagesEndRef} />
     </div>
     {error && <p role="alert" className="mt-2 shrink-0 text-xs leading-5 text-[var(--danger)]">{error}</p>}
+    <div role="group" aria-label="Atalhos de movimentação" className="mt-3 grid shrink-0 grid-cols-2 gap-2 pb-1 min-[350px]:grid-cols-3 sm:flex sm:flex-wrap sm:justify-start">
+      {choices.map(([kind, label, Icon]) => <button key={label} type="button" onClick={() => startMovement(kind)} className="flex min-h-10 w-full min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--panel2)] px-2 text-[11px] font-medium hover:ring-1 hover:ring-[var(--accent)] sm:w-auto sm:gap-2 sm:px-3 sm:text-xs"><Icon size={14} className="shrink-0 text-[var(--accent)]" />{label}</button>)}
+    </div>
     <form className="mt-2 flex shrink-0 items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--panel2)] p-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
       <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida"} />
       <button type="submit" disabled={!input.trim() || loading} aria-label="Enviar mensagem" className="primary grid h-10 w-10 shrink-0 place-items-center rounded-xl disabled:opacity-50"><SendHorizontal size={17} /></button>
     </form>
-    <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Ações limitadas com sua aprovação obrigatória" : "Somente leitura"}${lastUsage === null ? " · O provedor não informou o consumo desta resposta." : ` · ${lastUsage.toLocaleString("pt-BR")} tokens nesta resposta.`}` : "A Val é somente leitura. Revogue a conexão a qualquer momento em Configurações."}</p>
+    <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Ações limitadas com sua aprovação obrigatória" : "Somente leitura"}${lastUsage === null ? " · O provedor não informou o consumo desta resposta." : ` · ${lastUsage.toLocaleString("pt-BR")} tokens nesta resposta.`}` : "Sem IA? Use os atalhos para lançar. Conecte um provedor nas Configurações para conversar com a Val."}</p>
   </section>;
 }
-function Launcher({ data, close, saved, createCategory, createInvestment, openSettings, approvePersonalAiAction }: any) {
+function Launcher({ data, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
   const [k, setK] = useState<Kind | null>(null),
     [step, setStep] = useState(0),
     [amount, setAmount] = useState(""),
@@ -4261,7 +4270,7 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
   if (!k)
     return (
       <Sheet close={close}>
-        <PersonalFinanceChat openSettings={openSettings} approveAction={approvePersonalAiAction} />
+        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} approveAction={approvePersonalAiAction} />
       </Sheet>
     );
   if (showCat)

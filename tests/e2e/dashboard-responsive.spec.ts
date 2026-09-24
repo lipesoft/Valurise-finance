@@ -110,6 +110,7 @@ test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px
 test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
+  const movementShortcuts = ["Gastei", "Paguei", "Recebi", "Salário", "Investi", "Transferi"];
 
   for (const width of [375, 390, 430, 1280]) {
     await page.setViewportSize({ width, height: 844 });
@@ -135,11 +136,35 @@ test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ 
     expect(sheetBounds).not.toBeNull();
     expect(bounds!.width).toBeLessThanOrEqual(width);
     expect(bounds!.height).toBeLessThanOrEqual(844);
+    await expect(dialog.getByRole("button", { name: "Configurar IA", exact: true })).toHaveCount(0);
+    const shortcutGroup = dialog.getByRole("group", { name: "Atalhos de movimentação" });
+    const shortcutGroupBounds = await shortcutGroup.boundingBox();
+    expect(shortcutGroupBounds).not.toBeNull();
+    for (const label of movementShortcuts) {
+      const shortcut = dialog.getByRole("button", { name: label, exact: true });
+      await expect(shortcut).toBeVisible();
+      const shortcutBounds = await shortcut.boundingBox();
+      expect(shortcutBounds).not.toBeNull();
+      expect(shortcutBounds!.x).toBeGreaterThanOrEqual(shortcutGroupBounds!.x - 1);
+      expect(shortcutBounds!.x + shortcutBounds!.width).toBeLessThanOrEqual(shortcutGroupBounds!.x + shortcutGroupBounds!.width + 1);
+      expect(shortcutBounds!.y + shortcutBounds!.height).toBeLessThanOrEqual(shortcutGroupBounds!.y + shortcutGroupBounds!.height + 1);
+    }
+    const messageAreaBounds = await dialog.locator('[aria-live="polite"]').boundingBox();
+    const welcomeBounds = await dialog.getByText(/Olá! Eu sou a Val/).boundingBox();
+    expect(messageAreaBounds).not.toBeNull();
+    expect(welcomeBounds).not.toBeNull();
+    expect(welcomeBounds!.width).toBeGreaterThanOrEqual(messageAreaBounds!.width * 0.96);
     if (width <= 430) {
       expect(sheetBounds!.height).toBeLessThanOrEqual(844 * 0.7);
-      await expect(dialog.getByRole("group", { name: "Atalhos de movimentação" })).toHaveCount(0);
     }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    if (width === 375) {
+      await dialog.getByRole("button", { name: "Gastei", exact: true }).click();
+      await expect(dialog.getByText("Quanto foi?", { exact: true })).toBeVisible();
+      await dialog.getByRole("button", { name: "Fechar", exact: true }).click();
+      continue;
+    }
 
     await dialog.getByRole("button", { name: "Fechar" }).click();
   }
