@@ -534,6 +534,37 @@ function App({ user, logout }: { user: User; logout: () => void }) {
       setToast("Não foi possível sincronizar esta alteração com sua conta.");
     });
   };
+  const approvePersonalAiAction = async (proposalId: string) => {
+    await stateWriteQueue.current.catch(() => undefined);
+    if (stateConflictRef.current || stateVersionRef.current === null) {
+      throw new Error("Atualize os dados sincronizados antes de confirmar uma proposta da Val.");
+    }
+    const supabase = getSupabaseBrowserClient();
+    const { data: auth } = await supabase?.auth.getSession() || {};
+    const token = auth?.session?.access_token;
+    if (!token) throw new Error("Sua sessão expirou. Entre novamente para confirmar.");
+    const response = await fetch("/api/personal-ai/actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ proposalId, decision: "approve" }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Não foi possível confirmar a proposta.");
+
+    const latest = await loadValuriseState<Data, FinanceTransaction, ProfilePreference>();
+    if (!latest) throw new Error("A proposta foi registrada, mas não foi possível atualizar esta tela. Recarregue os dados antes de tentar novamente.");
+    stateVersionRef.current = latest.version;
+    dataRef.current = latest.state.data;
+    txRef.current = latest.state.transactions;
+    profileRef.current = latest.state.profile;
+    setData(latest.state.data);
+    setTx(latest.state.transactions);
+    setProfile(latest.state.profile);
+    localStorage.setItem(key + ":data", JSON.stringify(latest.state.data));
+    localStorage.setItem(key + ":tx", JSON.stringify(latest.state.transactions));
+    localStorage.setItem(key + ":profile", JSON.stringify(latest.state.profile));
+    setToast("Lançamento confirmado e sincronizado.");
+  };
   const recordSharedGoalContribution = (input: {
     sharedGoalId: string;
     amountCents: number;
@@ -939,6 +970,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             createCategory={createCategory}
             createInvestment={createInvestment}
             close={() => setSheet(false)}
+            approvePersonalAiAction={approvePersonalAiAction}
             openSettings={() => { setSheet(false); setView("settings"); }}
             saved={(n) => {
               saveTx([...n, ...tx]);
@@ -3984,16 +4016,30 @@ function Reports({ tx, data, month }: any) {
   );
 }
 type PersonalChatMessage = { id: string; role: "user" | "assistant"; content: string };
-function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (kind: Kind) => void; openSettings: () => void }) {
+type PersonalChatProposal = {
+  id: string;
+  action_type: "income" | "expense";
+  amount_cents: number;
+  category: string;
+  account_label: string;
+  description: string;
+  transaction_date: string;
+  expires_at: string;
+};
+function PersonalFinanceChat({ startMovement, openSettings, approveAction }: { startMovement: (kind: Kind) => void; openSettings: () => void; approveAction: (id: string) => Promise<void> }) {
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
-    { id: "welcome", role: "assistant", content: "Olá! Posso ajudar você a entender sua vida financeira ou registrar uma movimentação." },
+    { id: "welcome", role: "assistant", content: "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
   ]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
   const [provider, setProvider] = useState("");
+  const [actionsEnabled, setActionsEnabled] = useState(false);
+  const [proposals, setProposals] = useState<PersonalChatProposal[]>([]);
+  const [decisionBusy, setDecisionBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [lastUsage, setLastUsage] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -4010,12 +4056,17 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
         if (result.connection) {
           setConnected(true);
           setProvider(result.connection.provider);
+          setActionsEnabled(Boolean(result.connection.actions_enabled));
           const historyResponse = await fetch("/api/personal-ai/chat", { headers });
           const history = await historyResponse.json();
           if (!historyResponse.ok) throw new Error(history.error || "Não foi possível carregar a conversa anterior.");
           if (!cancelled && Array.isArray(history.messages) && history.messages.length) {
             setMessages(history.messages.slice(-40));
           }
+          const actionResponse = await fetch("/api/personal-ai/actions", { headers });
+          const actionResult = await actionResponse.json();
+          if (!actionResponse.ok) throw new Error(actionResult.error || "Não foi possível carregar propostas da Val.");
+          if (!cancelled && Array.isArray(actionResult.proposals)) setProposals(actionResult.proposals);
         }
       } catch (reason) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Não foi possível conectar ao chat.");
@@ -4050,19 +4101,66 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Não foi possível responder agora.");
+      setLastUsage(typeof result.usage?.totalTokens === "number" ? result.usage.totalTokens : null);
       setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: result.reply }]);
+      if (Array.isArray(result.proposals) && result.proposals.length) {
+        setProposals((current) => [...result.proposals, ...current.filter((item) => !result.proposals.some((nextProposal: PersonalChatProposal) => nextProposal.id === item.id))].slice(0, 5));
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Não foi possível responder agora.");
     } finally { setLoading(false); }
   };
+  const decideProposal = async (proposalId: string, decision: "approve" | "reject") => {
+    if (decisionBusy) return;
+    setDecisionBusy(proposalId); setError("");
+    try {
+      if (decision === "approve") {
+        await approveAction(proposalId);
+      } else {
+        const supabase = getSupabaseBrowserClient();
+        const { data } = await supabase?.auth.getSession() || {};
+        const token = data?.session?.access_token;
+        if (!token) throw new Error("Sua sessão expirou. Entre novamente para descartar.");
+        const response = await fetch("/api/personal-ai/actions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ proposalId, decision }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Não foi possível descartar esta proposta.");
+      }
+      setProposals((current) => current.filter((proposal) => proposal.id !== proposalId));
+      if (decision === "reject") setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", content: "Proposta descartada. Nenhum lançamento foi criado." }]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Não foi possível responder à proposta.");
+      if (decision === "approve") {
+        try {
+          const supabase = getSupabaseBrowserClient();
+          const { data } = await supabase?.auth.getSession() || {};
+          const token = data?.session?.access_token;
+          if (token) {
+            const response = await fetch("/api/personal-ai/actions", { headers: { Authorization: `Bearer ${token}` } });
+            const result = await response.json();
+            if (response.ok && Array.isArray(result.proposals)) setProposals(result.proposals);
+          }
+        } catch { /* Keep the explicit error visible; no action is retried automatically. */ }
+      }
+    } finally { setDecisionBusy(null); }
+  };
   return <section className="flex h-[min(78dvh,44rem)] min-h-[24rem] min-w-0 flex-col overflow-hidden">
     <div className="flex shrink-0 items-start gap-3 border-b border-[var(--border)] pb-4 pr-8">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-      <div className="min-w-0 flex-1"><b className="block text-lg">Conversa financeira</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Atalhos funcionam sem IA. Conecte sua IA pessoal quando quiser."}</p></div>
+      <div className="min-w-0 flex-1"><b className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
       {!connected && <button onClick={openSettings} className="min-h-10 shrink-0 rounded-lg px-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--panel2)]">Configurar IA</button>}
     </div>
     <div aria-live="polite" className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
       {messages.map((message) => <div key={message.id} className={`max-w-[88%] break-words rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere] ${message.role === "user" ? "primary ml-auto rounded-br-md" : "bg-[var(--panel2)] rounded-bl-md"}`}>{message.content}</div>)}
+      {proposals.map((proposal) => <article key={proposal.id} className="w-full min-w-0 rounded-2xl border border-[var(--accent)]/35 bg-[var(--panel)] p-4 shadow-sm">
+        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><b className="block text-sm">Revisar proposta da Val</b><p className="muted mt-1 text-xs leading-5">Nada será registrado sem sua confirmação explícita.</p></div><span className="shrink-0 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[10px] font-semibold text-[var(--accent)]">Aguardando</span></div>
+        <dl className="mt-3 grid min-w-0 grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-[var(--panel2)] p-3 text-xs"><div className="min-w-0"><dt className="muted">Tipo</dt><dd className="mt-0.5 font-medium">{proposal.action_type === "expense" ? "Despesa" : "Receita"}</dd></div><div className="min-w-0"><dt className="muted">Valor</dt><dd className="mt-0.5 break-words font-semibold">{formatBRL(proposal.amount_cents)}</dd></div><div className="min-w-0"><dt className="muted">Categoria</dt><dd className="mt-0.5 break-words">{proposal.category}</dd></div><div className="min-w-0"><dt className="muted">Data</dt><dd className="mt-0.5">{new Intl.DateTimeFormat("pt-BR").format(new Date(`${proposal.transaction_date}T12:00:00`))}</dd></div><div className="col-span-2 min-w-0"><dt className="muted">Conta</dt><dd className="mt-0.5 break-words">{proposal.account_label}</dd></div><div className="col-span-2 min-w-0"><dt className="muted">Descrição</dt><dd className="mt-0.5 break-words">{proposal.description}</dd></div></dl>
+        <p className="muted mt-2 text-[10px] leading-4">A proposta expira em 10 minutos. Confira valor, conta e categoria antes de confirmar.</p>
+        <div className="mt-3 flex flex-col-reverse gap-2 min-[380px]:flex-row min-[380px]:justify-end"><button type="button" disabled={decisionBusy === proposal.id} onClick={() => void decideProposal(proposal.id, "reject")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-50">{decisionBusy === proposal.id ? "Aguarde…" : "Descartar"}</button><button type="button" disabled={decisionBusy === proposal.id} onClick={() => void decideProposal(proposal.id, "approve")} className="primary min-h-10 rounded-xl px-3 text-xs font-semibold disabled:opacity-50">{decisionBusy === proposal.id ? "Confirmando…" : `Confirmar e registrar ${proposal.action_type === "expense" ? "despesa" : "receita"}`}</button></div>
+      </article>)}
       {loading && <div className="w-fit rounded-2xl rounded-bl-md bg-[var(--panel2)] px-4 py-3 text-sm"><span className="inline-flex gap-1"><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:150ms]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:300ms]" /></span></div>}
       <div ref={messagesEndRef} />
     </div>
@@ -4074,10 +4172,10 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
       <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida ou use um atalho"} />
       <button type="submit" disabled={!input.trim() || loading} aria-label="Enviar mensagem" className="primary grid h-10 w-10 shrink-0 place-items-center rounded-xl disabled:opacity-50"><SendHorizontal size={17} /></button>
     </form>
-    <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">A IA não realiza transações. Revogue a conexão a qualquer momento em Configurações.</p>
+    <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Ações limitadas com sua aprovação obrigatória" : "Somente leitura"}${lastUsage === null ? " · O provedor não informou o consumo desta resposta." : ` · ${lastUsage.toLocaleString("pt-BR")} tokens nesta resposta.`}` : "A Val é somente leitura. Revogue a conexão a qualquer momento em Configurações."}</p>
   </section>;
 }
-function Launcher({ data, close, saved, createCategory, createInvestment, openSettings }: any) {
+function Launcher({ data, close, saved, createCategory, createInvestment, openSettings, approvePersonalAiAction }: any) {
   const [k, setK] = useState<Kind | null>(null),
     [step, setStep] = useState(0),
     [amount, setAmount] = useState(""),
@@ -4174,7 +4272,7 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
   if (!k)
     return (
       <Sheet close={close}>
-        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} openSettings={openSettings} />
+        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} openSettings={openSettings} approveAction={approvePersonalAiAction} />
       </Sheet>
     );
   if (showCat)
@@ -5594,82 +5692,211 @@ function AccountDeletion({ logout, localStoragePrefix }: { logout: () => void; l
   };
   return <section className="panel mt-4 rounded-2xl p-5"><b>Remover minha conta</b><p className="muted mt-1 text-sm leading-6">Sua conta será desativada e movida para a lixeira. Os dados não serão apagados agora; o Master poderá restaurar ou excluir definitivamente a conta depois. Exporte um backup se quiser guardar uma cópia.</p><button onClick={() => { setError(""); setOpen(true); }} className="mt-4 min-h-11 rounded-xl border border-[var(--danger)]/40 px-4 text-sm text-[var(--danger)]">Solicitar remoção</button>{open && <Sheet close={() => { if (!busy) setOpen(false); }}><section className="space-y-4"><div><b className="text-lg">Mover conta para a lixeira?</b><p className="muted mt-2 text-sm leading-6">Você perderá o acesso imediatamente. Os dados serão mantidos até que o Master decida restaurar ou excluir a conta definitivamente.</p></div><label className="block text-sm">Confirme sua senha<input autoComplete="current-password" type="password" className="field mt-2" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="block text-sm">Digite EXCLUIR para confirmar<input className="field mt-2" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>{error && <p role="alert" className="text-sm text-[var(--danger)]">{error}</p>}<button disabled={busy || !password || confirmation !== "EXCLUIR"} onClick={() => void submit()} className="min-h-11 w-full rounded-xl bg-[var(--danger)] px-4 text-sm font-semibold text-[#271313] disabled:opacity-50">{busy ? "Removendo…" : "Mover para a lixeira"}</button></section></Sheet>}</section>;
 }
+type PersonalAIProvider = "openai" | "gemini" | "deepseek";
+type PersonalAIModelOption = { id: string; label: string; tier: "recommended" | "economical" | "advanced" | "other" };
+type PersonalAIUsage = { requests: number; totalTokens: number; inputTokens: number; outputTokens: number; quotaTokens: number | null };
+const defaultAIModel: Record<PersonalAIProvider, string> = { openai: "gpt-5-mini", gemini: "gemini-3.8-flash", deepseek: "deepseek-v4-flash" };
 function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
-  const loadedProvider = useRef<"openai" | "gemini" | "deepseek" | null>(null);
-  const [provider, setProvider] = useState<"openai" | "gemini" | "deepseek">("openai");
+  const [provider, setProvider] = useState<PersonalAIProvider>("openai");
+  const [savedProvider, setSavedProvider] = useState<PersonalAIProvider | null>(null);
   const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("gpt-5");
+  const [model, setModel] = useState(defaultAIModel.openai);
+  const [models, setModels] = useState<PersonalAIModelOption[]>([]);
+  const [customModel, setCustomModel] = useState(false);
   const [insightsEnabled, setInsightsEnabled] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [actionsEnabled, setActionsEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [consentRenewalRequired, setConsentRenewalRequired] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const [usage, setUsage] = useState<PersonalAIUsage | null>(null);
+
+  const getAccessToken = async () => {
+    const { data } = await getSupabaseBrowserClient()?.auth.getSession() || {};
+    return data?.session?.access_token || null;
+  };
+  const loadUsage = async (token: string) => {
+    const response = await fetch("/api/personal-ai/usage", { headers: { Authorization: `Bearer ${token}` } });
+    const result = await response.json();
+    if (response.ok && result.usage) setUsage(result.usage);
+  };
+
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
-      const supabase = getSupabaseBrowserClient();
-      const { data } = await supabase?.auth.getSession() || {};
-      if (!data?.session?.access_token) return;
-      const response = await fetch("/api/personal-ai/connection", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
+      const token = await getAccessToken();
+      if (!token) return;
+      const headers = { Authorization: `Bearer ${token}` };
+      const [response, usageResponse] = await Promise.all([
+        fetch("/api/personal-ai/connection", { headers }),
+        fetch("/api/personal-ai/usage", { headers }).catch(() => null),
+      ]);
       const result = await response.json();
+      if (cancelled) return;
       if (response.ok && result.connection) {
-        setConnected(true); setProvider(result.connection.provider); setModel(result.connection.model);
-        loadedProvider.current = result.connection.provider;
-        setInsightsEnabled(result.connection.insights_enabled); setNotificationsEnabled(result.connection.notifications_enabled);
+        setConnected(true);
+        setProvider(result.connection.provider);
+        setModel(result.connection.model);
+        setCustomModel(true);
+        setSavedProvider(result.connection.provider);
+        setInsightsEnabled(result.connection.insights_enabled);
+        setNotificationsEnabled(result.connection.notifications_enabled);
+        setActionsEnabled(Boolean(result.connection.actions_enabled));
+        setConsentRenewalRequired(Boolean(result.connection.consentRenewalRequired));
+      }
+      if (usageResponse?.ok) {
+        const usageResult = await usageResponse.json();
+        if (!cancelled && usageResult.usage) setUsage(usageResult.usage);
       }
     };
     void load();
+    return () => { cancelled = true; };
   }, []);
+
+  const loadModels = async () => {
+    const token = await getAccessToken();
+    if (!token) return toast("Faça login novamente para consultar os modelos.");
+    setCatalogBusy(true); setTestStatus(null);
+    try {
+      const response = await fetch("/api/personal-ai/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ provider, ...(apiKey.trim() ? { apiKey } : {}) }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível carregar os modelos.");
+      const available = Array.isArray(result.models) ? result.models as PersonalAIModelOption[] : [];
+      setModels(available);
+      if (available.some((item) => item.id === model)) setCustomModel(false);
+      else if (connected && savedProvider === provider) {
+        setCustomModel(true);
+        toast("O modelo salvo não apareceu no catálogo atual. Você pode testar o ID personalizado ou escolher outro.");
+      } else {
+        const recommended = available.find((item) => item.tier === "recommended") || available.find((item) => item.tier === "economical") || available[0];
+        if (recommended) { setModel(recommended.id); setCustomModel(false); }
+        else setCustomModel(true);
+      }
+      if (!available.length) toast("Nenhum modelo de texto compatível foi encontrado para essa chave.");
+    } catch (reason) {
+      toast(reason instanceof Error ? reason.message : "Não foi possível carregar os modelos.");
+    } finally { setCatalogBusy(false); }
+  };
+
+  const testConnection = async () => {
+    if (!model.trim()) return toast("Escolha um modelo antes de testar.");
+    if ((!connected || provider !== savedProvider) && apiKey.trim().length < 12) return toast("Cole a API key para testar este provedor.");
+    const token = await getAccessToken();
+    if (!token) return toast("Faça login novamente para testar a conexão.");
+    setTestBusy(true); setTestStatus({ ok: false, message: "Testando com uma solicitação mínima, sem dados financeiros…" });
+    try {
+      const response = await fetch("/api/personal-ai/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ provider, model, ...(apiKey.trim() ? { apiKey } : {}) }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível validar a conexão.");
+      const tokenCount = typeof result.usage?.inputTokens === "number" && typeof result.usage?.outputTokens === "number"
+        ? ` · ${result.usage.inputTokens + result.usage.outputTokens} tokens` : "";
+      setTestStatus({ ok: true, message: `Conectado · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}` });
+      await loadUsage(token);
+    } catch (reason) {
+      setTestStatus({ ok: false, message: reason instanceof Error ? reason.message : "Não foi possível validar a conexão." });
+    } finally { setTestBusy(false); }
+  };
+
   const save = async () => {
-    if ((!connected || provider !== loadedProvider.current) && apiKey.trim().length < 12) return toast("Informe uma API key válida para este provedor.");
-    const supabase = getSupabaseBrowserClient();
-    const { data } = await supabase?.auth.getSession() || {};
-    if (!data?.session?.access_token) return toast("Faça login novamente para conectar sua IA.");
+    if (!model.trim()) return toast("Informe um modelo de texto válido.");
+    if ((!connected || provider !== savedProvider) && apiKey.trim().length < 12) return toast("Informe uma API key válida para este provedor.");
+    const token = await getAccessToken();
+    if (!token) return toast("Faça login novamente para conectar sua IA.");
     setBusy(true);
-    const response = await fetch("/api/personal-ai/connection", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify({ provider, ...(apiKey.trim() ? { apiKey } : {}), model, insightsEnabled, notificationsEnabled }) });
-    const result = await response.json(); setBusy(false);
-    if (!response.ok) return toast(result.error || "Não foi possível salvar sua conexão.");
-    setApiKey(""); setConnected(true); loadedProvider.current = provider; toast("IA pessoal conectada com segurança.");
+    try {
+      const response = await fetch("/api/personal-ai/connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ provider, ...(apiKey.trim() ? { apiKey } : {}), model: model.trim(), insightsEnabled, notificationsEnabled, actionsEnabled: insightsEnabled && actionsEnabled }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível salvar sua conexão.");
+      setApiKey(""); setConnected(true); setSavedProvider(provider);
+      setConsentRenewalRequired(false);
+      setTestStatus({ ok: false, message: "Configuração salva. Teste a conexão antes da primeira conversa." });
+      toast(result.pendingProposalsCancelled
+        ? "Conexão salva. As propostas pendentes anteriores foram encerradas por segurança."
+        : "Conexão salva. A chave foi protegida no servidor.");
+    } catch (reason) {
+      toast(reason instanceof Error ? reason.message : "Não foi possível salvar sua conexão.");
+    } finally { setBusy(false); }
   };
+
   const disconnect = async () => {
-    const supabase = getSupabaseBrowserClient();
-    const { data } = await supabase?.auth.getSession() || {};
-    if (!data?.session?.access_token) return;
+    const token = await getAccessToken();
+    if (!token) return;
     setBusy(true);
-    const response = await fetch("/api/personal-ai/connection", { method: "DELETE", headers: { Authorization: `Bearer ${data.session.access_token}` } });
-    setBusy(false);
-    if (!response.ok) return toast("Não foi possível remover a conexão.");
-    setConnected(false); loadedProvider.current = null; setApiKey(""); toast("Conexão de IA removida.");
+    try {
+      const response = await fetch("/api/personal-ai/connection", { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível remover a conexão.");
+      setConnected(false); setSavedProvider(null); setApiKey(""); setTestStatus(null); setUsage(null);
+      setActionsEnabled(false);
+      setConsentRenewalRequired(false);
+      toast("Conexão de IA removida.");
+    } catch (reason) { toast(reason instanceof Error ? reason.message : "Não foi possível remover a conexão."); }
+    finally { setBusy(false); }
   };
+
+  const tierLabel = (tier: PersonalAIModelOption["tier"]) => ({ recommended: "Recomendado", economical: "Rápido/econômico", advanced: "Mais capaz", other: "Outro" })[tier];
   return (
     <section className="panel mt-4 rounded-2xl p-5">
       <div className="flex items-start gap-3">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-        <div><b className="block">IA pessoal</b><p className="muted mt-1 text-sm">Conecte sua própria conta OpenAI, Gemini ou DeepSeek. O uso e os custos ficam na sua conta do provedor.</p></div>
+        <div><b className="block">Val · assistente financeira</b><p className="muted mt-1 text-sm">Clareza para decidir hoje. Constância para prosperar amanhã. Conecte OpenAI, Gemini ou DeepSeek usando sua própria conta.</p></div>
       </div>
       <div className="mt-5 grid gap-3">
         <label className="text-sm">Provedor
           <select value={provider} onChange={(event) => {
-            const next = event.target.value as "openai" | "gemini" | "deepseek";
-            setProvider(next);
-            setModel(next === "openai" ? "gpt-5" : next === "gemini" ? "gemini-3.8-flash" : "deepseek-flash");
+            const next = event.target.value as PersonalAIProvider;
+            setProvider(next); setModel(defaultAIModel[next]); setModels([]); setCustomModel(false); setTestStatus(null);
           }} className="field mt-1">
-            <option value="openai">OpenAI</option>
-            <option value="gemini">Gemini</option>
-            <option value="deepseek">DeepSeek</option>
+            <option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option>
           </select>
         </label>
-        <label className="text-sm">Modelo
-          <input value={model} onChange={(event) => setModel(event.target.value)} className="field mt-1" placeholder={provider === "openai" ? "gpt-5" : provider === "gemini" ? "gemini-3.8-flash" : "deepseek-flash"} />
-        </label>
+        {models.length > 0 && <label className="text-sm">Modelos disponíveis para esta chave
+          <select value={customModel || !models.some((item) => item.id === model) ? "__custom" : model} onChange={(event) => {
+            if (event.target.value === "__custom") setCustomModel(true);
+            else { setModel(event.target.value); setCustomModel(false); setTestStatus(null); }
+          }} className="field mt-1">
+            {models.map((item) => <option key={item.id} value={item.id}>{item.label} · {tierLabel(item.tier)}</option>)}
+            <option value="__custom">Inserir modelo personalizado…</option>
+          </select>
+        </label>}
+        {(models.length === 0 || customModel || !models.some((item) => item.id === model)) && <label className="text-sm">ID do modelo
+          <input value={model} onChange={(event) => { setModel(event.target.value); setTestStatus(null); }} className="field mt-1" placeholder={defaultAIModel[provider]} autoComplete="off" />
+        </label>}
+        <button type="button" disabled={catalogBusy} onClick={() => void loadModels()} className="min-h-10 w-fit rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-60">{catalogBusy ? "Consultando catálogo…" : "Atualizar modelos disponíveis"}</button>
         <label className="text-sm">API key
-          <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} className="field mt-1" type="password" autoComplete="off" placeholder={connected ? "Digite uma nova chave para substituir" : "Cole sua API key"} />
+          <input value={apiKey} onChange={(event) => { setApiKey(event.target.value); setTestStatus(null); }} className="field mt-1" type="password" autoComplete="new-password" placeholder={connected && provider === savedProvider ? "Salva e protegida · cole outra para substituir" : "Cole sua API key"} />
         </label>
-        <label className="flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Contexto financeiro no chat</b><small className="muted">Autorizo enviar um resumo limitado ao provedor de IA selecionado.</small></span><input aria-label="Autorizar contexto financeiro no chat" checked={insightsEnabled} onChange={(event) => { setInsightsEnabled(event.target.checked); if (!event.target.checked) setNotificationsEnabled(false); }} type="checkbox" /></label>
-        <label className={`flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm ${!insightsEnabled ? "opacity-55" : ""}`}><span><b className="block">Notificações por IA</b><small className="muted">Disponíveis quando o contexto financeiro está autorizado.</small></span><input aria-label="Ativar notificações por IA" disabled={!insightsEnabled} checked={notificationsEnabled && insightsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" /></label>
+        <label className="flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Compartilhar dados para análise financeira</b><small className="muted">Opcional: sua pergunta e os dados consultados serão enviados ao provedor escolhido (OpenAI, Gemini ou DeepSeek), conforme a política dele.</small></span><input aria-label="Autorizar uso dos meus dados financeiros pela Val" checked={insightsEnabled} onChange={(event) => { setInsightsEnabled(event.target.checked); if (!event.target.checked) { setNotificationsEnabled(false); setActionsEnabled(false); } }} type="checkbox" /></label>
+        <label className={`flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm ${!insightsEnabled ? "opacity-55" : ""}`}><span><b className="block">Notificações por IA</b><small className="muted">Desativadas até você permitir o contexto financeiro.</small></span><input aria-label="Ativar notificações por IA" disabled={!insightsEnabled} checked={notificationsEnabled && insightsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" /></label>
+        <label className={`flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm ${!insightsEnabled ? "opacity-55" : ""}`}><span><b className="block">Permitir ações financeiras com confirmação</b><small className="muted">Opcional. A Val só poderá preparar propostas de receita ou despesa comum. Cada proposta mostra os dados exatos e exige que você toque em “Confirmar e registrar”. Você pode descartar ou desligar esta permissão; não permite transferências, cartões/parcelas, investimentos, metas, edição ou exclusão.</small></span><input aria-label="Permitir propostas de receitas e despesas com confirmação obrigatória" disabled={!insightsEnabled} checked={actionsEnabled && insightsEnabled} onChange={(event) => setActionsEnabled(event.target.checked)} type="checkbox" /></label>
       </div>
-      <p className="muted mt-4 text-xs leading-5">Sua chave é criptografada antes de ser armazenada e nunca volta ao navegador. A IA recebe apenas um resumo limitado dos seus dados para responder; ela não pode criar ou alterar movimentações.</p>
+      {consentRenewalRequired && <p role="status" className="mt-3 rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs leading-5">Atualizamos as regras de privacidade da Val. Para voltar a compartilhar contexto financeiro, revise o consentimento acima e salve a configuração.</p>}
+      {testStatus && <p role="status" aria-live="polite" className={`mt-3 rounded-xl px-3 py-2 text-sm ${testStatus.ok ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--danger)]"}`}>{testStatus.message}</p>}
+      <p className="muted mt-4 text-xs leading-5">A chave trafega ao servidor e é criptografada antes de ser salva; ela nunca volta ao navegador nem é enviada à Val como contexto. O teste envia apenas “Responda somente: OK” e pode consumir alguns tokens do seu provedor. Sem a permissão acima, a Val só consulta informações com ferramentas controladas. Com ela, ainda assim nada é gravado sem confirmação explícita no app; a aprovação é validada novamente no servidor. Desconectar revoga o consentimento e cancela propostas pendentes.</p>
       <div className="mt-4 flex flex-wrap gap-2">
-        <button disabled={busy} onClick={() => void save()} className="primary rounded-xl px-4 py-3 text-sm font-semibold">{busy ? "Aplicando…" : connected ? "Atualizar conexão" : "Aplicar conexão"}</button>
-        {connected && <button disabled={busy} onClick={() => void disconnect()} className="rounded-xl px-4 py-3 text-sm text-[var(--danger)] hover:bg-[var(--panel2)]">Remover IA</button>}
+        <button disabled={busy || testBusy} onClick={() => void save()} className="primary min-h-11 rounded-xl px-4 py-2 text-sm font-semibold">{busy ? "Salvando…" : connected ? "Salvar configuração" : "Conectar Val"}</button>
+        <button disabled={testBusy || catalogBusy} onClick={() => void testConnection()} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 py-2 text-sm font-semibold">{testBusy ? "Testando…" : "Testar conexão"}</button>
+        {connected && <button disabled={busy || testBusy} onClick={() => void disconnect()} className="min-h-11 rounded-xl px-4 py-2 text-sm text-[var(--danger)] hover:bg-[var(--panel2)]">Remover IA</button>}
+      </div>
+      <div className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--panel2)] p-4">
+        <b className="text-sm">Uso da Val neste mês</b>
+        {usage ? <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs"><span className="muted">Solicitações <b className="text-[var(--text)]">{usage.requests.toLocaleString("pt-BR")}</b></span><span className="muted">Tokens medidos <b className="text-[var(--text)]">{usage.totalTokens.toLocaleString("pt-BR")}</b></span></div> : <p className="muted mt-2 text-xs">O uso aparecerá depois de uma conversa ou teste de conexão.</p>}
+        <p className="muted mt-2 text-[11px] leading-4">Saldo de tokens e cota restante pertencem ao provedor e não são informados de forma consistente por estas APIs; a Valurise não inventa esse número.</p>
       </div>
     </section>
   );

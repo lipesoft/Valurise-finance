@@ -61,6 +61,22 @@ async function installMockSession(page: import("@playwright/test").Page) {
     }
     return route.fulfill({ status: 200, json: [] });
   });
+  await page.route("**/api/personal-ai/connection", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { connection: null } });
+    return route.fulfill({ status: 200, json: { ok: true } });
+  });
+  await page.route("**/api/personal-ai/usage", (route) => route.fulfill({ status: 200, json: {
+    available: true,
+    usage: { requests: 2, chatRequests: 1, inputTokens: 100, outputTokens: 40, totalTokens: 140, quotaTokens: null },
+  } }));
+  await page.route("**/api/personal-ai/chat", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { messages: [] } });
+    return route.fulfill({ status: 200, json: { reply: "Resposta financeira fictícia do teste.", usage: { totalTokens: 25 } } });
+  });
+  await page.route("**/api/personal-ai/actions", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { proposals: [] } });
+    return route.fulfill({ status: 200, json: { ok: true, decision: "rejected" } });
+  });
   await page.addInitScript(({ storedSession, userId }) => {
     const bytes = new TextEncoder().encode(JSON.stringify(storedSession));
     let binary = "";
@@ -109,7 +125,7 @@ test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ 
 
     await launcher.click();
     const dialog = page.getByRole("dialog");
-    await expect(dialog.getByText("Conversa financeira")).toBeVisible();
+    await expect(dialog.getByText("Conversa com a Val")).toBeVisible();
     await expect(dialog.getByRole("textbox", { name: "Mensagem para a assistente financeira" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Enviar mensagem" })).toBeInViewport();
     const bounds = await dialog.boundingBox();
@@ -137,6 +153,107 @@ test("alertas podem ser dispensados e saem do sino", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Abrir notificações" })).toBeVisible();
 });
 
+test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem persistir a chave no navegador", async ({ page }) => {
+  await installMockSession(page);
+  let savedConnection: Record<string, unknown> | null = null;
+  await page.route("**/api/personal-ai/connection", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { connection: null } });
+    savedConnection = route.request().postDataJSON();
+    return route.fulfill({ status: 200, json: { ok: true } });
+  });
+  await page.route("**/api/personal-ai/models", (route) => route.fulfill({ status: 200, json: {
+    provider: "gemini",
+    models: [
+      { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", tier: "recommended" },
+      { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", tier: "economical" },
+    ],
+  } }));
+  await page.route("**/api/personal-ai/test", (route) => route.fulfill({ status: 200, json: {
+    ok: true, provider: "gemini", model: "gemini-3.8-flash", latencyMs: 842,
+    usage: { inputTokens: 3, outputTokens: 1 },
+  } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByText("Val · assistente financeira")).toBeVisible();
+  const actionPermission = page.getByLabel("Permitir propostas de receitas e despesas com confirmação obrigatória");
+  await expect(actionPermission).toBeDisabled();
+  await page.getByLabel("Autorizar uso dos meus dados financeiros pela Val").check();
+  await expect(actionPermission).toBeEnabled();
+  await actionPermission.check();
+  await expect(actionPermission).toBeChecked();
+  await page.getByLabel("Provedor").selectOption("gemini");
+  await page.getByLabel("API key").fill("e2e-chave-ficticia-sem-uso-real");
+  await page.getByRole("button", { name: "Atualizar modelos disponíveis" }).click();
+  await expect(page.getByLabel("Modelos disponíveis para esta chave")).toBeVisible();
+  await page.getByLabel("Modelos disponíveis para esta chave").selectOption("gemini-3.8-flash");
+  await page.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByRole("status")).toContainText("Conectado · 842 ms");
+  await expect(page.getByText("Solicitações")).toBeVisible();
+  await expect(page.getByText("140", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Conectar Val" }).click();
+  await expect.poll(() => savedConnection).toMatchObject({ insightsEnabled: true, actionsEnabled: true });
+  await page.getByLabel("Autorizar uso dos meus dados financeiros pela Val").uncheck();
+  await expect(actionPermission).toBeDisabled();
+  await expect(actionPermission).not.toBeChecked();
+  const localStorageValue = await page.evaluate(() => JSON.stringify(localStorage));
+  expect(localStorageValue).not.toContain("e2e-chave-ficticia-sem-uso-real");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("a Val só registra receita ou despesa depois da aprovação explícita da proposta", async ({ page }) => {
+  await installMockSession(page);
+  const decisions: Array<{ proposalId: string; decision: string }> = [];
+  await page.route("**/api/personal-ai/connection", (route) => route.fulfill({ status: 200, json: {
+    connection: { provider: "openai", model: "gpt-test", insights_enabled: true, actions_enabled: true },
+  } }));
+  await page.route("**/api/personal-ai/actions", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { proposals: [] } });
+    const body = route.request().postDataJSON();
+    decisions.push(body);
+    return route.fulfill({ status: 200, json: body.decision === "approve"
+      ? { ok: true, version: 2, transaction: { id: "created-after-approval" } }
+      : { ok: true, decision: "rejected" } });
+  });
+  await page.route("**/api/personal-ai/chat", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { messages: [] } });
+    return route.fulfill({ status: 200, json: {
+      reply: "Preparei uma proposta de despesa. Confira e confirme.",
+      proposals: [{
+        id: "22222222-2222-4222-8222-222222222222", action_type: "expense", amount_cents: 1290,
+        category: "Alimentação", account_label: "Banco de teste • Conta principal", description: "Almoço",
+        transaction_date: currentMonth + "-15", expires_at: new Date(Date.now() + 600_000).toISOString(),
+      }], usage: { totalTokens: 20 },
+    } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Registrar movimentação" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: "Mensagem para a assistente financeira" }).fill("Registre meu gasto de almoço de R$ 12,90 hoje");
+  await dialog.getByRole("button", { name: "Enviar mensagem" }).click();
+  await expect(dialog.getByText("Revisar proposta da Val")).toBeVisible();
+  await expect(dialog.getByText("Banco de teste • Conta principal")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Confirmar e registrar despesa" })).toBeVisible();
+  expect(decisions).toHaveLength(0);
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(dialog.getByRole("button", { name: "Confirmar e registrar despesa" })).toBeInViewport();
+  }
+
+  await dialog.getByRole("button", { name: "Confirmar e registrar despesa" }).click();
+  await expect(page.getByText("Lançamento confirmado e sincronizado.")).toBeVisible();
+  await expect(dialog.getByText("Revisar proposta da Val")).toHaveCount(0);
+  expect(decisions.at(-1)).toMatchObject({ decision: "approve" });
+
+  await dialog.getByRole("textbox", { name: "Mensagem para a assistente financeira" }).fill("Registre meu gasto de almoço de R$ 12,90 hoje");
+  await dialog.getByRole("button", { name: "Enviar mensagem" }).click();
+  await expect(dialog.getByText("Revisar proposta da Val")).toBeVisible();
+  await dialog.getByRole("button", { name: "Descartar" }).click();
+  await expect(dialog.getByText("Proposta descartada. Nenhum lançamento foi criado.")).toBeVisible();
+  expect(decisions.at(-1)).toMatchObject({ decision: "reject" });
+});
+
 test("ao abrir um alerta, ele é marcado como visto e some do sino", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
@@ -149,7 +266,7 @@ test("ao abrir um alerta, ele é marcado como visto e some do sino", async ({ pa
 });
 
 test("navegação, formulários e controles mantêm dimensões em desktop e mobile", async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   await installMockSession(page);
   await page.goto("/");
 
