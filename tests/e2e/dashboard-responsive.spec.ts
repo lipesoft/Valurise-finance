@@ -15,7 +15,7 @@ const mockState = {
       ],
       cards: [],
     }],
-    budgets: [{ id: "budget-qa", category: "Alimentação", limitCents: 100000, month: currentMonth }],
+    budgets: [{ id: "budget-qa", category: "Alimentação", limitCents: 50000, month: currentMonth }],
     goals: [{ id: "goal-qa", name: "Reserva QA", targetCents: 1000000, currentCents: 350000, targetDate: "2027-09-01" }],
     investments: [{ id: "investment-qa", name: "CDB QA", assetClass: "CDB", contributedCents: 200000, currentCents: 204000 }],
     recurringBills: [],
@@ -77,7 +77,7 @@ async function installMockSession(page: import("@playwright/test").Page) {
 test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Boa (manhã|tarde|noite), Pessoa de teste\./ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
 
   for (const width of [375, 390, 430]) {
@@ -89,6 +89,63 @@ test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await expect.poll(() => page.locator("header").evaluate((header) => Math.abs(header.getBoundingClientRect().top))).toBeLessThanOrEqual(1);
+});
+
+test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+
+  for (const width of [375, 390, 430, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    const launcher = page.getByRole("button", { name: "Registrar movimentação" });
+    const launcherBox = await launcher.boundingBox();
+    const iconBox = await launcher.locator("svg").boundingBox();
+    expect(launcherBox).not.toBeNull();
+    expect(iconBox).not.toBeNull();
+    if (width <= 430) {
+      expect(Math.abs((iconBox!.x + iconBox!.width / 2) - (launcherBox!.x + launcherBox!.width / 2))).toBeLessThanOrEqual(1);
+      expect(Math.abs((iconBox!.y + iconBox!.height / 2) - (launcherBox!.y + launcherBox!.height / 2))).toBeLessThanOrEqual(1);
+    }
+
+    await launcher.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("Conversa financeira")).toBeVisible();
+    await expect(dialog.getByRole("textbox", { name: "Mensagem para a assistente financeira" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Enviar mensagem" })).toBeInViewport();
+    const bounds = await dialog.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.width).toBeLessThanOrEqual(width);
+    expect(bounds!.height).toBeLessThanOrEqual(844);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await dialog.getByRole("button", { name: "Fechar" }).click();
+  }
+});
+
+test("alertas podem ser dispensados e saem do sino", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+  const bell = page.getByRole("button", { name: /Abrir notificações \(\d+\)/ });
+  await expect(bell).toBeVisible();
+  await bell.click();
+  const notifications = page.getByRole("region", { name: "Notificações financeiras" });
+  await expect(notifications.getByText("Alimentação chegou a 80%")).toBeVisible();
+  await notifications.getByRole("button", { name: "Dispensar Alimentação chegou a 80%" }).click();
+  await expect(notifications.getByText("Alimentação chegou a 80%")).toHaveCount(0);
+  await notifications.getByRole("button", { name: "Dispensar todos" }).click();
+  await expect(notifications.getByText("Tudo em dia")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Abrir notificações" })).toBeVisible();
+});
+
+test("ao abrir um alerta, ele é marcado como visto e some do sino", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+  const bell = page.getByRole("button", { name: /Abrir notificações \(\d+\)/ });
+  await bell.click();
+  const notifications = page.getByRole("region", { name: "Notificações financeiras" });
+  await notifications.getByRole("button", { name: /Restam R\$/ }).click();
+  await expect(page.getByRole("heading", { name: "Orçamentos" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Abrir notificações" })).toBeVisible();
 });
 
 test("navegação, formulários e controles mantêm dimensões em desktop e mobile", async ({ page }) => {

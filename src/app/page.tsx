@@ -65,6 +65,7 @@ import { motionTokens } from "@/lib/motion";
 import { LoginAmbient } from "@/components/login-ambient";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { loadValuriseState, saveValuriseState } from "@/lib/state-sync";
+import { useSharedGoalInvites, type SharedGoalInvite, type SharedGoalSummary } from "@/hooks/use-shared-goal-invites";
 import { normalizeUsername } from "@/lib/auth/username";
 import { createValuriseBackup, parseValuriseBackup } from "@/lib/backup";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
@@ -359,6 +360,20 @@ function App({ user, logout }: { user: User; logout: () => void }) {
   const [systemPrefersLight, setSystemPrefersLight] = useState(false);
   const [toast, setToast] = useState("");
   const [month, setMonth] = useState(startOfMonth(new Date()));
+  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const saved = JSON.parse(localStorage.getItem(`${key}:dismissed-alerts`) || "[]");
+      return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const localSharedGoalIds = useMemo(
+    () => (data.goals || []).map((goal) => goal.sharedGoalId).filter((id): id is string => Boolean(id)),
+    [data.goals],
+  );
+  const inviteInbox = useSharedGoalInvites(user.username, localSharedGoalIds, setToast);
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { txRef.current = tx; }, [tx]);
   useEffect(() => { profileRef.current = profile; }, [profile]);
@@ -519,6 +534,71 @@ function App({ user, logout }: { user: User; logout: () => void }) {
       setToast("Não foi possível sincronizar esta alteração com sua conta.");
     });
   };
+  const recordSharedGoalContribution = (input: {
+    sharedGoalId: string;
+    amountCents: number;
+    accountLabel: string;
+    date: string;
+    localGoalId?: string;
+  }) => {
+    const operation = stateWriteQueue.current.catch(() => undefined).then(async () => {
+      if (stateConflictRef.current || stateVersionRef.current === null) {
+        setToast("Atualize os dados sincronizados antes de contribuir com a meta.");
+        return false;
+      }
+      const supabase = getSupabaseBrowserClient();
+      if (!supabase) {
+        setToast("A contribuição compartilhada precisa de uma conexão ativa.");
+        return false;
+      }
+      const { data: response, error } = await supabase.rpc("contribute_to_shared_goal", {
+        p_shared_goal_id: input.sharedGoalId,
+        p_amount_cents: input.amountCents,
+        p_account_label: input.accountLabel,
+        p_transaction_date: dateAtLocalNoon(input.date),
+        p_expected_version: stateVersionRef.current,
+        p_local_goal_id: input.localGoalId || null,
+      });
+      if (error) {
+        if (error.code === "40001") {
+          stateConflictRef.current = true;
+          setStateConflict(true);
+          setToast("Os dados mudaram em outro dispositivo. Atualize antes de registrar a contribuição.");
+        } else {
+          setToast("Não foi possível registrar a contribuição compartilhada. Confira a conta e tente novamente.");
+        }
+        return false;
+      }
+      const result = response as { version?: number; transaction?: FinanceTransaction } | null;
+      if (!result?.transaction || !Number.isInteger(result.version)) {
+        setToast("A contribuição foi enviada, mas não recebemos a confirmação. Atualize os dados antes de tentar novamente.");
+        return false;
+      }
+
+      const previousData = dataRef.current;
+      const nextData = input.localGoalId
+        ? {
+            ...previousData,
+            goals: (previousData.goals || []).map((goal) => goal.id === input.localGoalId
+              ? { ...goal, currentCents: goal.currentCents + input.amountCents }
+              : goal),
+          }
+        : previousData;
+      const nextTransactions = [...txRef.current, result.transaction];
+      dataRef.current = nextData;
+      txRef.current = nextTransactions;
+      setData(nextData);
+      setTx(nextTransactions);
+      localStorage.setItem(key + ":data", JSON.stringify(nextData));
+      localStorage.setItem(key + ":tx", JSON.stringify(nextTransactions));
+      stateVersionRef.current = result.version as number;
+      await inviteInbox.refresh();
+      setToast("Contribuição registrada. A meta e o extrato foram atualizados.");
+      return true;
+    });
+    stateWriteQueue.current = operation.then(() => undefined).catch(() => undefined);
+    return operation;
+  };
   const createCategory = (name: string) => {
     const clean = name.trim();
     if (!clean) return;
@@ -552,7 +632,17 @@ function App({ user, logout }: { user: User; logout: () => void }) {
   const notifications = useMemo(
     () => getFinancialNotifications(data, tx),
     [data, tx],
-  );
+  ).filter((item) => !dismissedNotificationIds.includes(item.id));
+  const dismissNotification = (id: string) => {
+    const next = [...new Set([...dismissedNotificationIds, id])];
+    setDismissedNotificationIds(next);
+    localStorage.setItem(`${key}:dismissed-alerts`, JSON.stringify(next));
+  };
+  const dismissAllNotifications = () => {
+    const next = [...new Set([...dismissedNotificationIds, ...notifications.map((item) => item.id)])];
+    setDismissedNotificationIds(next);
+    localStorage.setItem(`${key}:dismissed-alerts`, JSON.stringify(next));
+  };
   if (!stateReady)
     return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5 text-center"><section className="panel w-full max-w-md rounded-2xl p-6"><b className="text-base">{stateLoadError ? "Não foi possível confirmar seus dados" : "Sincronizando sua conta…"}</b><p className="muted mt-2 text-sm leading-6">{stateLoadError ? "Por segurança, a Valurise não vai substituir os dados salvos. Verifique sua conexão e tente novamente." : "Estamos carregando seus dados financeiros com segurança."}</p>{stateLoadError && <button onClick={() => window.location.reload()} className="primary mt-4 min-h-11 rounded-xl px-4 text-sm font-semibold">Tentar novamente</button>}</section></main>;
   if (!data.onboarded)
@@ -673,14 +763,14 @@ function App({ user, logout }: { user: User; logout: () => void }) {
               <Search size={18} />
             </button>
             <button
-              aria-label={`Abrir notificações${notifications.length ? ` (${notifications.length})` : ""}`}
+              aria-label={`Abrir notificações${notifications.length + inviteInbox.invites.length ? ` (${notifications.length + inviteInbox.invites.length})` : ""}`}
               onClick={() => setNotificationsOpen((open) => !open)}
               className="relative grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)]"
             >
               <Bell size={18} />
-              {notifications.length > 0 && (
+              {notifications.length + inviteInbox.invites.length > 0 && (
                 <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--accent)] px-1 text-[9px] font-bold text-[var(--accentfg)]">
-                  {notifications.length > 9 ? "9+" : notifications.length}
+                  {notifications.length + inviteInbox.invites.length > 9 ? "9+" : notifications.length + inviteInbox.invites.length}
                 </span>
               )}
             </button>
@@ -734,6 +824,14 @@ function App({ user, logout }: { user: User; logout: () => void }) {
         {notificationsOpen && (
           <NotificationCenter
             items={notifications}
+            invites={inviteInbox.invites}
+            loadError={inviteInbox.loadError}
+            realtimeAvailable={inviteInbox.realtimeAvailable}
+            respondingId={inviteInbox.respondingId}
+            refreshInvites={inviteInbox.refresh}
+            respondInvite={inviteInbox.respond}
+            dismiss={dismissNotification}
+            dismissAll={dismissAllNotifications}
             close={() => setNotificationsOpen(false)}
             go={(next) => {
               setView(next);
@@ -766,6 +864,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             month={month}
             setMonth={setMonth}
             go={setView}
+            sharedGoals={inviteInbox.sharedGoals}
           />
         )}{" "}
         {view === "statement" && (
@@ -784,7 +883,7 @@ function App({ user, logout }: { user: User; logout: () => void }) {
           <Budgets data={data} tx={tx} month={month} save={saveData} toast={setToast} />
         )}
         {view === "goals" && (
-          <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} />
+          <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} invites={inviteInbox.invites} respondInvite={inviteInbox.respond} sharedGoals={inviteInbox.sharedGoals} recordSharedGoalContribution={recordSharedGoalContribution} userId={user.username} />
         )}
         {view === "categories" && (
           <Categories data={data} tx={tx} month={month} save={saveData} saveTx={saveTx} toast={setToast} />
@@ -890,7 +989,7 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
     if (!bill.active || bill.paidMonth === month) return;
     if (bill.dueDay < day) {
       items.push({
-        id: `late-${bill.id}`,
+        id: `late-${bill.id}-${month}`,
         title: `${bill.name} está atrasada`,
         text: `Venceu no dia ${bill.dueDay}. Marque como paga ou confira o lançamento.`,
         tone: "danger",
@@ -898,7 +997,7 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
       });
     } else if (bill.dueDay - day <= 3) {
       items.push({
-        id: `due-${bill.id}`,
+        id: `due-${bill.id}-${month}`,
         title: `${bill.name} vence em ${bill.dueDay - day} dia(s)`,
         text: `${formatBRL(bill.amountCents)} · vencimento dia ${bill.dueDay}.`,
         tone: "warning",
@@ -920,7 +1019,7 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
     const percent = Math.round((spent / budget.limitCents) * 100);
     if (percent >= 100) {
       items.push({
-        id: `budget-over-${budget.id}`,
+        id: `budget-over-${budget.id}-${month}`,
         title: `${budget.category} ultrapassou o orçamento`,
         text: `Você usou ${formatBRL(spent)} de ${formatBRL(budget.limitCents)}.`,
         tone: "danger",
@@ -928,7 +1027,7 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
       });
     } else if (percent >= 80) {
       items.push({
-        id: `budget-${budget.id}`,
+        id: `budget-${budget.id}-${month}`,
         title: `${budget.category} chegou a ${percent}%`,
         text: `Restam ${formatBRL(budget.limitCents - spent)} neste orçamento.`,
         tone: "warning",
@@ -946,7 +1045,7 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
       today,
     );
     items.push({
-      id: `goal-${goal.id}`,
+      id: `goal-${goal.id}-${month}`,
       title: `${goal.name}: próximo passo`,
       text: `Reserve ${formatBRL(monthly)}/mês para chegar até o prazo.`,
       tone: "success",
@@ -957,10 +1056,26 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
 }
 function NotificationCenter({
   items,
+  invites,
+  loadError,
+  realtimeAvailable,
+  respondingId,
+  refreshInvites,
+  respondInvite,
+  dismiss,
+  dismissAll,
   close,
   go,
 }: {
   items: AppNotification[];
+  invites: SharedGoalInvite[];
+  loadError: boolean;
+  realtimeAvailable: boolean | null;
+  respondingId: string | null;
+  refreshInvites: () => Promise<void>;
+  respondInvite: (inviteId: string, accept: boolean) => Promise<boolean>;
+  dismiss: (id: string) => void;
+  dismissAll: () => void;
   close: () => void;
   go: (view: View) => void;
 }) {
@@ -972,34 +1087,73 @@ function NotificationCenter({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: motionTokens.duration.fast, ease: motionTokens.ease.enter }}
     >
-      <div className="flex items-center justify-between px-2 py-2">
+      <div className="flex items-center justify-between gap-3 px-2 py-2">
         <div>
           <b>Notificações</b>
-          <p className="muted mt-0.5 text-xs">Alertas importantes para seu mês</p>
+          <p className="muted mt-0.5 text-xs">Convites e alertas da sua vida financeira</p>
         </div>
-        <button aria-label="Fechar notificações" onClick={close} className="rounded-lg p-2 hover:bg-[var(--panel2)]">
-          <X size={17} />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button onClick={() => void refreshInvites()} className="rounded-lg px-2 py-2 text-xs text-[var(--accent)] hover:bg-[var(--panel2)]">Atualizar</button>
+          <button aria-label="Fechar notificações" onClick={close} className="rounded-lg p-2 hover:bg-[var(--panel2)]">
+            <X size={17} />
+          </button>
+        </div>
       </div>
+      {realtimeAvailable === false && <p className="mx-2 mt-2 rounded-xl bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-300">Conexão instantânea indisponível. Vamos conferir novos convites automaticamente; você também pode tocar em Atualizar.</p>}
+      {loadError && <p role="alert" className="mx-2 mt-2 rounded-xl bg-[var(--danger)]/10 px-3 py-2 text-xs leading-5 text-[var(--danger)]">Não foi possível consultar os convites agora. Tente atualizar em instantes.</p>}
+      {invites.length > 0 && (
+        <section className="mt-3">
+          <div className="flex items-center justify-between px-2">
+            <b className="text-xs uppercase tracking-wide text-[var(--accent)]">Convites de metas</b>
+            <span className="rounded-full bg-[var(--accent)]/15 px-2 py-0.5 text-[10px] font-semibold text-[var(--accent)]">{invites.length}</span>
+          </div>
+          <div className="mt-2 space-y-2">
+            {invites.map((invite) => {
+              const goal = invite.shared_goals;
+              return <article key={invite.id} className="rounded-xl border border-[var(--accent)]/20 bg-[var(--accent)]/5 p-3">
+                <b className="block truncate text-sm">{goal?.name || "Meta compartilhada"}</b>
+                <p className="muted mt-1 text-xs leading-5">Alguém convidou você para acompanhar esta meta. Seus outros dados financeiros continuam privados.</p>
+                {goal?.target_cents ? <small className="muted mt-1 block">Objetivo: {formatBRL(goal.target_cents)}</small> : null}
+                <div className="mt-3 flex gap-2">
+                  <button disabled={respondingId !== null} onClick={() => void respondInvite(invite.id, false)} className="min-h-10 flex-1 rounded-lg bg-[var(--panel2)] px-3 text-xs font-medium disabled:opacity-50">{respondingId === invite.id ? "Aguarde…" : "Recusar"}</button>
+                  <button disabled={respondingId !== null} onClick={() => void respondInvite(invite.id, true)} className="primary min-h-10 flex-1 rounded-lg px-3 text-xs font-semibold disabled:opacity-50">{respondingId === invite.id ? "Aguarde…" : "Aceitar convite"}</button>
+                </div>
+              </article>;
+            })}
+          </div>
+        </section>
+      )}
       {items.length ? (
-        <div className="mt-1 divide-y divide-[var(--border)]">
-          {items.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => go(item.view)}
-              className="flex w-full items-start gap-3 px-2 py-3 text-left hover:bg-[var(--panel2)]"
-            >
-              <span
-                className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${item.tone === "danger" ? "bg-[var(--danger)]" : item.tone === "warning" ? "bg-amber-400" : "bg-[var(--accent)]"}`}
-              />
-              <span className="min-w-0">
-                <b className="block text-sm">{item.title}</b>
-                <small className="muted mt-1 block leading-4">{item.text}</small>
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : (
+        <section className="mt-3">
+          <div className="flex items-center justify-between px-2">
+            <b className="text-xs uppercase tracking-wide muted">Alertas</b>
+            <button onClick={dismissAll} className="rounded-lg px-2 py-1 text-xs text-[var(--accent)] hover:bg-[var(--panel2)]">Dispensar todos</button>
+          </div>
+          <div className="mt-1 divide-y divide-[var(--border)]">
+            {items.map((item) => (
+              <div key={item.id} className="flex items-start gap-1 px-1 py-1">
+                <button
+                  onClick={() => {
+                    dismiss(item.id);
+                    go(item.view);
+                  }}
+                  className="flex min-w-0 flex-1 items-start gap-3 rounded-xl px-2 py-3 text-left hover:bg-[var(--panel2)]"
+                >
+                  <span
+                    className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${item.tone === "danger" ? "bg-[var(--danger)]" : item.tone === "warning" ? "bg-amber-400" : "bg-[var(--accent)]"}`}
+                  />
+                  <span className="min-w-0">
+                    <b className="block text-sm">{item.title}</b>
+                    <small className="muted mt-1 block leading-4">{item.text}</small>
+                  </span>
+                </button>
+                <button aria-label={`Dispensar ${item.title}`} onClick={() => dismiss(item.id)} className="mt-2 grid h-9 w-9 shrink-0 place-items-center rounded-lg muted hover:bg-[var(--panel2)] hover:text-[var(--fg)]"><X size={15} /></button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {!invites.length && !items.length && !loadError && (
         <div className="px-2 py-7 text-center">
           <span className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]">
             <Bell size={18} />
@@ -1014,22 +1168,25 @@ function NotificationCenter({
 function FinanceChatIcon() {
   return (
     <svg
-      width="23"
-      height="23"
-      viewBox="0 0 24 24"
+      className="block h-6 w-6 shrink-0"
+      viewBox="0 0 28 28"
       fill="none"
       aria-hidden="true"
     >
       <path
-        d="M5 5.5A3.5 3.5 0 0 1 8.5 2h7A3.5 3.5 0 0 1 19 5.5v5A3.5 3.5 0 0 1 15.5 14H12l-3.6 3.1c-.65.56-1.65.1-1.65-.76V14A3.5 3.5 0 0 1 5 10.5v-5Z"
+        d="M14 3.5c-5.55 0-9.5 3.54-9.5 8.24 0 2.02.8 3.82 2.2 5.2L5.2 22l5.05-1.48c1.13.5 2.4.76 3.75.76 5.55 0 9.5-3.54 9.5-8.24S19.55 3.5 14 3.5Z"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.7"
         strokeLinejoin="round"
       />
       <path
-        d="m11.25 6.3.55 1.9 1.9.55-1.9.55-.55 1.9-.55-1.9-1.9-.55 1.9-.55.55-1.9Z"
-        fill="currentColor"
+        d="m9 14.05 3.2-3.1 2.5 2.35 4.35-4.2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
+      <circle cx="19.05" cy="9.1" r="1.05" fill="currentColor" />
     </svg>
   );
 }
@@ -1382,6 +1539,7 @@ function Dashboard({
   month,
   setMonth,
   go,
+  sharedGoals = [],
 }: any) {
   const [customizingDashboard, setCustomizingDashboard] = useState(false);
   const [greeting, setGreeting] = useState("Olá");
@@ -1457,6 +1615,7 @@ function Dashboard({
         save={save}
         customizing={customizingDashboard}
         setCustomizing={setCustomizingDashboard}
+        sharedGoals={sharedGoals}
       />
       <StaggerItem>
       <div className="mt-5 flex justify-center">
@@ -1503,6 +1662,7 @@ function DashboardWidgets({
   save,
   customizing,
   setCustomizing,
+  sharedGoals = [],
 }: any) {
   const savedWidgets = data.dashboardWidgets || [];
   const widgets = [
@@ -1536,7 +1696,7 @@ function DashboardWidgets({
     ) : id === "budget" ? (
       <BudgetPreview key={id} data={data} tx={tx} go={go} />
     ) : id === "goal" ? (
-      <GoalPreview key={id} data={data} go={go} />
+      <GoalPreview key={id} data={data} go={go} sharedGoals={sharedGoals} />
     ) : id === "investment" ? (
       <InvestmentPreview key={id} data={data} go={go} />
     ) : id === "calendar" ? (
@@ -2302,9 +2462,29 @@ function BudgetPreview({ data, tx, go }: any) {
     </section>
   );
 }
-function GoalPreview({ data, go }: any) {
-  const goal = data.goals?.[0];
-  if (!goal)
+function GoalPreview({ data, go, sharedGoals = [] }: { data: Data; go: (view: View) => void; sharedGoals?: SharedGoalSummary[] }) {
+  const personalGoals = (data.goals || []).map((goal) => {
+    const shared = sharedGoals.find((candidate) => candidate.id === goal.sharedGoalId);
+    return {
+      id: goal.id,
+      name: shared?.name || goal.name,
+      currentCents: shared?.current_cents ?? goal.currentCents,
+      targetCents: shared?.target_cents ?? goal.targetCents,
+      shared: Boolean(goal.sharedGoalId),
+    };
+  });
+  const linkedIds = new Set((data.goals || []).map((goal) => goal.sharedGoalId).filter(Boolean));
+  const receivedGoals = sharedGoals
+    .filter((goal) => !linkedIds.has(goal.id))
+    .map((goal) => ({
+      id: goal.id,
+      name: goal.name,
+      currentCents: goal.current_cents,
+      targetCents: goal.target_cents,
+      shared: true,
+    }));
+  const goals = [...personalGoals, ...receivedGoals].slice(0, 2);
+  if (!goals.length)
     return (
       <section className="panel rounded-2xl p-5">
         <PreviewHeader
@@ -2321,10 +2501,6 @@ function GoalPreview({ data, go }: any) {
         </button>
       </section>
     );
-  const percentage = Math.min(
-    100,
-    Math.round((goal.currentCents / goal.targetCents) * 100),
-  );
   return (
     <section className="panel rounded-2xl p-5">
       <PreviewHeader
@@ -2332,20 +2508,22 @@ function GoalPreview({ data, go }: any) {
         title="Metas"
         action={() => go("goals")}
       />
-      <div className="mt-5">
-        <div className="flex justify-between text-sm">
-          <span>{goal.name}</span>
-          <span className="muted">{percentage}%</span>
-        </div>
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--panel2)]">
-          <AnimatedProgress
-            value={percentage}
-            className="block h-full rounded-full bg-[var(--accent)]"
-          />
-        </div>
-        <p className="muted mt-3 text-xs">
-          {formatBRL(goal.currentCents)} de {formatBRL(goal.targetCents)}
-        </p>
+      <div className="mt-5 space-y-4">
+        {goals.map((goal) => {
+          const percentage = goal.targetCents > 0
+            ? Math.min(100, Math.round((goal.currentCents / goal.targetCents) * 100))
+            : 0;
+          return <div key={goal.id}>
+            <div className="flex min-w-0 items-center justify-between gap-3 text-sm">
+              <span className="min-w-0 truncate">{goal.name}<small className="muted ml-2">{goal.shared ? "Compartilhada" : "Pessoal"}</small></span>
+              <span className="shrink-0 muted">{percentage}%</span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--panel2)]">
+              <AnimatedProgress value={percentage} className="block h-full rounded-full bg-[var(--accent)]" />
+            </div>
+            <p className="muted mt-2 text-xs">{formatBRL(goal.currentCents)} de {formatBRL(goal.targetCents)}</p>
+          </div>;
+        })}
       </div>
     </section>
   );
@@ -2880,7 +3058,7 @@ function Budgets({ data, tx, month, save, toast }: any) {
     </section>
   );
 }
-function Goals({ data, transactions = [], save, saveTransactions, toast }: any) {
+function Goals({ data, transactions = [], save, saveTransactions, toast, invites = [], respondInvite, sharedGoals = [], recordSharedGoalContribution, userId }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
@@ -2892,22 +3070,14 @@ function Goals({ data, transactions = [], save, saveTransactions, toast }: any) 
   const [contribution, setContribution] = useState("");
   const [contributionAccount, setContributionAccount] = useState("");
   const [contributionDate, setContributionDate] = useState(format(new Date(), "yyyy-MM-dd"));
+  const [savingContribution, setSavingContribution] = useState(false);
   const [sharingGoal, setSharingGoal] = useState<any | null>(null);
   const [recipientId, setRecipientId] = useState("");
   const [sharing, setSharing] = useState(false);
-  const [invites, setInvites] = useState<any[]>([]);
   const items = data.goals || [];
   const accounts = financialAccountOptions(data);
-  const loadInvites = async () => {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-    const { data: rows } = await supabase
-      .from("shared_goal_invites")
-      .select("id, status, shared_goals(name, target_cents, target_date)")
-      .eq("status", "pending");
-    setInvites(rows || []);
-  };
-  useEffect(() => { void loadInvites(); }, []);
+  const linkedSharedIds = new Set(items.map((item: any) => item.sharedGoalId).filter(Boolean));
+  const receivedSharedGoals = (sharedGoals as SharedGoalSummary[]).filter((goal) => !linkedSharedIds.has(goal.id));
   const persist = () => {
     const targetCents = Math.round(Number(target.replace(",", ".")) * 100);
     const parsedCurrent = current.trim() ? Number(current.replace(",", ".")) : 0;
@@ -2938,13 +3108,42 @@ function Goals({ data, transactions = [], save, saveTransactions, toast }: any) 
     setEditing(null);
   };
   const startEdit = (item: any) => { setEditing(item); setName(item.name); setTarget(centsInput(item.targetCents)); setCurrent(centsInput(item.currentCents)); setTargetDate(item.targetDate || ""); };
-  const contribute = () => {
+  const contribute = async () => {
     const cents = Math.round(Number(contribution.replace(",", ".")) * 100);
     const goal = items.find((item: any) => item.id === contributionFor);
-    if (!goal || !Number.isSafeInteger(cents) || cents <= 0 || !contributionAccount || !contributionDate) {
+    const sharedGoal = contributionFor.startsWith("shared:")
+      ? (sharedGoals as SharedGoalSummary[]).find((item) => item.id === contributionFor.slice("shared:".length))
+      : null;
+    const linkedSharedGoal = goal?.sharedGoalId
+      ? (sharedGoals as SharedGoalSummary[]).find((item) => item.id === goal.sharedGoalId)
+      : null;
+    if (goal?.sharedGoalId && !linkedSharedGoal) {
+      toast("Aguarde a sincronização desta meta compartilhada e tente novamente.");
+      return;
+    }
+    if ((!goal && !sharedGoal) || !Number.isSafeInteger(cents) || cents <= 0 || !contributionAccount || !contributionDate) {
       toast("Informe um valor positivo, a conta de origem e a data da contribuição.");
       return;
     }
+    const destination = sharedGoal || linkedSharedGoal;
+    if (destination) {
+      setSavingContribution(true);
+      const saved = await recordSharedGoalContribution({
+        sharedGoalId: destination.id,
+        amountCents: cents,
+        accountLabel: contributionAccount,
+        date: contributionDate,
+        ...(goal ? { localGoalId: goal.id } : {}),
+      });
+      setSavingContribution(false);
+      if (!saved) return;
+      setContribution("");
+      setContributionFor("");
+      setContributionAccount("");
+      setContributionDate(format(new Date(), "yyyy-MM-dd"));
+      return;
+    }
+    if (!goal) return;
     const transaction: FinanceTransaction = {
       id: crypto.randomUUID(),
       type: "transfer",
@@ -2972,44 +3171,42 @@ function Goals({ data, transactions = [], save, saveTransactions, toast }: any) 
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) return toast("Faça login novamente para compartilhar uma meta.");
     setSharing(true);
-    let sharedGoalId = sharingGoal.sharedGoalId;
-    if (!sharedGoalId) {
-      const created = await supabase.rpc("create_shared_goal", {
-        p_name: sharingGoal.name,
-        p_target_cents: sharingGoal.targetCents,
-        p_target_date: sharingGoal.targetDate || null,
-      });
-      if (created.error || !created.data) {
-        setSharing(false);
-        return toast("Não foi possível criar a meta compartilhada. Tente novamente.");
+    try {
+      let sharedGoalId = sharingGoal.sharedGoalId;
+      if (!sharedGoalId) {
+        const created = await supabase.rpc("create_shared_goal_with_initial_amount", {
+          p_name: sharingGoal.name,
+          p_target_cents: sharingGoal.targetCents,
+          p_target_date: sharingGoal.targetDate || null,
+          p_initial_cents: sharingGoal.currentCents,
+        });
+        if (created.error || !created.data) {
+          toast("Não foi possível criar a meta compartilhada. Tente novamente.");
+          return;
+        }
+        sharedGoalId = created.data;
+        const linkedGoals = items.map((item: any) =>
+          item.id === sharingGoal.id ? { ...item, sharedGoalId } : item,
+        );
+        save({ ...data, goals: linkedGoals });
+        setSharingGoal({ ...sharingGoal, sharedGoalId });
       }
-      sharedGoalId = created.data;
+      const invitation = await supabase.rpc("invite_to_shared_goal", {
+        p_goal_id: sharedGoalId,
+        p_recipient_public_id: recipientId.trim(),
+      });
+      if (invitation.error) {
+        toast(invitation.error.message || "ID Valurise não encontrado. A meta já ficou preparada; corrija o ID e tente novamente.");
+        return;
+      }
+      setRecipientId("");
+      setSharingGoal(null);
+      toast("Convite de meta enviado. Ele aparecerá no sino e na área de Metas da outra conta.");
+    } catch {
+      toast("Não foi possível enviar o convite agora. A meta permanece salva para uma nova tentativa.");
+    } finally {
+      setSharing(false);
     }
-    const invitation = await supabase.rpc("invite_to_shared_goal", {
-      p_goal_id: sharedGoalId,
-      p_recipient_public_id: recipientId.trim(),
-    });
-    setSharing(false);
-    if (invitation.error) return toast(invitation.error.message || "ID Valurise não encontrado.");
-    save({
-      ...data,
-      goals: items.map((item: any) =>
-        item.id === sharingGoal.id ? { ...item, sharedGoalId } : item,
-      ),
-    });
-    setRecipientId("");
-    setSharingGoal(null);
-    toast("Convite de meta enviado.");
-  };
-  const respondInvite = async (inviteId: string, accept: boolean) => {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-    const { error } = await supabase.rpc("respond_shared_goal_invite", {
-      p_invite_id: inviteId,
-      p_accept: accept,
-    });
-    toast(error ? "Não foi possível responder ao convite." : accept ? "Meta compartilhada adicionada." : "Convite recusado.");
-    void loadInvites();
   };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
@@ -3022,75 +3219,57 @@ function Goals({ data, transactions = [], save, saveTransactions, toast }: any) 
       <p className="muted mt-2 text-sm">
         Acompanhe objetivos financeiros no seu ritmo.
       </p>
-      {invites.length > 0 && <section className="panel mt-4 rounded-2xl p-4"><b className="text-sm">Convites de metas</b><div className="mt-3 space-y-2">{invites.map((invite) => <div key={invite.id} className="flex items-center justify-between gap-3 rounded-xl bg-[var(--panel2)] p-3"><span className="min-w-0"><b className="block truncate text-sm">{invite.shared_goals?.name || "Meta compartilhada"}</b><small className="muted">Convite para acompanhar em conjunto</small></span><span className="flex shrink-0 gap-2"><button onClick={() => void respondInvite(invite.id, false)} className="muted text-xs">Recusar</button><button onClick={() => void respondInvite(invite.id, true)} className="rounded-lg bg-[var(--accent)] px-2 py-1 text-xs font-medium text-[var(--accentfg)]">Aceitar</button></span></div>)}</div></section>}
-      {items.length ? (
+      {invites.length > 0 && <section className="panel mt-4 rounded-2xl p-4"><div className="flex items-center justify-between gap-3"><div><b className="text-sm">Convites de metas</b><p className="muted mt-1 text-xs">Responda aqui ou pelo sino de notificações.</p></div><span className="rounded-full bg-[var(--accent)]/15 px-2 py-1 text-xs font-semibold text-[var(--accent)]">{invites.length}</span></div><div className="mt-3 space-y-2">{invites.map((invite: SharedGoalInvite) => <div key={invite.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--panel2)] p-3"><span className="min-w-0 flex-1"><b className="block truncate text-sm">{invite.shared_goals?.name || "Meta compartilhada"}</b><small className="muted">Convite para acompanhar em conjunto</small></span><span className="flex shrink-0 gap-2"><button onClick={() => void respondInvite(invite.id, false)} className="muted min-h-10 rounded-lg px-3 text-xs">Recusar</button><button onClick={() => void respondInvite(invite.id, true)} className="primary min-h-10 rounded-lg px-3 text-xs font-medium">Aceitar</button></span></div>)}</div></section>}
+      {items.length || receivedSharedGoals.length ? (
         <div className="mt-5 space-y-3">
           {items.map((item: any) => {
-            const percentage = Math.min(
-              100,
-              Math.round((item.currentCents / item.targetCents) * 100),
-            );
+            const sharedGoal = (sharedGoals as SharedGoalSummary[]).find((goal) => goal.id === item.sharedGoalId);
+            const currentCents = sharedGoal?.current_cents ?? item.currentCents;
+            const targetCents = sharedGoal?.target_cents ?? item.targetCents;
+            const goalName = sharedGoal?.name ?? item.name;
+            const targetDate = sharedGoal?.target_date ?? item.targetDate;
+            const percentage = targetCents > 0 ? Math.min(100, Math.round((currentCents / targetCents) * 100)) : 0;
             return (
               <article className="panel rounded-2xl p-4" key={item.id}>
-                <div className="flex justify-between gap-3">
-                  <b>{item.name}</b>
-                  <span className="text-sm">{percentage}%</span>
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <span className="min-w-0"><b className="block truncate">{goalName}</b>{sharedGoal && <small className="muted">Meta compartilhada</small>}</span>
+                  <span className="shrink-0 text-sm">{percentage}%</span>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--panel2)]">
-                  <AnimatedProgress
-                    value={percentage}
-                    className="block h-full bg-[var(--accent)]"
-                  />
+                  <AnimatedProgress value={percentage} className="block h-full bg-[var(--accent)]" />
                 </div>
-                <p className="muted mt-2 text-sm">
-                  {formatBRL(item.currentCents)} de{" "}
-                  {formatBRL(item.targetCents)}
-                </p>
-                {item.targetDate && (
-                  <p className="muted mt-1 text-xs">
-                    Para cumprir até{" "}
-                    {format(
-                      new Date(`${item.targetDate}T12:00:00`),
-                      "dd/MM/yyyy",
-                    )}
-                    :{" "}
-                    {formatBRL(
-                      monthlyContributionNeeded(
-                        item.targetCents,
-                        item.currentCents,
-                        item.targetDate,
-                      ),
-                    )}
-                    /mês
-                  </p>
-                )}
-                {transactions.some((transaction: FinanceTransaction) => transaction.goalId === item.id) && (
+                <p className="muted mt-2 text-sm">{formatBRL(currentCents)} de {formatBRL(targetCents)}</p>
+                {targetDate && <p className="muted mt-1 text-xs">Para cumprir até {format(new Date(`${targetDate}T12:00:00`), "dd/MM/yyyy")}: {formatBRL(monthlyContributionNeeded(targetCents, currentCents, targetDate))}/mês</p>}
+                {sharedGoal ? <SharedGoalStatement goal={sharedGoal} currentUserId={userId} /> : transactions.some((transaction: FinanceTransaction) => transaction.goalId === item.id) && (
                   <div className="mt-4 border-t border-[var(--border)] pt-3">
                     <p className="muted text-[11px] font-semibold uppercase tracking-wide">Contribuições recentes</p>
                     <div className="mt-2 space-y-2">
-                      {transactions
-                        .filter((transaction: FinanceTransaction) => transaction.type === "transfer" && transaction.goalId === item.id)
-                        .sort((a: FinanceTransaction, b: FinanceTransaction) => b.date.localeCompare(a.date))
-                        .slice(0, 3)
-                        .map((transaction: FinanceTransaction) => (
-                          <div className="flex items-center justify-between gap-3 text-xs" key={transaction.id}>
-                            <span className="min-w-0 truncate muted">
-                              {format(new Date(transaction.date), "dd/MM/yyyy")} · {transaction.account}
-                            </span>
-                            <b className="shrink-0">+{formatBRL(transaction.amountCents)}</b>
-                          </div>
-                        ))}
+                      {transactions.filter((transaction: FinanceTransaction) => transaction.type === "transfer" && transaction.goalId === item.id).sort((a: FinanceTransaction, b: FinanceTransaction) => b.date.localeCompare(a.date)).slice(0, 3).map((transaction: FinanceTransaction) => <div className="flex items-center justify-between gap-3 text-xs" key={transaction.id}><span className="min-w-0 truncate muted">{format(new Date(transaction.date), "dd/MM/yyyy")} · {transaction.account}</span><b className="shrink-0">+{formatBRL(transaction.amountCents)}</b></div>)}
                     </div>
                   </div>
                 )}
-                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2"><button onClick={() => { setContributionFor(item.id); setContribution(""); setContributionAccount(""); setContributionDate(format(new Date(), "yyyy-MM-dd")); }} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button><button onClick={() => setSharingGoal(item)} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button></div>
-                <ItemActions label={`a meta ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
+                  <button onClick={() => { setContributionFor(item.id); setContribution(""); setContributionAccount(""); setContributionDate(format(new Date(), "yyyy-MM-dd")); }} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button>
+                  <button onClick={() => setSharingGoal({ ...item, currentCents })} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button>
+                </div>
+                {!item.sharedGoalId && <ItemActions label={`a meta ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />}
               </article>
             );
           })}
+          {receivedSharedGoals.map((goal: SharedGoalSummary) => {
+            const percentage = goal.target_cents > 0 ? Math.min(100, Math.round((goal.current_cents / goal.target_cents) * 100)) : 0;
+            return <article className="panel rounded-2xl p-4" key={goal.id}>
+              <div className="flex min-w-0 items-center justify-between gap-3"><span className="min-w-0"><b className="block truncate">{goal.name}</b><small className="muted">Meta compartilhada</small></span><span className="shrink-0 text-sm">{percentage}%</span></div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--panel2)]"><AnimatedProgress value={percentage} className="block h-full bg-[var(--accent)]" /></div>
+              <p className="muted mt-2 text-sm">{formatBRL(goal.current_cents)} de {formatBRL(goal.target_cents)}</p>
+              {goal.target_date && <p className="muted mt-1 text-xs">Prazo: {format(new Date(`${goal.target_date}T12:00:00`), "dd/MM/yyyy")}</p>}
+              <SharedGoalStatement goal={goal} currentUserId={userId} />
+              <button onClick={() => { setContributionFor(`shared:${goal.id}`); setContribution(""); setContributionAccount(""); setContributionDate(format(new Date(), "yyyy-MM-dd")); }} className="mt-3 text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button>
+            </article>;
+          })}
         </div>
       ) : (
-        <Empty text="Nenhuma meta criada." />
+        <Empty text="Nenhuma meta criada ou compartilhada com você." />
       )}
       {contributionFor && (
         <Sheet close={() => setContributionFor("")}>
@@ -3120,8 +3299,8 @@ function Goals({ data, transactions = [], save, saveTransactions, toast }: any) 
               <input className="field mt-1" type="date" max={format(new Date(), "yyyy-MM-dd")} value={contributionDate} onChange={(event) => setContributionDate(event.target.value)} />
             </label>
             {!accounts.length && <p className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Cadastre uma conta antes de contribuir com esta meta.</p>}
-            <button disabled={!accounts.length} onClick={contribute} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">
-              Confirmar contribuição
+            <button disabled={!accounts.length || savingContribution} onClick={() => void contribute()} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">
+              {savingContribution ? "Registrando…" : "Confirmar contribuição"}
             </button>
           </section>
         </Sheet>
@@ -3175,6 +3354,17 @@ function Goals({ data, transactions = [], save, saveTransactions, toast }: any) 
       {deleting && <DeleteConfirm title="Excluir meta?" description={`A meta “${deleting.name}” e o seu progresso individual serão removidos. Isso não apaga lançamentos da sua conta.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, goals: items.filter((item: any) => item.id !== deleting.id) }); toast("Meta excluída."); setDeleting(null); }} />}
     </section>
   );
+}
+function SharedGoalStatement({ goal, currentUserId }: { goal: SharedGoalSummary; currentUserId: string }) {
+  const contributions = goal.shared_goal_contributions || [];
+  return <section className="mt-4 border-t border-[var(--border)] pt-3">
+    <p className="muted text-[11px] font-semibold uppercase tracking-wide">Extrato da meta</p>
+    <div className="mt-2 divide-y divide-[var(--border)]">
+      {goal.initial_cents > 0 && <div className="flex items-center justify-between gap-3 py-2 text-xs"><span className="min-w-0"><b className="block">Saldo ao compartilhar</b><small className="muted">{format(new Date(goal.created_at), "dd/MM/yyyy")}</small></span><b className="shrink-0">{formatBRL(goal.initial_cents)}</b></div>}
+      {contributions.slice(0, 5).map((contribution) => <div className="flex items-center justify-between gap-3 py-2 text-xs" key={contribution.id}><span className="min-w-0"><b className="block">{contribution.note === "Saldo ao compartilhar" ? "Saldo ao compartilhar" : contribution.user_id === currentUserId ? "Você contribuiu" : "Participante contribuiu"}</b><small className="muted">{format(new Date(contribution.contributed_at), "dd/MM/yyyy · HH:mm")}</small></span><b className="shrink-0 text-[var(--accent)]">+{formatBRL(contribution.amount_cents)}</b></div>)}
+    </div>
+    {!goal.initial_cents && !contributions.length && <p className="muted mt-2 text-xs">Nenhuma contribuição registrada ainda.</p>}
+  </section>;
 }
 function Empty({ text }: any) {
   return <p className="muted mt-4 text-sm">{text}</p>;
@@ -3798,6 +3988,7 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
     { id: "welcome", role: "assistant", content: "Olá! Posso ajudar você a entender sua vida financeira ou registrar uma movimentação." },
   ]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
   const [provider, setProvider] = useState("");
@@ -3805,24 +3996,38 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     const loadConnection = async () => {
-      const supabase = getSupabaseBrowserClient();
-      const { data } = await supabase?.auth.getSession() || {};
-      if (!data?.session?.access_token) return;
-      const response = await fetch("/api/personal-ai/connection", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
-      const result = await response.json();
-      if (response.ok && result.connection) {
-        setConnected(true);
-        setProvider(result.connection.provider);
-        const historyResponse = await fetch("/api/personal-ai/chat", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
-        const history = await historyResponse.json();
-        if (historyResponse.ok && Array.isArray(history.messages) && history.messages.length) {
-          setMessages(history.messages);
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { data } = await supabase?.auth.getSession() || {};
+        if (!data?.session?.access_token) return;
+        const headers = { Authorization: `Bearer ${data.session.access_token}` };
+        const response = await fetch("/api/personal-ai/connection", { headers });
+        const result = await response.json();
+        if (cancelled) return;
+        if (!response.ok) throw new Error(result.error || "Não foi possível verificar a conexão da IA.");
+        if (result.connection) {
+          setConnected(true);
+          setProvider(result.connection.provider);
+          const historyResponse = await fetch("/api/personal-ai/chat", { headers });
+          const history = await historyResponse.json();
+          if (!historyResponse.ok) throw new Error(history.error || "Não foi possível carregar a conversa anterior.");
+          if (!cancelled && Array.isArray(history.messages) && history.messages.length) {
+            setMessages(history.messages.slice(-40));
+          }
         }
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Não foi possível conectar ao chat.");
       }
     };
     void loadConnection();
+    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, loading]);
 
   const send = async () => {
     const content = input.trim();
@@ -3850,25 +4055,26 @@ function PersonalFinanceChat({ startMovement, openSettings }: { startMovement: (
       setError(reason instanceof Error ? reason.message : "Não foi possível responder agora.");
     } finally { setLoading(false); }
   };
-  return <section className="flex max-h-[75dvh] min-h-[32rem] flex-col">
-    <div className="flex items-start gap-3 border-b border-[var(--border)] pb-4">
+  return <section className="flex h-[min(78dvh,44rem)] min-h-[24rem] min-w-0 flex-col overflow-hidden">
+    <div className="flex shrink-0 items-start gap-3 border-b border-[var(--border)] pb-4 pr-8">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
       <div className="min-w-0 flex-1"><b className="block text-lg">Conversa financeira</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Atalhos funcionam sem IA. Conecte sua IA pessoal quando quiser."}</p></div>
-      {!connected && <button onClick={openSettings} className="shrink-0 text-xs font-semibold text-[var(--accent)]">Configurar IA</button>}
+      {!connected && <button onClick={openSettings} className="min-h-10 shrink-0 rounded-lg px-2 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--panel2)]">Configurar IA</button>}
     </div>
-    <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-      {messages.map((message) => <div key={message.id} className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === "user" ? "primary ml-auto rounded-br-md" : "bg-[var(--panel2)] rounded-bl-md"}`}>{message.content}</div>)}
+    <div aria-live="polite" className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
+      {messages.map((message) => <div key={message.id} className={`max-w-[88%] break-words rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere] ${message.role === "user" ? "primary ml-auto rounded-br-md" : "bg-[var(--panel2)] rounded-bl-md"}`}>{message.content}</div>)}
       {loading && <div className="w-fit rounded-2xl rounded-bl-md bg-[var(--panel2)] px-4 py-3 text-sm"><span className="inline-flex gap-1"><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:150ms]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:300ms]" /></span></div>}
+      <div ref={messagesEndRef} />
     </div>
-    {error && <p className="mt-3 text-xs text-[var(--danger)]">{error}</p>}
-    <div className="mt-4 flex flex-wrap gap-2">
-      {choices.map(([kind, label, Icon]) => <button key={label} onClick={() => startMovement(kind)} className="flex items-center gap-2 rounded-full bg-[var(--panel2)] px-3 py-2 text-xs font-medium hover:ring-1 hover:ring-[var(--accent)]"><Icon size={14} className="text-[var(--accent)]" />{label}</button>)}
+    {error && <p role="alert" className="mt-2 shrink-0 text-xs leading-5 text-[var(--danger)]">{error}</p>}
+    <div className="mt-3 flex shrink-0 flex-nowrap gap-2 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none]">
+      {choices.map(([kind, label, Icon]) => <button key={label} onClick={() => startMovement(kind)} className="flex min-h-10 shrink-0 items-center gap-2 rounded-full bg-[var(--panel2)] px-3 text-xs font-medium hover:ring-1 hover:ring-[var(--accent)]"><Icon size={14} className="text-[var(--accent)]" />{label}</button>)}
     </div>
-    <form className="mt-3 flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--panel2)] p-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-      <input value={input} onChange={(event) => setInput(event.target.value)} className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida ou use um atalho"} />
+    <form className="mt-2 flex shrink-0 items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--panel2)] p-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+      <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida ou use um atalho"} />
       <button type="submit" disabled={!input.trim() || loading} aria-label="Enviar mensagem" className="primary grid h-10 w-10 shrink-0 place-items-center rounded-xl disabled:opacity-50"><SendHorizontal size={17} /></button>
     </form>
-    <p className="muted mt-2 text-center text-[10px]">A IA não realiza transações. Revogue a conexão a qualquer momento em Configurações.</p>
+    <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">A IA não realiza transações. Revogue a conexão a qualquer momento em Configurações.</p>
   </section>;
 }
 function Launcher({ data, close, saved, createCategory, createInvestment, openSettings }: any) {

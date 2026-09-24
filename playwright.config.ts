@@ -21,6 +21,7 @@ const webServerEnv: Record<string, string> = {
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: authE2EConfigured
     ? process.env.E2E_SUPABASE_PUBLISHABLE_KEY!
     : "e2e-local-only-publishable-key",
+  NEXT_PUBLIC_SUPABASE_REALTIME_ENABLED: authE2EConfigured ? "true" : "false",
   SUPABASE_SECRET_KEY: authE2EConfigured
     ? process.env.E2E_SUPABASE_SECRET_KEY!
     : "e2e-local-only-secret-key",

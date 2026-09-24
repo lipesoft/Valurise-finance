@@ -19,6 +19,7 @@ export type FinanceTransaction = {
   installmentTotalCents?: number;
   investmentId?: string;
   goalId?: string;
+  sharedGoalId?: string;
 };
 
 const MAX_INSTALLMENTS = 48;

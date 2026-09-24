@@ -12,7 +12,7 @@ const user = {
   created_at: new Date().toISOString(),
 };
 
-function initialState() {
+function initialState(): { data: Record<string, unknown>; transactions: Record<string, unknown>[]; profile: Record<string, unknown> } {
   return {
     data: {
       categories: ["Alimentação"],
@@ -47,9 +47,12 @@ async function fulfillCors(route: Route, status: number, body?: unknown) {
   });
 }
 
-async function loginWithFinancialSeed(page: Page) {
+async function loginWithFinancialSeed(page: Page, initialInvites: Record<string, unknown>[] = []) {
   let state = initialState();
   let version = 1;
+  let invites = [...initialInvites];
+  const sharedGoalId = "00000000-0000-4000-8000-000000000777";
+  let contributions: Record<string, unknown>[] = [];
   const profile = {
     full_name: "Pessoa de teste",
     account_status: "active",
@@ -64,7 +67,57 @@ async function loginWithFinancialSeed(page: Page) {
 
     if (url.pathname === "/auth/v1/user") return fulfillCors(route, 200, user);
     if (url.pathname === "/rest/v1/profiles") return fulfillCors(route, 200, profile);
-    if (url.pathname === "/rest/v1/shared_goal_invites") return fulfillCors(route, 200, []);
+    if (url.pathname === "/rest/v1/shared_goal_invites") {
+      const status = url.searchParams.get("status");
+      const rows = invites.filter((invite) => !status || invite.status === status.replace("eq.", ""));
+      return fulfillCors(route, 200, rows);
+    }
+    if (url.pathname === "/rest/v1/shared_goals") {
+      const goal = {
+        id: sharedGoalId,
+        owner_id: "00000000-0000-4000-8000-000000000555",
+        name: "Casa própria",
+        target_cents: 30_000_000,
+        target_date: "2030-01-01",
+        initial_cents: 0,
+        created_at: new Date().toISOString(),
+        shared_goal_contributions: contributions,
+      };
+      return fulfillCors(route, 200, invites.some((invite) => invite.status === "accepted") ? [goal] : []);
+    }
+    if (url.pathname === "/rest/v1/rpc/respond_shared_goal_invite") {
+      const body = request.postDataJSON() as { p_invite_id: string; p_accept: boolean };
+      invites = invites.map((invite) => invite.id === body.p_invite_id
+        ? { ...invite, status: body.p_accept ? "accepted" : "declined" }
+        : invite);
+      return fulfillCors(route, 200, {});
+    }
+    if (url.pathname === "/rest/v1/rpc/contribute_to_shared_goal") {
+      const body = request.postDataJSON() as { p_amount_cents: number; p_transaction_date: string; p_account_label: string };
+      const transaction = {
+        id: "transaction-shared-e2e",
+        type: "transfer",
+        subtype: "goal_contribution",
+        amountCents: body.p_amount_cents,
+        category: "Meta • Casa própria",
+        account: body.p_account_label,
+        destinationAccount: "Meta • Casa própria",
+        description: "Contribuição • Casa própria",
+        date: body.p_transaction_date,
+        createdAt: new Date().toISOString(),
+        sharedGoalId,
+      };
+      state = { ...state, transactions: [...state.transactions, transaction] };
+      version += 1;
+      contributions = [...contributions, {
+        id: "contribution-shared-e2e",
+        user_id: user.id,
+        amount_cents: body.p_amount_cents,
+        note: "Contribuição registrada no Valurise",
+        contributed_at: body.p_transaction_date,
+      }];
+      return fulfillCors(route, 200, { version, transaction });
+    }
     if (url.pathname === "/rest/v1/user_financial_state") {
       if (request.method() === "GET") return fulfillCors(route, 200, { state, version });
       if (request.method() === "PATCH") {
@@ -98,6 +151,44 @@ async function loginWithFinancialSeed(page: Page) {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Pessoa de teste/ })).toBeVisible({ timeout: 20_000 });
 }
+
+test("convite de meta chega, pode ser aceito e a meta compartilhada atualiza no dashboard e extrato", async ({ page }) => {
+  await loginWithFinancialSeed(page, [{
+    id: "invite-e2e",
+    shared_goal_id: "00000000-0000-4000-8000-000000000777",
+    status: "pending",
+    created_at: new Date().toISOString(),
+    shared_goals: { name: "Casa própria", target_cents: 300_000_00, target_date: "2030-01-01" },
+  }]);
+
+  const bell = page.getByRole("button", { name: "Abrir notificações (1)" });
+  await expect(bell).toBeVisible();
+  await bell.click();
+  const notifications = page.getByRole("region", { name: "Notificações financeiras" });
+  await expect(notifications.getByText("Casa própria")).toBeVisible();
+  await expect(notifications.getByText(/outros dados financeiros continuam privados/)).toBeVisible();
+  await notifications.getByRole("button", { name: "Aceitar convite" }).click();
+  await expect(notifications.getByText("Tudo em dia")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Abrir notificações" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Metas", exact: true }).click();
+  const goalCard = page.locator("article").filter({ hasText: "Casa própria" });
+  await expect(goalCard).toContainText("Meta compartilhada");
+  await expect(goalCard).toContainText("R$ 0,00 de R$ 300.000,00");
+  await expect(goalCard.getByText("Extrato da meta")).toBeVisible();
+  await goalCard.getByRole("button", { name: "+ Adicionar dinheiro" }).click();
+  await page.getByLabel("Valor da contribuição").fill("125,00");
+  await page.getByLabel("Conta de origem").selectOption("Banco Teste • Conta");
+  await page.getByRole("button", { name: "Confirmar contribuição" }).click();
+  await expect(goalCard).toContainText("R$ 125,00 de R$ 300.000,00");
+  await expect(goalCard).toContainText("Você contribuiu");
+  await expect(goalCard).toContainText("+R$ 125,00");
+
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  const summary = page.locator(".panel").filter({ hasText: "Patrimônio total" });
+  await expect(summary).toContainText("R$ 875,00");
+  await expect(page.getByText("Casa própria").last()).toBeVisible();
+});
 
 test("registra aporte com conta de origem e reverte o saldo ao excluir o lançamento", async ({ page }) => {
   await loginWithFinancialSeed(page);

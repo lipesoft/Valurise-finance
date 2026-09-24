@@ -89,6 +89,7 @@ const transactionSchema = z.object({
   installmentTotalCents: z.number().int().positive().optional(),
   investmentId: z.string().optional(),
   goalId: z.string().optional(),
+  sharedGoalId: z.string().uuid().optional(),
 }).passthrough();
 
 const backupSchema = z.object({
