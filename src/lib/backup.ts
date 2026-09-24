@@ -85,7 +85,10 @@ const transactionSchema = z.object({
   installment: z.object({ current: z.number().int().positive(), total: z.number().int().positive() })
     .refine((value) => value.current <= value.total, "Parcela atual não pode superar o total.")
     .optional(),
+  installmentGroupId: z.string().min(1).optional(),
+  installmentTotalCents: z.number().int().positive().optional(),
   investmentId: z.string().optional(),
+  goalId: z.string().optional(),
 }).passthrough();
 
 const backupSchema = z.object({

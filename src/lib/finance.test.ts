@@ -3,10 +3,13 @@ import {
   accountBalance,
   calculateSummary,
   committedMoneyCents,
+  createInstallmentTransactions,
   formatBRL,
   moneyAvailability,
   monthlyContributionNeeded,
   projectMonthEnd,
+  reconcileLinkedBalances,
+  splitInstallmentCents,
   type FinanceTransaction,
 } from "./finance";
 
@@ -52,6 +55,38 @@ describe("finanças", () => {
     expect(accountBalance(0, "Inter", [transfer])).toBe(5000);
   });
 
+  it("divide compras parceladas em centavos exatos", () => {
+    const installments = splitInstallmentCents(10000, 3);
+
+    expect(installments).toEqual([3334, 3333, 3333]);
+    expect(installments.reduce((total, cents) => total + cents, 0)).toBe(10000);
+  });
+
+  it("distribui parcelas mensalmente e mantém o dia de fim de mês", () => {
+    const rows = createInstallmentTransactions(
+      {
+        ...t("expense", 10000, "Nubank • Platinum"),
+        date: "2026-01-31T12:00:00.000Z",
+      },
+      3,
+      "purchase-1",
+    );
+
+    expect(rows.map((row) => row.date.slice(0, 10))).toEqual([
+      "2026-01-31",
+      "2026-02-28",
+      "2026-03-31",
+    ]);
+    expect(rows.map((row) => row.installment?.current)).toEqual([1, 2, 3]);
+    expect(rows.every((row) => row.installmentGroupId === "purchase-1")).toBe(true);
+    expect(rows.reduce((total, row) => total + row.amountCents, 0)).toBe(10000);
+  });
+
+  it("não permite parcelamento maior que 48 vezes ou que gere parcela zerada", () => {
+    expect(() => splitInstallmentCents(10000, 49)).toThrow();
+    expect(() => splitInstallmentCents(2, 3)).toThrow();
+  });
+
   it("separa aporte de gasto de consumo e reduz a conta de origem", () => {
     const investment = t("investment", 2500, "Nubank");
     const summary = calculateSummary([t("income", 10000), investment]);
@@ -59,6 +94,44 @@ describe("finanças", () => {
     expect(summary.expenseCents).toBe(0);
     expect(summary.investmentCents).toBe(2500);
     expect(accountBalance(10000, "Nubank", [investment])).toBe(7500);
+  });
+
+  it("reconcilia aportes ligados a investimento ao criar, editar e excluir", () => {
+    const item = { id: "cdb-1", contributedCents: 5000, currentCents: 6200 };
+    const data = { investments: [item] };
+    const contribution = { ...t("investment", 1200), id: "aporte-1", investmentId: "cdb-1" };
+    const added = reconcileLinkedBalances(data, [], [contribution]);
+    const edited = reconcileLinkedBalances(added, [contribution], [{ ...contribution, amountCents: 2000 }]);
+    const deleted = reconcileLinkedBalances(edited, [{ ...contribution, amountCents: 2000 }], []);
+
+    expect(added.investments?.[0]).toEqual({ ...item, contributedCents: 6200, currentCents: 7400 });
+    expect(edited.investments?.[0]).toEqual({ ...item, contributedCents: 7000, currentCents: 8200 });
+    expect(deleted.investments?.[0]).toEqual(item);
+  });
+
+  it("reconcilia contribuição de meta sem classificá-la como consumo", () => {
+    const data = { goals: [{ id: "goal-1", currentCents: 10000 }] };
+    const contribution: FinanceTransaction = {
+      ...t("transfer", 2500, "Nubank • Conta"),
+      id: "goal-contribution-1",
+      goalId: "goal-1",
+      destinationAccount: "Meta • Reserva",
+    };
+    const afterAdd = reconcileLinkedBalances(data, [], [contribution]);
+    const afterDelete = reconcileLinkedBalances(afterAdd, [contribution], []);
+
+    expect(afterAdd.goals?.[0].currentCents).toBe(12500);
+    expect(calculateSummary([contribution], new Date("2026-09-20T12:00:00")).expenseCents).toBe(0);
+    expect(afterDelete.goals?.[0].currentCents).toBe(10000);
+  });
+
+  it("não antecipa lançamentos futuros no saldo ou nos totais realizados", () => {
+    const future = { ...t("expense", 5000, "Nubank"), date: "2026-10-01T12:00:00.000Z" };
+    const asOf = new Date("2026-09-23T12:00:00.000Z");
+
+    expect(accountBalance(10000, "Nubank", [future], asOf)).toBe(10000);
+    expect(calculateSummary([future], asOf).expenseCents).toBe(0);
+    expect(calculateSummary([future], new Date("2026-10-01T12:00:00.000Z")).expenseCents).toBe(5000);
   });
 
   it("não altera o saldo de contas que não participam da movimentação", () => {

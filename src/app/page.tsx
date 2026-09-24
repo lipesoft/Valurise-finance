@@ -43,10 +43,13 @@ import { ptBR } from "date-fns/locale";
 import {
   calculateSummary,
   accountBalance,
+  createInstallmentTransactions,
   formatBRL,
   monthlyContributionNeeded,
   moneyAvailability,
   projectMonthEnd,
+  reconcileLinkedBalances,
+  splitInstallmentCents,
   type FinanceTransaction,
 } from "@/lib/finance";
 import { bestPurchaseDay } from "@/lib/cards";
@@ -462,10 +465,17 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     persistState({ data: next, transactions: txRef.current, profile: profileRef.current });
   };
   const saveTx = (next: FinanceTransaction[]) => {
+    const previousData = dataRef.current;
+    const reconciledData = reconcileLinkedBalances(previousData, txRef.current, next);
+    dataRef.current = reconciledData;
+    if (reconciledData !== previousData) {
+      setData(reconciledData);
+      localStorage.setItem(key + ":data", JSON.stringify(reconciledData));
+    }
     txRef.current = next;
     setTx(next);
     localStorage.setItem(key + ":tx", JSON.stringify(next));
-    persistState({ data: dataRef.current, transactions: next, profile: profileRef.current });
+    persistState({ data: reconciledData, transactions: next, profile: profileRef.current });
   };
   const restoreFinancialBackup = (nextData: Data, nextTransactions: FinanceTransaction[]) => {
     dataRef.current = nextData;
@@ -768,13 +778,13 @@ function App({ user, logout }: { user: User; logout: () => void }) {
           <Cards data={data} save={saveData} toast={setToast} />
         )}{" "}
         {view === "investments" && (
-          <Investments data={data} save={saveData} toast={setToast} />
+          <Investments data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} />
         )}
         {view === "budgets" && (
           <Budgets data={data} tx={tx} month={month} save={saveData} toast={setToast} />
         )}
         {view === "goals" && (
-          <Goals data={data} save={saveData} toast={setToast} />
+          <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} />
         )}
         {view === "categories" && (
           <Categories data={data} tx={tx} month={month} save={saveData} saveTx={saveTx} toast={setToast} />
@@ -833,24 +843,6 @@ function App({ user, logout }: { user: User; logout: () => void }) {
             openSettings={() => { setSheet(false); setView("settings"); }}
             saved={(n) => {
               saveTx([...n, ...tx]);
-              const transaction = n[0];
-              if (transaction?.type === "investment") {
-                const investments = (data.investments || []).map((item: any) =>
-                  item.id === transaction.investmentId ||
-                  (!transaction.investmentId && item.name === transaction.category)
-                    ? {
-                        ...item,
-                        contributedCents:
-                          item.contributedCents + transaction.amountCents,
-                        currentCents:
-                          item.currentCents === undefined
-                            ? undefined
-                            : item.currentCents + transaction.amountCents,
-                      }
-                    : item,
-                );
-                saveData({ ...data, investments });
-              }
               setToast("Lançamento salvo com sucesso.");
               setSheet(false);
             }}
@@ -2521,7 +2513,21 @@ function DeleteConfirm({ title, description, confirm, close }: { title: string; 
 function centsInput(value?: number) {
   return value === undefined ? "" : (value / 100).toFixed(2).replace(".", ",");
 }
-function Investments({ data, save, toast }: any) {
+function financialAccountOptions(data: Data) {
+  return (data.institutions || []).flatMap((institution) =>
+    institution.accounts.map((account) => ({
+      value: `${institution.name} • ${account.name}`,
+      label: `${institution.name} • ${account.name}`,
+    })),
+  );
+}
+function dateAtLocalNoon(date: string) {
+  return new Date(`${date}T12:00:00`).toISOString();
+}
+function isFutureFinancialDay(date: string) {
+  return format(new Date(date), "yyyy-MM-dd") > format(new Date(), "yyyy-MM-dd");
+}
+function Investments({ data, transactions = [], save, saveTransactions, toast }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
@@ -2532,15 +2538,26 @@ function Investments({ data, save, toast }: any) {
   const [rate, setRate] = useState("");
   const [aporteFor, setAporteFor] = useState("");
   const [aporte, setAporte] = useState("");
+  const [aporteAccount, setAporteAccount] = useState("");
+  const [aporteDate, setAporteDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const items = data.investments || [];
+  const accounts = financialAccountOptions(data);
   const persist = () => {
     const cents = Math.round(Number(contributed.replace(",", ".")) * 100);
-    if (!name.trim() || !cents) return;
+    const currentCents = current.trim()
+      ? Math.round(Number(current.replace(",", ".")) * 100)
+      : undefined;
+    if (!name.trim() || !Number.isSafeInteger(cents) || cents <= 0 || (currentCents !== undefined && (!Number.isSafeInteger(currentCents) || currentCents < 0))) {
+      toast("Informe o nome e saldos válidos para o investimento.");
+      return;
+    }
     const item = {
       id: editing?.id || crypto.randomUUID(),
       name: name.trim(),
       contributedCents: cents,
-      currentCents: current ? Math.round(Number(current.replace(",", ".")) * 100) : undefined,
+      ...(currentCents === undefined
+        ? {}
+        : { currentCents }),
       assetClass,
       expectedAnnualRate: rate ? Number(rate.replace(",", ".")) : undefined,
     };
@@ -2560,25 +2577,29 @@ function Investments({ data, save, toast }: any) {
   const startEdit = (item: any) => { setEditing(item); setName(item.name); setContributed(centsInput(item.contributedCents)); setCurrent(centsInput(item.currentCents)); setAssetClass(item.assetClass || "Renda fixa"); setRate(item.expectedAnnualRate?.toString().replace(".", ",") || ""); };
   const addAporte = () => {
     const cents = Math.round(Number(aporte.replace(",", ".")) * 100);
-    if (!aporteFor || !cents) return;
-    save({
-      ...data,
-      investments: items.map((item: any) =>
-        item.id === aporteFor
-          ? {
-              ...item,
-              contributedCents: item.contributedCents + cents,
-              currentCents:
-                item.currentCents === undefined
-                  ? undefined
-                  : item.currentCents + cents,
-            }
-          : item,
-      ),
-    });
+    const investment = items.find((item: any) => item.id === aporteFor);
+    if (!investment || !Number.isSafeInteger(cents) || cents <= 0 || !aporteAccount || !aporteDate) {
+      toast("Informe um valor positivo, a conta de origem e a data do aporte.");
+      return;
+    }
+    const transaction: FinanceTransaction = {
+      id: crypto.randomUUID(),
+      type: "investment",
+      subtype: "investment_contribution",
+      amountCents: cents,
+      category: investment.name,
+      account: aporteAccount,
+      description: `Aporte • ${investment.name}`,
+      date: dateAtLocalNoon(aporteDate),
+      createdAt: new Date().toISOString(),
+      investmentId: investment.id,
+    };
+    saveTransactions([...transactions, transaction]);
     toast("Aporte registrado com sucesso.");
     setAporte("");
     setAporteFor("");
+    setAporteAccount("");
+    setAporteDate(format(new Date(), "yyyy-MM-dd"));
   };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
@@ -2619,8 +2640,32 @@ function Investments({ data, save, toast }: any) {
                   </span>
                 )}
               </div>
+              {transactions.some((transaction: FinanceTransaction) => transaction.investmentId === item.id) && (
+                <div className="mt-4 border-t border-[var(--border)] pt-3">
+                  <p className="muted text-[11px] font-semibold uppercase tracking-wide">Últimos aportes</p>
+                  <div className="mt-2 space-y-2">
+                    {transactions
+                      .filter((transaction: FinanceTransaction) => transaction.investmentId === item.id)
+                      .sort((a: FinanceTransaction, b: FinanceTransaction) => b.date.localeCompare(a.date))
+                      .slice(0, 3)
+                      .map((transaction: FinanceTransaction) => (
+                        <div className="flex items-center justify-between gap-3 text-xs" key={transaction.id}>
+                          <span className="min-w-0 truncate muted">
+                            {format(new Date(transaction.date), "dd/MM/yyyy")} · {transaction.account}
+                          </span>
+                          <b className="shrink-0">+{formatBRL(transaction.amountCents)}</b>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
               <button
-                onClick={() => setAporteFor(item.id)}
+                onClick={() => {
+                  setAporteFor(item.id);
+                  setAporte("");
+                  setAporteAccount("");
+                  setAporteDate(format(new Date(), "yyyy-MM-dd"));
+                }}
                 className="mt-3 text-sm font-medium text-[var(--accent)]"
               >
                 + Registrar aporte
@@ -2633,34 +2678,38 @@ function Investments({ data, save, toast }: any) {
         <Empty text="Você ainda não possui investimentos cadastrados." />
       )}
       {aporteFor && (
-        <section className="panel mt-5 space-y-3 rounded-2xl p-4">
-          <div className="flex items-center justify-between">
-            <b className="text-sm">Novo aporte</b>
-            <button
-              onClick={() => setAporteFor("")}
-              aria-label="Cancelar aporte"
-            >
-              <X size={16} />
+        <Sheet close={() => setAporteFor("")}>
+          <section className="space-y-3">
+            <b className="text-lg">Registrar aporte</b>
+            <p className="muted text-sm">
+              O aporte reduz o saldo da conta escolhida e fica no extrato ligado a este investimento.
+            </p>
+            <input
+              autoFocus
+              aria-label="Valor do aporte"
+              className="field"
+              value={aporte}
+              onChange={(event) => setAporte(event.target.value)}
+              inputMode="decimal"
+              placeholder="Valor do aporte"
+            />
+            <label className="block text-sm">
+              Conta de origem
+              <select className="field mt-1" value={aporteAccount} onChange={(event) => setAporteAccount(event.target.value)}>
+                <option value="">Selecione a conta</option>
+                {accounts.map((account: { value: string; label: string }) => <option key={account.value} value={account.value}>{account.label}</option>)}
+              </select>
+            </label>
+            <label className="block text-sm">
+              Data do aporte
+              <input className="field mt-1" type="date" max={format(new Date(), "yyyy-MM-dd")} value={aporteDate} onChange={(event) => setAporteDate(event.target.value)} />
+            </label>
+            {!accounts.length && <p className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Cadastre uma conta antes de registrar um aporte.</p>}
+            <button disabled={!accounts.length} onClick={addAporte} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">
+              Confirmar aporte
             </button>
-          </div>
-          <p className="muted text-sm">
-            Esse valor soma ao total já aportado no investimento.
-          </p>
-          <input
-            autoFocus
-            className="field"
-            value={aporte}
-            onChange={(e) => setAporte(e.target.value)}
-            inputMode="decimal"
-            placeholder="Valor do aporte"
-          />
-          <button
-            onClick={addAporte}
-            className="primary h-11 w-full rounded-xl text-sm"
-          >
-            Registrar aporte
-          </button>
-        </section>
+          </section>
+        </Sheet>
       )}
       {(adding || editing) && (
         <Sheet close={() => { setAdding(false); setEditing(null); }}>
@@ -2677,8 +2726,11 @@ function Investments({ data, save, toast }: any) {
               value={contributed}
               onChange={(e) => setContributed(e.target.value)}
               inputMode="decimal"
-              placeholder="Valor aportado"
+              placeholder="Saldo já investido"
             />
+            <p className="muted -mt-1 text-xs leading-5">
+              Este é o saldo inicial já aplicado; não movimenta uma conta. Novos depósitos devem ser registrados em “Registrar aporte”.
+            </p>
             <input
               className="field"
               value={current}
@@ -2828,7 +2880,7 @@ function Budgets({ data, tx, month, save, toast }: any) {
     </section>
   );
 }
-function Goals({ data, save, toast }: any) {
+function Goals({ data, transactions = [], save, saveTransactions, toast }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
@@ -2838,11 +2890,14 @@ function Goals({ data, save, toast }: any) {
   const [targetDate, setTargetDate] = useState("");
   const [contributionFor, setContributionFor] = useState("");
   const [contribution, setContribution] = useState("");
+  const [contributionAccount, setContributionAccount] = useState("");
+  const [contributionDate, setContributionDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [sharingGoal, setSharingGoal] = useState<any | null>(null);
   const [recipientId, setRecipientId] = useState("");
   const [sharing, setSharing] = useState(false);
   const [invites, setInvites] = useState<any[]>([]);
   const items = data.goals || [];
+  const accounts = financialAccountOptions(data);
   const loadInvites = async () => {
     const supabase = getSupabaseBrowserClient();
     if (!supabase) return;
@@ -2855,10 +2910,24 @@ function Goals({ data, save, toast }: any) {
   useEffect(() => { void loadInvites(); }, []);
   const persist = () => {
     const targetCents = Math.round(Number(target.replace(",", ".")) * 100);
-    if (!name.trim() || !targetCents) return;
+    const parsedCurrent = current.trim() ? Number(current.replace(",", ".")) : 0;
+    const currentCents = Math.round(parsedCurrent * 100);
+    if (!name.trim() || !Number.isSafeInteger(targetCents) || targetCents <= 0 || !Number.isFinite(parsedCurrent) || !Number.isSafeInteger(currentCents) || currentCents < 0) {
+      toast("Informe um nome e valores válidos para a meta.");
+      return;
+    }
+    const linkedContributions = editing
+      ? transactions
+          .filter((transaction: FinanceTransaction) => transaction.type === "transfer" && transaction.goalId === editing.id)
+          .reduce((total: number, transaction: FinanceTransaction) => total + transaction.amountCents, 0)
+      : 0;
+    if (currentCents < linkedContributions) {
+      toast("O saldo da meta não pode ficar abaixo das contribuições registradas.");
+      return;
+    }
     save({
       ...data,
-      goals: editing ? items.map((item: any) => item.id === editing.id ? { ...item, name: name.trim(), targetCents, currentCents: Math.round(Number(current.replace(",", ".")) * 100) || 0, targetDate: targetDate || undefined } : item) : [...items, { id: crypto.randomUUID(), name: name.trim(), targetCents, currentCents: Math.round(Number(current.replace(",", ".")) * 100) || 0, targetDate: targetDate || undefined }],
+      goals: editing ? items.map((item: any) => item.id === editing.id ? { ...item, name: name.trim(), targetCents, currentCents, targetDate: targetDate || undefined } : item) : [...items, { id: crypto.randomUUID(), name: name.trim(), targetCents, currentCents, targetDate: targetDate || undefined }],
     });
     toast(editing ? "Meta atualizada com sucesso." : "Meta criada com sucesso.");
     setName("");
@@ -2871,18 +2940,30 @@ function Goals({ data, save, toast }: any) {
   const startEdit = (item: any) => { setEditing(item); setName(item.name); setTarget(centsInput(item.targetCents)); setCurrent(centsInput(item.currentCents)); setTargetDate(item.targetDate || ""); };
   const contribute = () => {
     const cents = Math.round(Number(contribution.replace(",", ".")) * 100);
-    if (!contributionFor || !cents) return;
-    save({
-      ...data,
-      goals: items.map((item: any) =>
-        item.id === contributionFor
-          ? { ...item, currentCents: item.currentCents + cents }
-          : item,
-      ),
-    });
+    const goal = items.find((item: any) => item.id === contributionFor);
+    if (!goal || !Number.isSafeInteger(cents) || cents <= 0 || !contributionAccount || !contributionDate) {
+      toast("Informe um valor positivo, a conta de origem e a data da contribuição.");
+      return;
+    }
+    const transaction: FinanceTransaction = {
+      id: crypto.randomUUID(),
+      type: "transfer",
+      subtype: "goal_contribution",
+      amountCents: cents,
+      category: `Meta • ${goal.name}`,
+      account: contributionAccount,
+      destinationAccount: `Meta • ${goal.name}`,
+      description: `Contribuição • ${goal.name}`,
+      date: dateAtLocalNoon(contributionDate),
+      createdAt: new Date().toISOString(),
+      goalId: goal.id,
+    };
+    saveTransactions([...transactions, transaction]);
     toast("Contribuição adicionada à meta.");
     setContribution("");
     setContributionFor("");
+    setContributionAccount("");
+    setContributionDate(format(new Date(), "yyyy-MM-dd"));
   };
   const share = async () => {
     if (!sharingGoal || !recipientId.trim()) return;
@@ -2983,7 +3064,26 @@ function Goals({ data, save, toast }: any) {
                     /mês
                   </p>
                 )}
-                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2"><button onClick={() => setContributionFor(item.id)} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button><button onClick={() => setSharingGoal(item)} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button></div>
+                {transactions.some((transaction: FinanceTransaction) => transaction.goalId === item.id) && (
+                  <div className="mt-4 border-t border-[var(--border)] pt-3">
+                    <p className="muted text-[11px] font-semibold uppercase tracking-wide">Contribuições recentes</p>
+                    <div className="mt-2 space-y-2">
+                      {transactions
+                        .filter((transaction: FinanceTransaction) => transaction.type === "transfer" && transaction.goalId === item.id)
+                        .sort((a: FinanceTransaction, b: FinanceTransaction) => b.date.localeCompare(a.date))
+                        .slice(0, 3)
+                        .map((transaction: FinanceTransaction) => (
+                          <div className="flex items-center justify-between gap-3 text-xs" key={transaction.id}>
+                            <span className="min-w-0 truncate muted">
+                              {format(new Date(transaction.date), "dd/MM/yyyy")} · {transaction.account}
+                            </span>
+                            <b className="shrink-0">+{formatBRL(transaction.amountCents)}</b>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2"><button onClick={() => { setContributionFor(item.id); setContribution(""); setContributionAccount(""); setContributionDate(format(new Date(), "yyyy-MM-dd")); }} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button><button onClick={() => setSharingGoal(item)} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button></div>
                 <ItemActions label={`a meta ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />
               </article>
             );
@@ -2993,31 +3093,38 @@ function Goals({ data, save, toast }: any) {
         <Empty text="Nenhuma meta criada." />
       )}
       {contributionFor && (
-        <section className="panel mt-5 space-y-3 rounded-2xl p-4">
-          <div className="flex items-center justify-between">
-            <b className="text-sm">Adicionar dinheiro à meta</b>
-            <button
-              onClick={() => setContributionFor("")}
-              aria-label="Cancelar contribuição"
-            >
-              <X size={16} />
+        <Sheet close={() => setContributionFor("")}>
+          <section className="space-y-3">
+            <b className="text-lg">Adicionar dinheiro à meta</b>
+            <p className="muted text-sm">
+              O valor será transferido da conta escolhida para a meta, sem ser tratado como gasto de consumo.
+            </p>
+            <input
+              autoFocus
+              aria-label="Valor da contribuição"
+              value={contribution}
+              onChange={(event) => setContribution(event.target.value)}
+              inputMode="decimal"
+              className="field"
+              placeholder="Valor da contribuição"
+            />
+            <label className="block text-sm">
+              Conta de origem
+              <select className="field mt-1" value={contributionAccount} onChange={(event) => setContributionAccount(event.target.value)}>
+                <option value="">Selecione a conta</option>
+                {accounts.map((account: { value: string; label: string }) => <option key={account.value} value={account.value}>{account.label}</option>)}
+              </select>
+            </label>
+            <label className="block text-sm">
+              Data da contribuição
+              <input className="field mt-1" type="date" max={format(new Date(), "yyyy-MM-dd")} value={contributionDate} onChange={(event) => setContributionDate(event.target.value)} />
+            </label>
+            {!accounts.length && <p className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Cadastre uma conta antes de contribuir com esta meta.</p>}
+            <button disabled={!accounts.length} onClick={contribute} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">
+              Confirmar contribuição
             </button>
-          </div>
-          <input
-            autoFocus
-            value={contribution}
-            onChange={(e) => setContribution(e.target.value)}
-            inputMode="decimal"
-            className="field"
-            placeholder="Valor da contribuição"
-          />
-          <button
-            onClick={contribute}
-            className="primary h-11 w-full rounded-xl text-sm"
-          >
-            Adicionar à meta
-          </button>
-        </section>
+          </section>
+        </Sheet>
       )}
       {(adding || editing) && (
         <Sheet close={() => { setAdding(false); setEditing(null); }}>
@@ -3041,8 +3148,11 @@ function Goals({ data, save, toast }: any) {
               value={current}
               onChange={(e) => setCurrent(e.target.value)}
               inputMode="decimal"
-              placeholder="Valor inicial (opcional)"
+              placeholder="Saldo já acumulado (opcional)"
             />
+            <p className="muted -mt-1 text-xs leading-5">
+              Informe apenas o saldo que já existia. Para guardar dinheiro agora e debitar uma conta, use “Adicionar dinheiro” depois de criar a meta.
+            </p>
             <label className="block text-sm">
               Prazo (opcional)
               <input
@@ -3531,6 +3641,7 @@ function CardInvoicePreview({ data, tx }: any) {
     institution.cards.map((card) => ({ institution, card })),
   );
   const currentMonth = format(new Date(), "yyyy-MM");
+  const nextMonth = format(addMonths(new Date(), 1), "yyyy-MM");
   if (!cards.length) return null;
   return (
     <section className="panel mt-4 rounded-2xl p-5">
@@ -3553,28 +3664,42 @@ function CardInvoicePreview({ data, tx }: any) {
                 total + item.amountCents,
               0,
             );
-          const available = Math.max(0, card.limit - current);
+          const futureInstallments = tx
+            .filter((item: FinanceTransaction) =>
+              item.type === "expense" &&
+              item.account === label &&
+              Boolean(item.installmentGroupId) &&
+              item.date.slice(0, 7) > currentMonth,
+            )
+            .reduce((total: number, item: FinanceTransaction) => total + item.amountCents, 0);
+          const nextInvoice = tx
+            .filter((item: FinanceTransaction) =>
+              item.type === "expense" && item.account === label && item.date.startsWith(nextMonth),
+            )
+            .reduce((total: number, item: FinanceTransaction) => total + item.amountCents, 0);
+          const committedLimit = current + futureInstallments;
+          const available = Math.max(0, card.limit - committedLimit);
           return (
             <div className="py-3" key={card.id}>
               <div className="flex justify-between text-sm">
                 <span>
                   {institution.name} · {card.name}
                 </span>
-                <b>
-                  {formatBRL(current)} / {formatBRL(card.limit)}
-                </b>
+                <b>{formatBRL(current)} / {formatBRL(card.limit)}</b>
               </div>
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--panel2)]">
                 <span
                   className="block h-full bg-[var(--accent)]"
                   style={{
-                    width: `${Math.min(100, (current / card.limit) * 100)}%`,
+                    width: `${card.limit > 0 ? Math.min(100, (committedLimit / card.limit) * 100) : 0}%`,
                   }}
                 />
               </div>
               <p className="muted mt-2 text-xs">
-                Disponível: {formatBRL(available)} · fecha dia{" "}
-                {card.closingDay || "—"} · vence dia {card.dueDay || "—"}
+                Comprometido: {formatBRL(committedLimit)} · disponível: {formatBRL(available)}
+              </p>
+              <p className="muted mt-1 text-xs">
+                Próxima fatura: {formatBRL(nextInvoice)} · fecha dia {card.closingDay || "—"} · vence dia {card.dueDay || "—"}
               </p>
             </div>
           );
@@ -3762,20 +3887,25 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
     [investmentId, setInvestmentId] = useState(""),
     [newInvestment, setNewInvestment] = useState(""),
     [investmentClass, setInvestmentClass] = useState("Renda fixa"),
+    [installmentCount, setInstallmentCount] = useState("1"),
     [showInvestment, setShowInvestment] = useState(false);
   const options = data.institutions.flatMap((i: Institution) => [
     ...i.accounts.map((a) => ({
       id: `account:${i.id}:${a.id}`,
       label: `${i.name} • ${a.name}`,
+      kind: "account" as const,
     })),
     ...i.cards.map((c) => ({
       id: `card:${i.id}:${c.id}`,
       label: `${i.name} • ${c.name || "Crédito"}`,
+      kind: "card" as const,
     })),
   ]);
+  const selectedSource = options.find((option: { label: string }) => option.label === source);
+  const sourceIsCard = selectedSource?.kind === "card";
   const categoryStep =
     k === "expense" || k === "income" || k === "investment" ? 1 : -1;
-  const sourceStep = k === "transfer" ? 1 : categoryStep + 1;
+  const sourceStep = k === "transfer" || k === "salary" ? 1 : categoryStep + 1;
   const destinationStep = k === "transfer" ? sourceStep + 1 : -1;
   const detailsStep = (k === "transfer" ? destinationStep : sourceStep) + 1;
   const confirmStep = detailsStep + 1;
@@ -3792,34 +3922,45 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
               : "Como você pagou?"
       : "Para qual conta foi?";
   const choose = (value: string) => {
-    if (step === sourceStep) setSource(value);
-    else setDest(value);
+    if (step === sourceStep) {
+      setSource(value);
+      if (options.find((option: { label: string }) => option.label === value)?.kind !== "card") setInstallmentCount("1");
+    } else setDest(value);
   };
+  const amountCents = Math.round(Number(amount.replace(",", ".")) * 100);
+  const selectedInstallmentCount = Number(installmentCount);
   const valid = () => {
-    if (step === 0) return Number(amount.replace(",", ".")) > 0;
+    if (step === 0) return Number.isSafeInteger(amountCents) && amountCents > 0;
     if (step === categoryStep) return Boolean(cat);
     if (step === sourceStep) return Boolean(source);
     if (step === destinationStep) return Boolean(dest) && dest !== source;
+    if (step === detailsStep && k === "expense" && sourceIsCard && selectedInstallmentCount > 1) {
+      return selectedInstallmentCount <= 48 && selectedInstallmentCount <= amountCents;
+    }
     return true;
   };
-  const final = () =>
-    saved([
-      {
+  const final = () => {
+    if (!k) return;
+    const transaction: FinanceTransaction = {
         id: crypto.randomUUID(),
         type: k === "salary" ? "income" : k,
         subtype: k,
-        amountCents: Math.round(Number(amount.replace(",", ".")) * 100),
+        amountCents,
         category: cat || labels(k),
         account: source,
         destinationAccount: dest || undefined,
-        date: new Date(`${date}T12:00:00`).toISOString(),
+        date: dateAtLocalNoon(date),
         description,
         attachmentUrl: attachmentUrl || undefined,
         tags,
         investmentId: k === "investment" ? investmentId : undefined,
         createdAt: new Date().toISOString(),
-      },
-    ]);
+      };
+    const count = k === "expense" && sourceIsCard ? selectedInstallmentCount : 1;
+    saved(count > 1
+      ? createInstallmentTransactions(transaction, count, crypto.randomUUID())
+      : [transaction]);
+  };
   const classifications =
     data.categories.length
         ? data.categories
@@ -3978,8 +4119,12 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
   else if (step === sourceStep || step === destinationStep)
     body = (
       <div className="mt-5 space-y-2">
-        {options.length ? (
-          options.map((x) => (
+        {options.filter((option: { kind: string }) =>
+          k === "expense" && step === sourceStep ? true : option.kind === "account",
+        ).length ? (
+          options.filter((option: { kind: string }) =>
+            k === "expense" && step === sourceStep ? true : option.kind === "account",
+          ).map((x: { id: string; label: string }) => (
             <button
               onClick={() => choose(x.label)}
               className={`block w-full rounded-xl bg-[var(--panel2)] p-3 text-left text-sm transition hover:ring-1 hover:ring-[var(--accent)] ${source === x.label || dest === x.label ? "ring-1 ring-[var(--accent)]" : ""}`}
@@ -3989,7 +4134,7 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
             </button>
           ))
         ) : (
-          <Empty text="Cadastre uma conta ou cartão para continuar." />
+          <Empty text={k === "expense" && step === sourceStep ? "Cadastre uma conta ou cartão para continuar." : "Cadastre uma conta para continuar."} />
         )}
       </div>
     );
@@ -4005,6 +4150,22 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
             type="date"
           />
         </label>
+        {k === "expense" && sourceIsCard && (
+          <label className="block text-sm">
+            Parcelamento
+            <select className="field mt-1" aria-label="Parcelamento da compra" value={installmentCount} onChange={(event) => setInstallmentCount(event.target.value)}>
+              <option value="1">À vista</option>
+              {[...Array.from({ length: 23 }, (_, index) => index + 2), 36, 48].map((count) => (
+                <option value={count} key={count}>{count}x</option>
+              ))}
+            </select>
+            {selectedInstallmentCount > 1 && (
+              <small className="muted mt-1 block leading-5">
+                Compra de {formatBRL(amountCents)} em {selectedInstallmentCount} parcelas; a diferença de centavos fica nas primeiras parcelas.
+              </small>
+            )}
+          </label>
+        )}
         <label className="block text-sm">
           Comprovante <span className="muted">(link opcional)</span>
           <input
@@ -4055,13 +4216,17 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
       <div className="mt-5 rounded-2xl bg-[var(--panel2)] p-4">
         <p className="text-sm">{labels(k)}</p>
         <b className="mt-1 block text-2xl">
-          {formatBRL(Math.round(Number(amount.replace(",", ".")) * 100))}
+          {formatBRL(amountCents)}
         </b>
         <p className="muted mt-3 text-sm">{cat || labels(k)}</p>
         <p className="muted text-sm">
           {source}
           {dest && ` → ${dest}`}
         </p>
+        {k === "expense" && sourceIsCard && selectedInstallmentCount > 1 && (() => {
+          const parts = splitInstallmentCents(amountCents, selectedInstallmentCount);
+          return <p className="muted mt-2 text-sm">{selectedInstallmentCount} parcelas de {formatBRL(Math.min(...parts))} a {formatBRL(Math.max(...parts))}</p>;
+        })()}
         {description && <p className="muted mt-2 text-sm">{description}</p>}
         {attachmentUrl && (
           <p className="mt-2 text-xs text-[var(--accent)]">
@@ -4872,6 +5037,12 @@ function Statement({ tx, month, save, toast }: any) {
                           <small className="muted block">
                             {format(new Date(x.date), "HH:mm")}
                           </small>
+                          {x.installment && (
+                            <small className="muted mt-1 block">
+                              Parcela {x.installment.current}/{x.installment.total}
+                              {isFutureFinancialDay(x.date) ? " · Programada" : ""}
+                            </small>
+                          )}
                           {(x.tags || []).length > 0 && (
                             <small className="mt-1 block text-[var(--accent)]">
                               {x.tags!.map((tag) => `#${tag}`).join(" ")}
@@ -4934,6 +5105,16 @@ function Statement({ tx, month, save, toast }: any) {
                 <span className="muted">Data: </span>
                 {format(new Date(selected.date), "dd/MM/yyyy 'às' HH:mm")}
               </p>
+              {selected.installment && (
+                <p className="mt-2">
+                  <span className="muted">Parcela: </span>
+                  {selected.installment.current}/{selected.installment.total}
+                  {selected.installmentTotalCents
+                    ? ` · compra de ${formatBRL(selected.installmentTotalCents)}`
+                    : ""}
+                  {isFutureFinancialDay(selected.date) ? " · programada" : ""}
+                </p>
+              )}
               {selected.description && (
                 <p className="mt-2">
                   <span className="muted">Descrição: </span>
@@ -4989,8 +5170,59 @@ function Statement({ tx, month, save, toast }: any) {
           </section>
         </Sheet>
       )}
-      {editing && <Sheet close={() => setEditing(null)}><section className="space-y-3"><b className="text-lg">Editar lançamento</b><input className="field" value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder="Descrição"/><input className="field" value={editCategory} onChange={(event) => setEditCategory(event.target.value)} placeholder="Categoria"/><input className="field" inputMode="decimal" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} placeholder="Valor"/><button onClick={() => { const amountCents = Math.round(Number(editAmount.replace(",", ".")) * 100); if (!amountCents || !editCategory.trim()) return; save(tx.map((item: FinanceTransaction) => item.id === editing.id ? { ...item, description: editDescription.trim() || undefined, category: editCategory.trim(), amountCents } : item)); toast("Lançamento atualizado com sucesso."); setEditing(null); }} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
-      {deleting && <DeleteConfirm title="Excluir lançamento?" description={`O lançamento de ${formatBRL(deleting.amountCents)} será removido. Os totais, orçamentos e o dashboard serão recalculados.`} close={() => setDeleting(null)} confirm={() => { save(tx.filter((item: FinanceTransaction) => item.id !== deleting.id)); toast("Lançamento excluído."); setDeleting(null); }} />}
+      {editing && (
+        <Sheet close={() => setEditing(null)}>
+          <section className="space-y-3">
+            <b className="text-lg">{editing.installment ? `Editar parcela ${editing.installment.current}/${editing.installment.total}` : "Editar lançamento"}</b>
+            {editing.installment && <p className="muted text-sm">Somente esta parcela será alterada; as demais parcelas permanecem iguais.</p>}
+            <input className="field" value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder="Descrição" />
+            <input className="field" value={editCategory} onChange={(event) => setEditCategory(event.target.value)} placeholder="Categoria" />
+            <input className="field" inputMode="decimal" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} placeholder="Valor" />
+            <button
+              onClick={() => {
+                const amountCents = Math.round(Number(editAmount.replace(",", ".")) * 100);
+                if (!Number.isSafeInteger(amountCents) || amountCents <= 0 || !editCategory.trim()) return;
+                let next = tx.map((item: FinanceTransaction) => item.id === editing.id
+                  ? { ...item, description: editDescription.trim() || undefined, category: editCategory.trim(), amountCents }
+                  : item);
+                if (editing.installmentGroupId) {
+                  const groupTotal = next
+                    .filter((item: FinanceTransaction) => item.installmentGroupId === editing.installmentGroupId)
+                    .reduce((total: number, item: FinanceTransaction) => total + item.amountCents, 0);
+                  next = next.map((item: FinanceTransaction) => item.installmentGroupId === editing.installmentGroupId
+                    ? { ...item, installmentTotalCents: groupTotal }
+                    : item);
+                }
+                save(next);
+                toast("Lançamento atualizado com sucesso.");
+                setEditing(null);
+              }}
+              className="primary h-11 w-full rounded-xl text-sm"
+            >Salvar alterações</button>
+          </section>
+        </Sheet>
+      )}
+      {deleting && (
+        <DeleteConfirm
+          title={deleting.installment ? `Excluir parcela ${deleting.installment.current}/${deleting.installment.total}?` : "Excluir lançamento?"}
+          description={deleting.installment ? `Somente esta parcela de ${formatBRL(deleting.amountCents)} será removida; as demais parcelas continuam no extrato.` : `O lançamento de ${formatBRL(deleting.amountCents)} será removido. Os totais, orçamentos e o dashboard serão recalculados.`}
+          close={() => setDeleting(null)}
+          confirm={() => {
+            let next = tx.filter((item: FinanceTransaction) => item.id !== deleting.id);
+            if (deleting.installmentGroupId) {
+              const groupTotal = next
+                .filter((item: FinanceTransaction) => item.installmentGroupId === deleting.installmentGroupId)
+                .reduce((total: number, item: FinanceTransaction) => total + item.amountCents, 0);
+              next = next.map((item: FinanceTransaction) => item.installmentGroupId === deleting.installmentGroupId
+                ? { ...item, installmentTotalCents: groupTotal }
+                : item);
+            }
+            save(next);
+            toast("Lançamento excluído.");
+            setDeleting(null);
+          }}
+        />
+      )}
     </section>
   );
 }
