@@ -24,7 +24,10 @@ export async function POST(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const rateKey = createHash("sha256").update(`personal-ai-test\0${user.id}`).digest("hex");
   const { data: allowed, error: rateError } = await admin.rpc("consume_public_rate_limit", { p_key: rateKey, p_max_attempts: 5, p_window_seconds: 3600 });
-  if (rateError) return NextResponse.json({ error: "O teste de conexão está temporariamente indisponível." }, { status: 503 });
+  if (rateError) {
+    console.error("Val AI connection-test rate-limit check failed", JSON.stringify({ code: rateError.code || "UNKNOWN" }));
+    return NextResponse.json({ error: "Não foi possível validar o limite seguro do teste. A chave e o modelo não chegaram a ser testados; tente novamente em instantes." }, { status: 503 });
+  }
   if (allowed !== true) return NextResponse.json({ error: "Limite de testes desta hora atingido. Tente novamente mais tarde." }, { status: 429 });
 
   const { data: saved, error: savedError } = await admin.from("personal_ai_connections").select("provider, encrypted_api_key").eq("user_id", user.id).maybeSingle();

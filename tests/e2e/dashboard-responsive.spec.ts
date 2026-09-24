@@ -107,7 +107,7 @@ test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px
   await expect.poll(() => page.locator("header").evaluate((header) => Math.abs(header.getBoundingClientRect().top))).toBeLessThanOrEqual(1);
 });
 
-test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ page }) => {
+test("chat financeiro ocupa a tela inteira e mantém os atalhos responsivos", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
   const movementShortcuts = ["Gastei", "Paguei", "Recebi", "Salário", "Investi", "Transferi"];
@@ -134,9 +134,12 @@ test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ 
     const sheetBounds = await sheet.boundingBox();
     expect(bounds).not.toBeNull();
     expect(sheetBounds).not.toBeNull();
-    expect(bounds!.width).toBeLessThanOrEqual(width);
-    expect(bounds!.height).toBeLessThanOrEqual(844);
+    expect(Math.abs(bounds!.width - width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(bounds!.height - 844)).toBeLessThanOrEqual(1);
+    expect(Math.abs(sheetBounds!.height - 844)).toBeLessThanOrEqual(1);
     await expect(dialog.getByRole("button", { name: "Configurar IA", exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Fechar", exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Voltar ao painel" })).toBeVisible();
     const shortcutGroup = dialog.getByRole("group", { name: "Atalhos de movimentação" });
     const shortcutGroupBounds = await shortcutGroup.boundingBox();
     expect(shortcutGroupBounds).not.toBeNull();
@@ -154,9 +157,6 @@ test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ 
     expect(messageAreaBounds).not.toBeNull();
     expect(welcomeBounds).not.toBeNull();
     expect(welcomeBounds!.width).toBeGreaterThanOrEqual(messageAreaBounds!.width * 0.96);
-    if (width <= 430) {
-      expect(sheetBounds!.height).toBeLessThanOrEqual(844 * 0.7);
-    }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     if (width === 375) {
@@ -166,7 +166,8 @@ test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ 
       continue;
     }
 
-    await dialog.getByRole("button", { name: "Fechar" }).click();
+    await dialog.getByRole("button", { name: "Voltar ao painel" }).click();
+    await expect(dialog).toHaveCount(0);
   }
 });
 

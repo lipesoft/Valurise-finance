@@ -18,7 +18,10 @@ export async function POST(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const rateKey = createHash("sha256").update(`personal-ai-models\0${user.id}`).digest("hex");
   const { data: allowed, error: rateError } = await admin.rpc("consume_public_rate_limit", { p_key: rateKey, p_max_attempts: 20, p_window_seconds: 3600 });
-  if (rateError) return NextResponse.json({ error: "Catálogo temporariamente indisponível." }, { status: 503 });
+  if (rateError) {
+    console.error("Val AI model-catalog rate-limit check failed", JSON.stringify({ code: rateError.code || "UNKNOWN" }));
+    return NextResponse.json({ error: "Não foi possível consultar os modelos agora. A chave ainda não foi enviada ao provedor; tente novamente em instantes." }, { status: 503 });
+  }
   if (allowed !== true) return NextResponse.json({ error: "Você atualizou o catálogo muitas vezes. Tente novamente mais tarde." }, { status: 429 });
 
   let apiKey = parsed.data.apiKey;

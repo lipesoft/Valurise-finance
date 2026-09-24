@@ -63,7 +63,10 @@ export async function POST(request: NextRequest) {
   const { data: allowed, error: rateError } = await admin.rpc("consume_public_rate_limit", {
     p_key: rateKey, p_max_attempts: 40, p_window_seconds: 3600,
   });
-  if (rateError) return NextResponse.json({ error: "Chat temporariamente indisponível. Tente novamente mais tarde." }, { status: 503 });
+  if (rateError) {
+    console.error("Val AI rate-limit check failed", JSON.stringify({ code: rateError.code || "UNKNOWN" }));
+    return NextResponse.json({ error: "Não foi possível validar o limite seguro do chat. Sua mensagem ainda não foi enviada ao provedor de IA; tente novamente em instantes." }, { status: 503 });
+  }
   if (allowed !== true) return NextResponse.json({ error: "Você atingiu o limite de mensagens desta hora. Tente novamente mais tarde." }, { status: 429, headers: { "Retry-After": "3600" } });
 
   const [{ data: connection, error: connectionError }, { data: consent }] = await Promise.all([

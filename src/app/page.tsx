@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Image from "next/image";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "framer-motion";
 import {
@@ -4025,7 +4025,7 @@ type PersonalChatProposal = {
   transaction_date: string;
   expires_at: string;
 };
-function PersonalFinanceChat({ startMovement, approveAction }: { startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void> }) {
+function PersonalFinanceChat({ startMovement, approveAction, close }: { startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void>; close: () => void }) {
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
     { id: "welcome", role: "assistant", content: "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
   ]);
@@ -4146,10 +4146,11 @@ function PersonalFinanceChat({ startMovement, approveAction }: { startMovement: 
       }
     } finally { setDecisionBusy(null); }
   };
-  return <section className={`flex ${proposals.length ? "h-[min(78dvh,44rem)] min-h-[24rem]" : "h-[min(56dvh,36rem)] min-h-[18rem] sm:h-[min(78dvh,44rem)] sm:min-h-[24rem]"} min-w-0 flex-col overflow-hidden`}>
-    <div className="flex shrink-0 items-start gap-3 border-b border-[var(--border)] pb-4 pr-8">
+  return <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
+    <div className="flex shrink-0 items-center gap-3 border-b border-[var(--border)] pb-4">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-      <div className="min-w-0 flex-1"><b className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
+      <div className="min-w-0 flex-1"><b id="personal-finance-chat-title" className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
+      <button type="button" onClick={close} aria-label="Voltar ao painel" className="flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-2 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"><ChevronLeft size={18} /><span>Voltar</span></button>
     </div>
     <div aria-live="polite" className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
       {messages.map((message) => <div key={message.id} className={`break-words rounded-2xl px-4 py-3 text-sm leading-6 [overflow-wrap:anywhere] ${message.role === "user" ? "ml-auto max-w-[88%] primary rounded-br-md" : "w-full max-w-full bg-[var(--panel2)] rounded-bl-md"}`}>{message.content}</div>)}
@@ -4269,9 +4270,9 @@ function Launcher({ data, close, saved, createCategory, createInvestment, approv
         : defaults;
   if (!k)
     return (
-      <Sheet close={close}>
-        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} approveAction={approvePersonalAiAction} />
-      </Sheet>
+      <ChatOverlay close={close}>
+        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} approveAction={approvePersonalAiAction} close={close} />
+      </ChatOverlay>
     );
   if (showCat)
     return (
@@ -4603,6 +4604,47 @@ function labels(k: Kind | null) {
           ? "Aporte"
           : "Transferência";
 }
+function ChatOverlay({ children, close }: { children: ReactNode; close: () => void }) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [close]);
+
+  return (
+    <motion.div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="personal-finance-chat-title"
+      className="fixed inset-0 z-40 h-[100dvh] overflow-hidden bg-[var(--panel)]"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: motionTokens.duration.normal }}
+    >
+      <motion.section
+        className="h-full min-h-0 w-full overflow-hidden px-4 pt-[max(12px,env(safe-area-inset-top))] pb-[max(12px,env(safe-area-inset-bottom))] sm:px-6 lg:px-10"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: 8 }}
+        transition={{ duration: motionTokens.duration.normal, ease: motionTokens.ease.enter }}
+      >
+        {children}
+      </motion.section>
+    </motion.div>
+  );
+}
+
 function Sheet({ children, close }: any) {
   return (
     <motion.div
