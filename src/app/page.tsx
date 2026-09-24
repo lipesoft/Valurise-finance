@@ -149,14 +149,6 @@ type Data = {
   dashboardWidgets?: { id: string; visible: boolean }[];
   onboarded: boolean;
 };
-const choices = [
-  ["expense", "Gastei", ArrowUpRight],
-  ["expense", "Paguei", ReceiptText],
-  ["income", "Recebi", ArrowDownLeft],
-  ["salary", "Salário", Landmark],
-  ["investment", "Investi", BarChart3],
-  ["transfer", "Transferi", WalletCards],
-] as const;
 const defaults = [
   "Alimentação",
   "Mercado",
@@ -4026,7 +4018,7 @@ type PersonalChatProposal = {
   transaction_date: string;
   expires_at: string;
 };
-function PersonalFinanceChat({ startMovement, openSettings, approveAction }: { startMovement: (kind: Kind) => void; openSettings: () => void; approveAction: (id: string) => Promise<void> }) {
+function PersonalFinanceChat({ openSettings, approveAction }: { openSettings: () => void; approveAction: (id: string) => Promise<void> }) {
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
     { id: "welcome", role: "assistant", content: "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
   ]);
@@ -4086,7 +4078,7 @@ function PersonalFinanceChat({ startMovement, openSettings, approveAction }: { s
     const next = [...messages, { id: crypto.randomUUID(), role: "user" as const, content }];
     setMessages(next); setInput(""); setError("");
     if (!connected) {
-      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: "Sua IA pessoal ainda não está conectada. Você pode usar os atalhos abaixo para registrar uma movimentação ou configurar OpenAI, Gemini ou DeepSeek em Configurações." }]);
+      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: "Sua IA pessoal ainda não está conectada. Para conversar sobre suas finanças, configure OpenAI, Gemini ou DeepSeek em Configurações." }]);
       return;
     }
     const supabase = getSupabaseBrowserClient();
@@ -4147,7 +4139,7 @@ function PersonalFinanceChat({ startMovement, openSettings, approveAction }: { s
       }
     } finally { setDecisionBusy(null); }
   };
-  return <section className="flex h-[min(78dvh,44rem)] min-h-[24rem] min-w-0 flex-col overflow-hidden">
+  return <section className={`flex ${proposals.length ? "h-[min(78dvh,44rem)] min-h-[24rem]" : "h-[min(60dvh,38rem)] min-h-[20rem] sm:h-[min(78dvh,44rem)] sm:min-h-[24rem]"} min-w-0 flex-col overflow-hidden`}>
     <div className="flex shrink-0 items-start gap-3 border-b border-[var(--border)] pb-4 pr-8">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
       <div className="min-w-0 flex-1"><b className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
@@ -4165,11 +4157,8 @@ function PersonalFinanceChat({ startMovement, openSettings, approveAction }: { s
       <div ref={messagesEndRef} />
     </div>
     {error && <p role="alert" className="mt-2 shrink-0 text-xs leading-5 text-[var(--danger)]">{error}</p>}
-    <div className="mt-3 flex shrink-0 flex-nowrap gap-2 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none]">
-      {choices.map(([kind, label, Icon]) => <button key={label} onClick={() => startMovement(kind)} className="flex min-h-10 shrink-0 items-center gap-2 rounded-full bg-[var(--panel2)] px-3 text-xs font-medium hover:ring-1 hover:ring-[var(--accent)]"><Icon size={14} className="text-[var(--accent)]" />{label}</button>)}
-    </div>
     <form className="mt-2 flex shrink-0 items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--panel2)] p-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-      <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida ou use um atalho"} />
+      <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida"} />
       <button type="submit" disabled={!input.trim() || loading} aria-label="Enviar mensagem" className="primary grid h-10 w-10 shrink-0 place-items-center rounded-xl disabled:opacity-50"><SendHorizontal size={17} /></button>
     </form>
     <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Ações limitadas com sua aprovação obrigatória" : "Somente leitura"}${lastUsage === null ? " · O provedor não informou o consumo desta resposta." : ` · ${lastUsage.toLocaleString("pt-BR")} tokens nesta resposta.`}` : "A Val é somente leitura. Revogue a conexão a qualquer momento em Configurações."}</p>
@@ -4272,7 +4261,7 @@ function Launcher({ data, close, saved, createCategory, createInvestment, openSe
   if (!k)
     return (
       <Sheet close={close}>
-        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} openSettings={openSettings} approveAction={approvePersonalAiAction} />
+        <PersonalFinanceChat openSettings={openSettings} approveAction={approvePersonalAiAction} />
       </Sheet>
     );
   if (showCat)

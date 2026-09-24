@@ -129,9 +129,16 @@ test("chat financeiro cabe no mobile e mantém o ícone centralizado", async ({ 
     await expect(dialog.getByRole("textbox", { name: "Mensagem para a assistente financeira" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Enviar mensagem" })).toBeInViewport();
     const bounds = await dialog.boundingBox();
+    const sheet = dialog.locator(":scope > section");
+    const sheetBounds = await sheet.boundingBox();
     expect(bounds).not.toBeNull();
+    expect(sheetBounds).not.toBeNull();
     expect(bounds!.width).toBeLessThanOrEqual(width);
     expect(bounds!.height).toBeLessThanOrEqual(844);
+    if (width <= 430) {
+      expect(sheetBounds!.height).toBeLessThanOrEqual(844 * 0.7);
+      await expect(dialog.getByRole("group", { name: "Atalhos de movimentação" })).toHaveCount(0);
+    }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     await dialog.getByRole("button", { name: "Fechar" }).click();
