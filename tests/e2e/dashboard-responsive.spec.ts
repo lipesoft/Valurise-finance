@@ -186,7 +186,7 @@ test("alertas podem ser dispensados e saem do sino", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Abrir notificações" })).toBeVisible();
 });
 
-test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem persistir a chave no navegador", async ({ page }) => {
+test("configura a Val com modelos Gemini confirmados, diagnóstico de erro e teste mínimo sem persistir a chave no navegador", async ({ page }) => {
   await installMockSession(page);
   let savedConnection: Record<string, unknown> | null = null;
   await page.route("**/api/personal-ai/connection", async (route) => {
@@ -195,18 +195,20 @@ test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem
     savedConnection = body;
     return route.fulfill({ status: 200, json: { ok: true, validated: !Object.hasOwn(body, "apiKey"), validatedAt: "2026-09-24T12:00:00.000Z" } });
   });
-  await page.route("**/api/personal-ai/models", (route) => route.fulfill({ status: 200, json: {
-    provider: "gemini",
-    models: [
-      { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", tier: "recommended" },
-      { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", tier: "economical" },
-    ],
-  } }));
-  await page.route("**/api/personal-ai/test", (route) => route.fulfill({ status: 200, json: {
-    ok: true, provider: "gemini", model: "gemini-3.8-flash", latencyMs: 842,
-    validated: Boolean(savedConnection), validatedAt: "2026-09-24T12:00:00.000Z",
-    usage: { inputTokens: 3, outputTokens: 1 },
-  } }));
+  const testedModels: string[] = [];
+  await page.route("**/api/personal-ai/test", async (route) => {
+    const body = route.request().postDataJSON() as { model: string };
+    testedModels.push(body.model);
+    if (testedModels.length === 1) return route.fulfill({ status: 502, json: {
+      error: "A chave da Gemini não tem permissão para usar esta API ou modelo.", category: "PERMISSION_DENIED",
+      providerMessage: "Gemini API has not been enabled for this project.", providerCode: "SERVICE_DISABLED", providerHttpStatus: 403, model: body.model,
+    } });
+    return route.fulfill({ status: 200, json: {
+      ok: true, provider: "gemini", model: body.model, latencyMs: 842,
+      validated: Boolean(savedConnection), validatedAt: "2026-09-24T12:00:00.000Z",
+      usage: { inputTokens: 3, outputTokens: 1 },
+    } });
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "Ajustes", exact: true }).click();
   await expect(page.getByText("Val · assistente financeira")).toBeVisible();
@@ -218,16 +220,25 @@ test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem
   await expect(actionPermission).toBeChecked();
   await page.getByLabel("Provedor").selectOption("gemini");
   await page.getByLabel("API key").fill("e2e-chave-ficticia-sem-uso-real");
-  await page.getByRole("button", { name: "Atualizar modelos disponíveis" }).click();
-  await expect(page.getByLabel("Modelos disponíveis para esta chave")).toBeVisible();
-  await page.getByLabel("Modelos disponíveis para esta chave").selectOption("gemini-3.8-flash");
+  const geminiModel = page.getByLabel("Modelo Gemini");
+  await expect(geminiModel).toBeVisible();
+  await expect(geminiModel.locator("option")).toHaveCount(2);
+  await expect(geminiModel).toHaveValue("gemini-2.5-flash-lite");
   await page.getByRole("button", { name: "Testar conexão" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "ainda não está salvo" })).toBeVisible();
+  const providerError = page.getByRole("status").filter({ hasText: "Permissão negada" });
+  await expect(providerError).toContainText("gemini-2.5-flash-lite");
+  await expect(providerError).toContainText("HTTP do provedor: 403");
+  await expect(providerError).toContainText("SERVICE_DISABLED");
+  await expect(providerError).toContainText("Gemini API has not been enabled for this project.");
+  await geminiModel.selectOption("gemini-2.5-flash");
+  await page.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "ainda não está salvo" })).toContainText("gemini-2.5-flash");
   await expect(page.getByRole("button", { name: "Conectar Val" })).toBeVisible();
   await page.getByRole("button", { name: "Conectar Val" }).click();
   await expect.poll(() => savedConnection).toMatchObject({ insightsEnabled: true, actionsEnabled: true });
   await page.getByRole("button", { name: "Testar conexão" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "842 ms" })).toContainText("Conexão validada · 842 ms");
+  await expect(page.getByRole("status").filter({ hasText: "842 ms" })).toContainText("Conexão validada com gemini-2.5-flash · 842 ms");
+  expect(testedModels).toEqual(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash"]);
   await expect(page.getByText("Solicitações")).toBeVisible();
   await expect(page.getByText("140", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Salvar configuração" }).click();
@@ -238,6 +249,34 @@ test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem
   const localStorageValue = await page.evaluate(() => JSON.stringify(localStorage));
   expect(localStorageValue).not.toContain("e2e-chave-ficticia-sem-uso-real");
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("chat mostra o diagnóstico devolvido pelo provedor Gemini", async ({ page }) => {
+  await installMockSession(page);
+  await page.route("**/api/personal-ai/connection", (route) => route.fulfill({ status: 200, json: {
+    connection: { provider: "gemini", model: "gemini-2.5-flash-lite", insights_enabled: true, actions_enabled: false, validated: true, validated_model: "gemini-2.5-flash-lite", validated_at: "2026-09-24T12:00:00.000Z" },
+  } }));
+  await page.route("**/api/personal-ai/chat", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { messages: [] } });
+    return route.fulfill({ status: 502, json: {
+      error: "A chave da Gemini não tem permissão para usar esta API ou este modelo.", category: "PERMISSION_DENIED",
+      providerMessage: "Gemini API has not been enabled for this project.", providerCode: "SERVICE_DISABLED", providerHttpStatus: 403,
+      model: "gemini-2.5-flash-lite", requestId: "google-request-test-1",
+    } });
+  });
+  await page.route("**/api/personal-ai/actions", (route) => route.fulfill({ status: 200, json: { proposals: [] } }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Registrar movimentação" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: "Mensagem para a assistente financeira" }).fill("Me ajude a entender meus gastos");
+  await dialog.getByRole("button", { name: "Enviar mensagem" }).click();
+  const providerError = dialog.getByRole("alert");
+  await expect(providerError).toContainText("Permissão negada");
+  await expect(providerError).toContainText("gemini-2.5-flash-lite");
+  await expect(providerError).toContainText("HTTP do provedor: 403");
+  await expect(providerError).toContainText("SERVICE_DISABLED");
+  await expect(providerError).toContainText("Gemini API has not been enabled for this project.");
 });
 
 test("a Val só registra receita ou despesa depois da aprovação explícita da proposta", async ({ page }) => {

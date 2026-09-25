@@ -68,6 +68,7 @@ import { loadValuriseState, saveValuriseState } from "@/lib/state-sync";
 import { useSharedGoalInvites, type SharedGoalInvite, type SharedGoalSummary } from "@/hooks/use-shared-goal-invites";
 import { normalizeUsername } from "@/lib/auth/username";
 import { createValuriseBackup, parseValuriseBackup } from "@/lib/backup";
+import { GEMINI_SUPPORTED_MODELS, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -4025,6 +4026,7 @@ type PersonalChatProposal = {
   transaction_date: string;
   expires_at: string;
 };
+type PersonalChatError = Pick<PersonalAITestStatus, "message" | "category" | "providerMessage" | "providerCode" | "providerHttpStatus" | "requestId" | "model">;
 function PersonalFinanceChat({ startMovement, approveAction, close }: { startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void>; close: () => void }) {
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
     { id: "welcome", role: "assistant", content: "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
@@ -4038,7 +4040,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
   const [proposals, setProposals] = useState<PersonalChatProposal[]>([]);
   const [decisionBusy, setDecisionBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<PersonalChatError | null>(null);
   const [lastUsage, setLastUsage] = useState<number | null>(null);
 
   useEffect(() => {
@@ -4070,7 +4072,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
           if (!cancelled && Array.isArray(actionResult.proposals)) setProposals(actionResult.proposals);
         }
       } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : "Não foi possível conectar ao chat.");
+        if (!cancelled) setError({ message: reason instanceof Error ? reason.message : "Não foi possível conectar ao chat." });
       }
     };
     void loadConnection();
@@ -4085,7 +4087,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
     const content = input.trim();
     if (!content || loading) return;
     const next = [...messages, { id: crypto.randomUUID(), role: "user" as const, content }];
-    setMessages(next); setInput(""); setError("");
+    setMessages(next); setInput(""); setError(null);
     if (!connected) {
       setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: configured
         ? "Sua configuração está salva, mas ainda não foi validada. Acesse Configurações, teste a conexão e volte para conversar. Você pode continuar usando os atalhos para registrar movimentações."
@@ -4094,7 +4096,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
     }
     const supabase = getSupabaseBrowserClient();
     const { data } = await supabase?.auth.getSession() || {};
-    if (!data?.session?.access_token) return setError("Sua sessão expirou. Entre novamente para conversar.");
+    if (!data?.session?.access_token) return setError({ message: "Sua sessão expirou. Entre novamente para conversar." });
     setLoading(true);
     try {
       const response = await fetch("/api/personal-ai/chat", {
@@ -4103,19 +4105,22 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
         body: JSON.stringify({ messages: next.slice(-12).map(({ role, content: text }) => ({ role, content: text })) }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Não foi possível responder agora.");
+      if (!response.ok) {
+        setError({ message: result.error || "Não foi possível responder agora.", category: result.category, providerMessage: result.providerMessage, providerCode: result.providerCode, providerHttpStatus: result.providerHttpStatus, requestId: result.requestId, model: result.model });
+        return;
+      }
       setLastUsage(typeof result.usage?.totalTokens === "number" ? result.usage.totalTokens : null);
       setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: result.reply }]);
       if (Array.isArray(result.proposals) && result.proposals.length) {
         setProposals((current) => [...result.proposals, ...current.filter((item) => !result.proposals.some((nextProposal: PersonalChatProposal) => nextProposal.id === item.id))].slice(0, 5));
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Não foi possível responder agora.");
+      setError({ message: reason instanceof Error ? reason.message : "Não foi possível responder agora." });
     } finally { setLoading(false); }
   };
   const decideProposal = async (proposalId: string, decision: "approve" | "reject") => {
     if (decisionBusy) return;
-    setDecisionBusy(proposalId); setError("");
+    setDecisionBusy(proposalId); setError(null);
     try {
       if (decision === "approve") {
         await approveAction(proposalId);
@@ -4135,7 +4140,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
       setProposals((current) => current.filter((proposal) => proposal.id !== proposalId));
       if (decision === "reject") setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", content: "Proposta descartada. Nenhum lançamento foi criado." }]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Não foi possível responder à proposta.");
+      setError({ message: reason instanceof Error ? reason.message : "Não foi possível responder à proposta." });
       if (decision === "approve") {
         try {
           const supabase = getSupabaseBrowserClient();
@@ -4167,7 +4172,17 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
       {loading && <div className="w-fit rounded-2xl rounded-bl-md bg-[var(--panel2)] px-4 py-3 text-sm"><span className="inline-flex gap-1"><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:150ms]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] [animation-delay:300ms]" /></span></div>}
       <div ref={messagesEndRef} />
     </div>
-    {error && <p role="alert" className="mt-2 shrink-0 text-xs leading-5 text-[var(--danger)]">{error}</p>}
+    {error && <div role="alert" className="mt-2 max-h-28 shrink-0 overflow-y-auto rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs leading-5 text-[var(--danger)]">
+      <p>{error.message}</p>
+      {(error.category || error.model || error.providerHttpStatus || error.providerCode || error.requestId) && <p className="muted mt-1 break-words">{[
+        error.category ? aiErrorCategoryLabels[error.category] || "Falha do provedor" : "",
+        error.model ? `Modelo: ${error.model}` : "",
+        error.providerHttpStatus ? `HTTP do provedor: ${error.providerHttpStatus}` : "",
+        error.providerCode ? `Código: ${error.providerCode}` : "",
+        error.requestId ? `Referência: ${error.requestId}` : "",
+      ].filter(Boolean).join(" · ")}</p>}
+      {error.providerMessage && <p className="muted mt-1 break-words">Detalhe do provedor: {error.providerMessage}</p>}
+    </div>}
     <div role="group" aria-label="Atalhos de movimentação" className="mt-3 grid shrink-0 grid-cols-2 gap-2 pb-1 min-[350px]:grid-cols-3 sm:flex sm:flex-wrap sm:justify-start">
       {choices.map(([kind, label, Icon]) => <button key={label} type="button" onClick={() => startMovement(kind)} className="flex min-h-10 w-full min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--panel2)] px-2 text-[11px] font-medium hover:ring-1 hover:ring-[var(--accent)] sm:w-auto sm:gap-2 sm:px-3 sm:text-xs"><Icon size={14} className="shrink-0 text-[var(--accent)]" />{label}</button>)}
     </div>
@@ -5739,7 +5754,28 @@ function AccountDeletion({ logout, localStoragePrefix }: { logout: () => void; l
 type PersonalAIProvider = "openai" | "gemini" | "deepseek";
 type PersonalAIModelOption = { id: string; label: string; tier: "recommended" | "economical" | "advanced" | "other" };
 type PersonalAIUsage = { requests: number; totalTokens: number; inputTokens: number; outputTokens: number; quotaTokens: number | null };
-const defaultAIModel: Record<PersonalAIProvider, string> = { openai: "gpt-5-mini", gemini: "gemini-3.8-flash", deepseek: "deepseek-v4-flash" };
+type PersonalAITestStatus = { ok: boolean; message: string; category?: string; providerMessage?: string | null; providerCode?: string | null; providerHttpStatus?: number | null; requestId?: string | null; model?: string };
+const aiErrorCategoryLabels: Record<string, string> = {
+  INVALID_API_KEY: "Chave inválida",
+  INVALID_MODEL: "Modelo inválido ou não habilitado",
+  MODEL_UNAVAILABLE: "Modelo indisponível para esta conta",
+  INVALID_REQUEST: "Solicitação rejeitada pelo provedor",
+  PERMISSION_DENIED: "Permissão negada",
+  BILLING_REQUIRED: "Pré-condição de faturamento",
+  INSUFFICIENT_BALANCE: "Saldo insuficiente",
+  RATE_LIMITED: "Limite de requisições",
+  QUOTA_EXCEEDED: "Cota do provedor",
+  PROVIDER_OVERLOADED: "Provedor sobrecarregado",
+  PROVIDER_UNAVAILABLE: "Provedor indisponível",
+  APP_RATE_LIMITED: "Limite de testes do Valurise",
+  REGION_RESTRICTED: "Modelo indisponível nesta região",
+  CONTENT_BLOCKED: "Resposta bloqueada pelo provedor",
+  TIMEOUT: "Tempo limite da conexão",
+  NETWORK_ERROR: "Falha de rede",
+  MALFORMED_RESPONSE: "Resposta inválida do provedor",
+  UNKNOWN_PROVIDER_ERROR: "Erro retornado pelo provedor",
+};
+const defaultAIModel: Record<PersonalAIProvider, string> = { openai: "gpt-5-mini", gemini: GEMINI_SUPPORTED_MODELS[0].id, deepseek: "deepseek-v4-flash" };
 function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
   const [provider, setProvider] = useState<PersonalAIProvider>("openai");
   const [savedProvider, setSavedProvider] = useState<PersonalAIProvider | null>(null);
@@ -5758,7 +5794,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [testBusy, setTestBusy] = useState(false);
-  const [testStatus, setTestStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const [testStatus, setTestStatus] = useState<PersonalAITestStatus | null>(null);
   const [usage, setUsage] = useState<PersonalAIUsage | null>(null);
 
   const getAccessToken = async () => {
@@ -5784,13 +5820,19 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
       const result = await response.json();
       if (cancelled) return;
       if (response.ok && result.connection) {
+        const storedProvider = result.connection.provider as PersonalAIProvider;
+        const storedModel = String(result.connection.model || "");
+        const selectedModel = storedProvider === "gemini" && !isSupportedGeminiModel(storedModel)
+          ? defaultAIModel.gemini
+          : storedModel;
         setConnected(true);
-        setProvider(result.connection.provider);
-        setModel(result.connection.model);
-        setCustomModel(true);
-        setSavedProvider(result.connection.provider);
-        setSavedModel(result.connection.model);
-        setConnectionValidated(Boolean(result.connection.validated && result.connection.validated_model === result.connection.model));
+        setProvider(storedProvider);
+        setModel(selectedModel);
+        setCustomModel(storedProvider !== "gemini");
+        setSavedProvider(storedProvider);
+        setSavedModel(storedModel);
+        setConnectionValidated(Boolean(result.connection.validated && result.connection.validated_model === storedModel
+          && (storedProvider !== "gemini" || isSupportedGeminiModel(storedModel))));
         setValidatedAt(result.connection.validated_at || null);
         setInsightsEnabled(result.connection.insights_enabled);
         setNotificationsEnabled(result.connection.notifications_enabled);
@@ -5807,6 +5849,12 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
   }, []);
 
   const loadModels = async () => {
+    if (provider === "gemini") {
+      setModels(GEMINI_SUPPORTED_MODELS.map((option) => ({ ...option })));
+      setCustomModel(false);
+      setTestStatus(null);
+      return;
+    }
     const token = await getAccessToken();
     if (!token) return toast("Faça login novamente para consultar os modelos.");
     setCatalogBusy(true); setTestStatus(null);
@@ -5817,7 +5865,10 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         body: JSON.stringify({ provider, ...(apiKey.trim() ? { apiKey } : {}) }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Não foi possível carregar os modelos.");
+      if (!response.ok) {
+        setTestStatus({ ok: false, message: result.error || "Não foi possível carregar os modelos.", category: result.category, providerMessage: result.providerMessage, providerCode: result.providerCode, providerHttpStatus: result.providerHttpStatus, requestId: result.requestId, model: result.model || model });
+        return;
+      }
       const available = Array.isArray(result.models) ? result.models as PersonalAIModelOption[] : [];
       setModels(available);
       if (available.some((item) => item.id === model)) setCustomModel(false);
@@ -5830,13 +5881,16 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         else setCustomModel(true);
       }
       if (!available.length) toast("Nenhum modelo de texto compatível foi encontrado para essa chave.");
-    } catch (reason) {
-      toast(reason instanceof Error ? reason.message : "Não foi possível carregar os modelos.");
+    } catch {
+      setTestStatus({ ok: false, message: "Não foi possível carregar os modelos. Verifique sua conexão e tente novamente.", model });
     } finally { setCatalogBusy(false); }
   };
 
   const testConnection = async () => {
     if (!model.trim()) return toast("Escolha um modelo antes de testar.");
+    if (provider === "gemini" && !isSupportedGeminiModel(model)) {
+      return setTestStatus({ ok: false, message: "Selecione Gemini 2.5 Flash-Lite ou Gemini 2.5 Flash. Outros modelos não são usados pelo Valurise.", category: "INVALID_MODEL", providerCode: "MODEL_NOT_ALLOWED", model });
+    }
     if ((!connected || provider !== savedProvider) && apiKey.trim().length < 12) return toast("Cole a API key para testar este provedor.");
     const token = await getAccessToken();
     if (!token) return toast("Faça login novamente para testar a conexão.");
@@ -5848,7 +5902,10 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         body: JSON.stringify({ provider, model, ...(apiKey.trim() ? { apiKey } : {}) }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Não foi possível validar a conexão.");
+      if (!response.ok) {
+        setTestStatus({ ok: false, message: result.error || "Não foi possível validar a conexão.", category: result.category, providerMessage: result.providerMessage, providerCode: result.providerCode, providerHttpStatus: result.providerHttpStatus, requestId: result.requestId, model: result.model || model });
+        return;
+      }
       const tokenCount = typeof result.usage?.inputTokens === "number" && typeof result.usage?.outputTokens === "number"
         ? ` · ${result.usage.inputTokens + result.usage.outputTokens} tokens` : "";
       if (result.validated) {
@@ -5859,18 +5916,19 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         setConnectionValidated(true);
         setValidatedAt(testedAt);
         setApiKey("");
-        setTestStatus({ ok: true, message: `Conexão validada · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}` });
+        setTestStatus({ ok: true, model: result.model || model, message: `Conexão validada com ${result.model || model} · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}` });
       } else {
-        setTestStatus({ ok: true, message: `O teste respondeu · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}. Esta chave ou modelo ainda não está salvo; salve a configuração e teste novamente para liberar o chat.` });
+        setTestStatus({ ok: true, model: result.model || model, message: `${result.model || model} respondeu · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}. Esta chave ou modelo ainda não está salvo; salve a configuração e teste novamente para liberar o chat.` });
       }
       await loadUsage(token);
-    } catch (reason) {
-      setTestStatus({ ok: false, message: reason instanceof Error ? reason.message : "Não foi possível validar a conexão." });
+    } catch {
+      setTestStatus({ ok: false, message: "Não foi possível concluir o teste. Verifique sua conexão e tente novamente.", model });
     } finally { setTestBusy(false); }
   };
 
   const save = async () => {
     if (!model.trim()) return toast("Informe um modelo de texto válido.");
+    if (provider === "gemini" && !isSupportedGeminiModel(model)) return toast("Selecione Gemini 2.5 Flash-Lite ou Gemini 2.5 Flash.");
     if ((!connected || provider !== savedProvider) && apiKey.trim().length < 12) return toast("Informe uma API key válida para este provedor.");
     const token = await getAccessToken();
     if (!token) return toast("Faça login novamente para conectar sua IA.");
@@ -5931,7 +5989,11 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
             <option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option>
           </select>
         </label>
-        {models.length > 0 && <label className="text-sm">Modelos disponíveis para esta chave
+        {provider === "gemini" ? <label className="text-sm">Modelo Gemini
+          <select value={model} onChange={(event) => { setModel(event.target.value); setCustomModel(false); setTestStatus(null); }} className="field mt-1">
+            {GEMINI_SUPPORTED_MODELS.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.tier === "recommended" ? "Recomendado" : "Disponível"}</option>)}
+          </select>
+        </label> : models.length > 0 && <label className="text-sm">Modelos disponíveis para esta chave
           <select value={customModel || !models.some((item) => item.id === model) ? "__custom" : model} onChange={(event) => {
             if (event.target.value === "__custom") setCustomModel(true);
             else { setModel(event.target.value); setCustomModel(false); setTestStatus(null); }
@@ -5940,11 +6002,11 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
             <option value="__custom">Inserir modelo personalizado…</option>
           </select>
         </label>}
-        {(models.length === 0 || customModel || !models.some((item) => item.id === model)) && <label className="text-sm">ID do modelo
+        {provider !== "gemini" && (models.length === 0 || customModel || !models.some((item) => item.id === model)) && <label className="text-sm">ID do modelo
           <input value={model} onChange={(event) => { setModel(event.target.value); setTestStatus(null); }} className="field mt-1" placeholder={defaultAIModel[provider]} autoComplete="off" />
         </label>}
-        <button type="button" disabled={catalogBusy} onClick={() => void loadModels()} className="min-h-10 w-fit rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-60">{catalogBusy ? "Consultando catálogo…" : "Atualizar modelos disponíveis"}</button>
-        <p className="muted -mt-1 text-xs leading-5">O catálogo indica compatibilidade de texto, não garante cota ou disponibilidade para sua conta. Escolha um modelo e teste antes de conversar.</p>
+        {provider !== "gemini" && <button type="button" disabled={catalogBusy} onClick={() => void loadModels()} className="min-h-10 w-fit rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-60">{catalogBusy ? "Consultando catálogo…" : "Atualizar modelos disponíveis"}</button>}
+        <p className="muted -mt-1 text-xs leading-5">{provider === "gemini" ? "O Valurise prioriza os modelos Gemini 2.5 Flash-Lite e Flash informados como disponíveis no seu projeto. O teste abaixo confirma a chave e o modelo selecionado sem enviar dados financeiros." : "O catálogo indica compatibilidade de texto, não garante cota ou disponibilidade para sua conta. Escolha um modelo e teste antes de conversar."}</p>
         {connected && <p role="status" className={`rounded-xl px-3 py-2 text-xs leading-5 ${currentConfigValidated ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--text)]"}`}>
           {currentConfigValidated
             ? `Conexão validada para ${savedModel}${validatedAt ? ` · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(validatedAt))}` : ""}.`
@@ -5958,7 +6020,17 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         <label className={`flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm ${!insightsEnabled ? "opacity-55" : ""}`}><span><b className="block">Permitir ações financeiras com confirmação</b><small className="muted">Opcional. A Val só poderá preparar propostas de receita ou despesa comum. Cada proposta mostra os dados exatos e exige que você toque em “Confirmar e registrar”. Você pode descartar ou desligar esta permissão; não permite transferências, cartões/parcelas, investimentos, metas, edição ou exclusão.</small></span><input aria-label="Permitir propostas de receitas e despesas com confirmação obrigatória" disabled={!insightsEnabled} checked={actionsEnabled && insightsEnabled} onChange={(event) => setActionsEnabled(event.target.checked)} type="checkbox" /></label>
       </div>
       {consentRenewalRequired && <p role="status" className="mt-3 rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs leading-5">Atualizamos as regras de privacidade da Val. Para voltar a compartilhar contexto financeiro, revise o consentimento acima e salve a configuração.</p>}
-      {testStatus && <p role="status" aria-live="polite" className={`mt-3 rounded-xl px-3 py-2 text-sm ${testStatus.ok ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--danger)]"}`}>{testStatus.message}</p>}
+      {testStatus && <div role="status" aria-live="polite" className={`mt-3 rounded-xl px-3 py-3 text-sm ${testStatus.ok ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--danger)]"}`}>
+        <p>{testStatus.message}</p>
+        {!testStatus.ok && (testStatus.category || testStatus.model || testStatus.providerHttpStatus || testStatus.providerCode || testStatus.requestId || testStatus.providerMessage) && <div className="muted mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+          {testStatus.category && <b>{aiErrorCategoryLabels[testStatus.category] || "Falha de conexão"}</b>}
+          {testStatus.model && <span>Modelo: {testStatus.model}</span>}
+          {testStatus.providerHttpStatus && <span>HTTP do provedor: {testStatus.providerHttpStatus}</span>}
+          {testStatus.providerCode && <span>Código: {testStatus.providerCode}</span>}
+          {testStatus.requestId && <span>Referência: {testStatus.requestId}</span>}
+        </div>}
+        {!testStatus.ok && testStatus.providerMessage && <p className="muted mt-2 break-words text-xs">Detalhe retornado pelo provedor: {testStatus.providerMessage}</p>}
+      </div>}
       <p className="muted mt-4 text-xs leading-5">A chave trafega ao servidor e é criptografada antes de ser salva; ela nunca volta ao navegador nem é enviada à Val como contexto. O teste envia apenas “Responda somente: OK” e pode consumir alguns tokens do seu provedor. Sem a permissão acima, a Val só consulta informações com ferramentas controladas. Com ela, ainda assim nada é gravado sem confirmação explícita no app; a aprovação é validada novamente no servidor. Desconectar revoga o consentimento e cancela propostas pendentes.</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <button disabled={busy || testBusy} onClick={() => void save()} className="primary min-h-11 rounded-xl px-4 py-2 text-sm font-semibold">{busy ? "Salvando…" : connected ? "Salvar configuração" : "Conectar Val"}</button>

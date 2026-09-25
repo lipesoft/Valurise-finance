@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
     console.error("Val AI model-catalog rate-limit check failed", JSON.stringify({ code: rateError.code || "UNKNOWN" }));
     return NextResponse.json({ error: "Não foi possível consultar os modelos agora. A chave ainda não foi enviada ao provedor; tente novamente em instantes." }, { status: 503 });
   }
-  if (allowed !== true) return NextResponse.json({ error: "Você atualizou o catálogo muitas vezes. Tente novamente mais tarde." }, { status: 429 });
+  if (allowed !== true) return NextResponse.json({ error: "Você atualizou o catálogo muitas vezes. Tente novamente mais tarde.", category: "APP_RATE_LIMITED", retryable: true }, { status: 429, headers: { "Retry-After": "3600" } });
 
   let apiKey = parsed.data.apiKey;
   if (!apiKey) {
@@ -41,6 +41,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const failure = classifyAIError(error, provider as AIProvider, "catalog");
     if (!(error instanceof AIProviderError)) console.error("Val AI catalog failure", JSON.stringify({ provider, category: failure.category, status: failure.httpStatus, requestId: failure.requestId }));
-    return NextResponse.json({ error: failure.message, category: failure.category, retryable: failure.retryable }, { status: failure.httpStatus === 429 ? 429 : 502 });
+    return NextResponse.json({ error: failure.message, category: failure.category, providerMessage: failure.providerMessage, providerCode: failure.providerCode, providerHttpStatus: failure.httpStatus, requestId: failure.requestId, retryable: failure.retryable }, { status: failure.httpStatus === 429 ? 429 : 502 });
   }
 }

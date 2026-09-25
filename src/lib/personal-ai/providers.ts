@@ -4,13 +4,14 @@ import { createGoogle } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
+import { isSupportedGeminiModel } from "./model-options";
 
 export const AI_PROVIDERS = ["openai", "gemini", "deepseek"] as const;
 export type AIProvider = (typeof AI_PROVIDERS)[number];
 
 export type AIErrorCategory =
   | "INVALID_API_KEY" | "INVALID_MODEL" | "MODEL_UNAVAILABLE" | "INVALID_REQUEST"
-  | "RATE_LIMITED" | "QUOTA_EXCEEDED" | "INSUFFICIENT_BALANCE" | "BILLING_REQUIRED"
+  | "RATE_LIMITED" | "QUOTA_EXCEEDED" | "INSUFFICIENT_BALANCE" | "BILLING_REQUIRED" | "PERMISSION_DENIED"
   | "REGION_RESTRICTED" | "CONTENT_BLOCKED" | "TIMEOUT" | "PROVIDER_OVERLOADED"
   | "PROVIDER_UNAVAILABLE" | "NETWORK_ERROR" | "MALFORMED_RESPONSE" | "TOOL_CALL_ERROR"
   | "UNKNOWN_PROVIDER_ERROR";
@@ -27,7 +28,8 @@ const messages: Record<AIErrorCategory, (provider: string) => string> = {
   RATE_LIMITED: (p) => `A ${p} limitou temporariamente as solicitações. Aguarde um pouco antes de tentar novamente.`,
   QUOTA_EXCEEDED: (p) => `O limite de uso da ${p} foi atingido. Confira a cota e os limites do projeto do provedor.`,
   INSUFFICIENT_BALANCE: (p) => `O saldo da conta da ${p} é insuficiente para esta solicitação.`,
-  BILLING_REQUIRED: (p) => `A conta ou o projeto da ${p} precisa de faturamento ativo para usar este modelo.`,
+  BILLING_REQUIRED: (p) => `O provedor informou uma exigência de faturamento ou pré-condição da conta ${p}. Confira o projeto e o modelo selecionado.`,
+  PERMISSION_DENIED: (p) => `A chave da ${p} não tem permissão para usar esta API ou este modelo. Confira as permissões da chave e se a Gemini API está habilitada no projeto.`,
   REGION_RESTRICTED: (p) => `Este modelo da ${p} não está disponível na região configurada para sua conta.`,
   CONTENT_BLOCKED: () => "O provedor bloqueou a resposta por uma política de segurança. Reformule a pergunta e tente novamente.",
   TIMEOUT: () => "O provedor demorou demais para responder. Tente novamente em instantes.",
@@ -45,6 +47,7 @@ export class AIProviderError extends Error {
   readonly category: AIErrorCategory;
   readonly httpStatus: number | null;
   readonly providerCode: string | null;
+  readonly providerMessage: string | null;
   readonly requestId: string | null;
   readonly retryable: boolean;
 
@@ -54,6 +57,7 @@ export class AIProviderError extends Error {
     category: AIErrorCategory;
     httpStatus?: number | null;
     providerCode?: string | null;
+    providerMessage?: string | null;
     requestId?: string | null;
   }) {
     super(messages[args.category](providerNames[args.provider]));
@@ -63,6 +67,7 @@ export class AIProviderError extends Error {
     this.category = args.category;
     this.httpStatus = args.httpStatus ?? null;
     this.providerCode = safeIdentifier(args.providerCode);
+    this.providerMessage = safeProviderMessage(args.providerMessage);
     this.requestId = safeIdentifier(args.requestId);
     this.retryable = ["RATE_LIMITED", "PROVIDER_OVERLOADED", "PROVIDER_UNAVAILABLE", "NETWORK_ERROR", "TIMEOUT"].includes(args.category);
   }
@@ -72,28 +77,57 @@ function safeIdentifier(value: unknown) {
   return typeof value === "string" && /^[A-Za-z0-9._:-]{1,100}$/.test(value) ? value : null;
 }
 
+function safeProviderMessage(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return value.trim().replace(/AIza[0-9A-Za-z_-]{20,}/g, "[chave ocultada]")
+    .replace(/(api[_ -]?key|secret|authorization|bearer|token)\s*[:=]\s*[^\s,;]+/gi, "$1=[ocultado]")
+    .replace(/https?:\/\/\S+/gi, "[endereço removido]")
+    .replace(/\s+/g, " ").slice(0, 240);
+}
+
 function bodyDetails(body: unknown) {
-  if (typeof body !== "string") return { text: "", code: "" };
+  if (typeof body !== "string") return { text: "", code: "", status: "", reason: "", quota: "" };
   try {
-    const parsed = JSON.parse(body) as { error?: string | { code?: string; type?: string; status?: string; message?: string } };
+    const parsed = JSON.parse(body) as { error?: string | { code?: string | number; type?: string; status?: string; message?: string; details?: unknown[] } };
     const error = parsed.error;
-    if (typeof error === "string") return { text: error.slice(0, 1000), code: "" };
+    if (typeof error === "string") return { text: error.slice(0, 1000), code: "", status: "", reason: "", quota: "" };
+    if (!error || typeof error !== "object") return { text: "", code: "", status: "", reason: "", quota: "" };
+    const details = Array.isArray(error.details) ? error.details : [];
+    const detailValues = details.flatMap((detail) => {
+      if (!detail || typeof detail !== "object") return [];
+      const row = detail as Record<string, unknown>;
+      const values = [row.reason, row.quotaId, row.quotaMetric, row.description, row.subject];
+      const violations = Array.isArray(row.violations) ? row.violations : [];
+      for (const violation of violations) {
+        if (!violation || typeof violation !== "object") continue;
+        const quota = violation as Record<string, unknown>;
+        values.push(quota.quotaId, quota.quotaMetric, quota.description, quota.subject);
+      }
+      return values.filter((value): value is string => typeof value === "string");
+    });
+    const quota = detailValues.find((value) => /quota|perminute|perday|tokensper/i.test(value)) || "";
     return {
       text: String(error?.message || error?.status || "").slice(0, 1000),
-      code: String(error?.code || error?.type || error?.status || "").slice(0, 100),
+      code: String(typeof error.code === "string" || typeof error.code === "number" ? error.code : error.type || "").slice(0, 100),
+      status: String(error.status || "").slice(0, 100),
+      reason: String(detailValues.find((value) => /permission|api_key|rate|quota|billing|service_disabled/i.test(value)) || "").slice(0, 100),
+      quota: quota.slice(0, 200),
     };
   } catch {
-    return { text: body.slice(0, 1000), code: "" };
+    return { text: body.slice(0, 1000), code: "", status: "", reason: "", quota: "" };
   }
 }
 
 export function classifyAIError(error: unknown, provider: AIProvider, model: string): AIProviderError {
   if (error instanceof AIProviderError) return error;
   const value = (error || {}) as Record<string, unknown>;
-  const status = Number(value.statusCode || value.status || 0) || null;
+  const rawStatus = Number(value.statusCode || value.status || 0);
+  const status = Number.isFinite(rawStatus) && rawStatus > 0 ? rawStatus : null;
   const details = bodyDetails(value.responseBody);
-  const code = String(value.code || details.code || "");
-  const message = `${String(value.message || "")} ${details.text} ${code}`.toLowerCase();
+  const rawCode = typeof value.code === "string" ? value.code : "";
+  const code = details.reason || details.status || details.code || rawCode;
+  const codeText = `${rawCode} ${details.code} ${details.status} ${details.reason} ${details.quota}`.toLowerCase();
+  const message = `${String(value.message || "")} ${details.text} ${codeText}`.toLowerCase();
   const headers = value.responseHeaders as Record<string, string> | undefined;
   const headerEntries = Object.entries(headers || {}).map(([name, value]) => [name.toLowerCase(), value] as const);
   const requestId = headerEntries.find(([name]) => ["x-request-id", "request-id", "x-goog-request-id"].includes(name))?.[1];
@@ -101,22 +135,23 @@ export function classifyAIError(error: unknown, provider: AIProvider, model: str
 
   if (/aborterror|timed? ?out|timeout/.test(String(value.name || "").toLowerCase()) || /timed? ?out|timeout/.test(message)) category = "TIMEOUT";
   else if (/failed to fetch|network|econn|socket|dns/.test(message) || error instanceof TypeError && status === null) category = "NETWORK_ERROR";
-  else if (status === 401 || /invalid[_ ]api[_ ]key|api key not valid|unauthorized/.test(message)) category = "INVALID_API_KEY";
+  else if (/api[_ ]key[_ ]invalid|invalid[_ ]api[_ ]key|api key not valid|unauthorized/.test(message) || status === 401) category = "INVALID_API_KEY";
   else if (/insufficient[_ ]balance|balance[_ ]insufficient/.test(message) || status === 402) category = "INSUFFICIENT_BALANCE";
-  else if (/billing|required.*billing|billing.*required|payment required/.test(message)) category = "BILLING_REQUIRED";
+  else if (status !== 429 && /billing.{0,30}(required|disabled|not enabled|account|enable)|(?:enable|requires|required).{0,30}billing|payment required|payment_required|billing_disabled/.test(message)) category = "BILLING_REQUIRED";
   else if (/region|location.*not supported|not available in your country/.test(message)) category = "REGION_RESTRICTED";
+  else if (/permission_denied|api_disabled|access_denied|forbidden/.test(codeText) || status === 403) category = "PERMISSION_DENIED";
   else if (status === 429 && /overload|capacity/.test(message)) category = "PROVIDER_OVERLOADED";
-  else if (/quota|resource_exhausted|exceeded.*limit|limit.*exceeded/.test(message) && status === 429) category = "QUOTA_EXCEEDED";
+  else if (status === 429 && /per.?minute|requests_per_minute|tokens_per_minute|requestsperminute|tokensperminute|rate[_ ]limit|too_many_requests/.test(message)) category = "RATE_LIMITED";
+  else if (/quota|resource_exhausted|exceeded.*limit|limit.*exceeded|per.?day/.test(message) && status === 429) category = "QUOTA_EXCEEDED";
   else if (status === 429) category = "RATE_LIMITED";
   else if (/model.*(not found|does not exist|unavailable|not support)|unsupported.*model/.test(message) || status === 404) category = status === 404 ? "INVALID_MODEL" : "MODEL_UNAVAILABLE";
   else if (status === 400 && /api key|key not valid/.test(message)) category = "INVALID_API_KEY";
   else if (status === 400 && /model|generation method|not found/.test(message)) category = "INVALID_MODEL";
   else if (status === 400) category = "INVALID_REQUEST";
-  else if (status === 403) category = "MODEL_UNAVAILABLE";
   else if (status === 408) category = "TIMEOUT";
   else if (status && status >= 500) category = /overload|capacity/.test(message) ? "PROVIDER_OVERLOADED" : "PROVIDER_UNAVAILABLE";
 
-  return new AIProviderError({ provider, model, category, httpStatus: status, providerCode: code, requestId });
+  return new AIProviderError({ provider, model, category, httpStatus: status, providerCode: code, providerMessage: details.text || undefined, requestId });
 }
 
 export function logAIError(error: AIProviderError, latencyMs: number) {
@@ -142,10 +177,6 @@ export function createProviderModel(provider: AIProvider, apiKey: string, model:
     apiKey,
     baseURL: "https://api.deepseek.com/v1",
   })(model);
-}
-
-export function isGemini3Model(model: string) {
-  return /^gemini-3(?:\.|-)/i.test(model);
 }
 
 /** Retries one Gemini 503 only. Billing, quota and invalid-model errors are never replayed. */
@@ -192,7 +223,8 @@ export type AIModelOption = { id: string; label: string; tier: "recommended" | "
 
 function modelTier(provider: AIProvider, id: string): AIModelOption["tier"] {
   const value = id.toLowerCase();
-  if ((provider === "gemini" && value === "gemini-3.8-flash") || (provider === "deepseek" && value === "deepseek-v4-flash") || (provider === "openai" && value === "gpt-5-mini")) return "recommended";
+  if ((provider === "gemini" && value === "gemini-2.5-flash-lite") || (provider === "deepseek" && value === "deepseek-v4-flash") || (provider === "openai" && value === "gpt-5-mini")) return "recommended";
+  if (provider === "gemini" && value === "gemini-2.5-flash") return "economical";
   if (/mini|nano|flash-lite|flash$/.test(value)) return "economical";
   if (/pro|reason|o[134]/.test(value)) return "advanced";
   return "other";
@@ -214,7 +246,7 @@ export async function listProviderModels(provider: AIProvider, apiKey: string, s
     const supported = row.supportedGenerationMethods;
     const textModel = provider === "gemini"
       ? Array.isArray(supported) && supported.includes("generateContent")
-        && !/(preview|computer-use|image|audio|tts|live|deep-research|robotics)/i.test(id)
+        && isSupportedGeminiModel(id)
       : /^(gpt-|chatgpt-|o[134](?:-|$)|deepseek-)/i.test(id)
         && !/(embedding|whisper|tts|transcri|image|realtime|moderation|search-preview)/i.test(id);
     if (!textModel || !/^[A-Za-z0-9._:-]{2,100}$/.test(id)) return [];
@@ -222,6 +254,11 @@ export async function listProviderModels(provider: AIProvider, apiKey: string, s
     return [{ id, label, tier: modelTier(provider, id) } as AIModelOption];
   });
   return [...new Map(models.map((item) => [item.id, item])).values()].sort((a, b) => {
+    if (provider === "gemini") {
+      const priority = (id: string) => id === "gemini-2.5-flash-lite" ? 0 : id === "gemini-2.5-flash" ? 1 : 2;
+      const difference = priority(a.id) - priority(b.id);
+      if (difference) return difference;
+    }
     const order = { recommended: 0, economical: 1, advanced: 2, other: 3 };
     return order[a.tier] - order[b.tier] || a.label.localeCompare(b.label);
   }).slice(0, 120);

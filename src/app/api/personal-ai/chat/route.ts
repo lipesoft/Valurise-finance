@@ -5,7 +5,8 @@ import { z } from "zod";
 import { createPersonalFinanceTools } from "@/lib/personal-ai/tools";
 import { createPersonalAiTransactionProposalTool, type PersonalAiTransactionDraft } from "@/lib/personal-ai/actions";
 import { NO_FINANCIAL_CONTEXT_INSTRUCTION, requestsTransactionAction, requiresPersonalFinanceData, VAL_PERSONA } from "@/lib/personal-ai";
-import { AIProviderError, classifyAIError, createProviderModel, isGemini3Model, logAIError, type AIProvider } from "@/lib/personal-ai/providers";
+import { AIProviderError, classifyAIError, createProviderModel, logAIError, type AIProvider } from "@/lib/personal-ai/providers";
+import { isGemini25FlashModel, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
 import { createUserScopedSupabaseClient } from "@/lib/supabase/user-scoped";
@@ -80,6 +81,9 @@ export async function POST(request: NextRequest) {
 
   const provider = connection.provider as AIProvider;
   if (!["openai", "gemini", "deepseek"].includes(provider)) return NextResponse.json({ error: "O provedor de IA conectado não é suportado." }, { status: 422 });
+  if (provider === "gemini" && !isSupportedGeminiModel(connection.model)) {
+    return NextResponse.json({ error: "O modelo Gemini salvo não está habilitado no Valurise. Em Configurações, selecione gemini-2.5-flash-lite ou gemini-2.5-flash e teste a conexão.", category: "INVALID_MODEL", providerCode: "MODEL_NOT_ALLOWED", model: connection.model }, { status: 409 });
+  }
   const canUseFinancialContext = Boolean(connection.insights_enabled
     && consent?.ai_data_sharing_version === legalVersions.aiSharing
     && consent.ai_data_sharing_accepted_at);
@@ -158,12 +162,11 @@ export async function POST(request: NextRequest) {
       stopWhen: isStepCount(4),
       toolChoice: canUseFinancialContext && requiresPersonalFinanceData(conversation)
         && !(connection.actions_enabled && requestsTransactionAction(current.content)) ? "required" : "auto",
-      // Gemini 3 may spend output-token budget on internal reasoning even at low thinking level.
-      maxOutputTokens: provider === "gemini" && isGemini3Model(connection.model) ? 1200 : 700,
+      maxOutputTokens: 700,
       maxRetries: 0,
       ...(provider !== "gemini" ? { temperature: 0.2 } : {}),
-      ...(provider === "gemini" && isGemini3Model(connection.model)
-        ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: "low" as const } } } }
+      ...(provider === "gemini" && isGemini25FlashModel(connection.model)
+        ? { providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } } }
         : {}),
       allowSystemInMessages: false,
     });
@@ -197,6 +200,6 @@ export async function POST(request: NextRequest) {
     const failure = classifyAIError(error, provider, connection.model);
     logAIError(failure, Date.now() - startedAt);
     await recordPersonalAIUsage({ userId: user.id, provider, model: connection.model, latencyMs: Date.now() - startedAt, kind: "chat", error: failure });
-    return NextResponse.json({ error: failure.message, category: failure.category, retryable: failure.retryable }, { status: 502 });
+    return NextResponse.json({ error: failure.message, category: failure.category, providerMessage: failure.providerMessage, providerCode: failure.providerCode, providerHttpStatus: failure.httpStatus, requestId: failure.requestId, retryable: failure.retryable, model: connection.model }, { status: 502 });
   }
 }

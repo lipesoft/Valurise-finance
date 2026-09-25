@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { encryptPersonalAiKey } from "@/lib/personal-ai-crypto";
+import { isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
 import { legalVersions } from "@/lib/legal-content";
 
@@ -47,6 +48,9 @@ export async function POST(request: NextRequest) {
   if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   const parsed = connectionSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Dados da conexão inválidos." }, { status: 400 });
+  if (parsed.data.provider === "gemini" && !isSupportedGeminiModel(parsed.data.model)) {
+    return NextResponse.json({ error: "No Valurise, use gemini-2.5-flash-lite ou gemini-2.5-flash. Os demais modelos Gemini não estão habilitados nesta configuração.", category: "INVALID_MODEL", providerCode: "MODEL_NOT_ALLOWED" }, { status: 400 });
+  }
   if (parsed.data.actionsEnabled && !parsed.data.insightsEnabled) {
     return NextResponse.json({ error: "Para permitir propostas financeiras, habilite primeiro o consentimento de contexto financeiro." }, { status: 400 });
   }
