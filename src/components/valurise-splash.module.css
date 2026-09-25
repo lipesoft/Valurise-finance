@@ -1,0 +1,117 @@
+.splash {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: max(1.25rem, env(safe-area-inset-top)) 1.25rem max(1.25rem, env(safe-area-inset-bottom));
+  background: #12131a;
+  color: #f4f5f6;
+  isolation: isolate;
+}
+
+.splash::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(ellipse at 50% 46%, rgb(25 76 62 / 12%), transparent 46%);
+  content: "";
+  pointer-events: none;
+}
+
+.revealing {
+  background: transparent;
+}
+
+.revealing::before {
+  opacity: 0;
+}
+
+.brandContent {
+  display: flex;
+  width: min(100%, 19rem);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  will-change: opacity;
+}
+
+.mark {
+  position: relative;
+  width: clamp(4.75rem, 20vw, 7rem);
+  aspect-ratio: 1;
+  will-change: transform;
+}
+
+.completeMark,
+.fragment {
+  position: absolute;
+  inset: 0;
+}
+
+.completeMark {
+  will-change: opacity;
+}
+
+.logoImage {
+  object-fit: contain;
+}
+
+.fragment {
+  background-image: url("/valurise-icon.webp");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  will-change: transform, opacity;
+}
+
+.fragmentLeft {
+  clip-path: polygon(4% 19%, 25% 19%, 53% 55%, 41% 77%, 4% 19%);
+}
+
+.fragmentRight {
+  clip-path: polygon(52% 55%, 75% 21%, 98% 1%, 64% 77%, 52% 55%);
+}
+
+.wordmark {
+  margin: 0.62rem 0 0;
+  padding-left: 0.27em;
+  color: #f1f2f3;
+  font-size: clamp(0.84rem, 3.6vw, 1rem);
+  font-weight: 500;
+  letter-spacing: 0.27em;
+  line-height: 1.4;
+}
+
+.status {
+  min-height: 1.1rem;
+  margin: 0.55rem 0 0;
+  color: #858a92;
+  font-size: 0.72rem;
+  letter-spacing: 0.025em;
+  line-height: 1.5;
+}
+
+.revealCurtain {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  will-change: opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash::before {
+    background: none;
+  }
+
+  .fragment {
+    display: none;
+  }
+}

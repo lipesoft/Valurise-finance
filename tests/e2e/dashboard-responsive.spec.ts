@@ -28,7 +28,7 @@ const mockState = {
   profile: { publicId: "VAL-QA-1234" },
 };
 
-async function installMockSession(page: import("@playwright/test").Page) {
+async function installMockSession(page: import("@playwright/test").Page, financialStateDelayMs = 0, financialStateFails = false) {
   const authUser = {
     id: testUserId,
     aud: "authenticated",
@@ -48,12 +48,22 @@ async function installMockSession(page: import("@playwright/test").Page) {
   };
 
   await page.route("**/auth/v1/user", (route) => route.fulfill({ status: 200, json: authUser }));
-  await page.route("**/rest/v1/**", (route) => {
+  await page.route("**/rest/v1/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith("/profiles")) {
       return route.fulfill({ status: 200, json: { full_name: "Pessoa de teste", account_status: "active", account_role: "user", public_id: "VAL-QA-1234" } });
     }
     if (pathname.endsWith("/user_financial_state")) {
+      if (financialStateFails) {
+        return route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({ code: "PGRST116", message: "Falha simulada no teste" }),
+        });
+      }
+      if (financialStateDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, financialStateDelayMs));
+      }
       return route.fulfill({ status: 200, json: { state: mockState, version: 1 } });
     }
     if (pathname.endsWith("/user_consents")) {
@@ -89,6 +99,56 @@ async function installMockSession(page: import("@playwright/test").Page) {
     localStorage.setItem("valurise:cookie-consent", JSON.stringify({ preference: "essential_only", version: "2026-09-23-v1" }));
   }, { storedSession: session, userId: testUserId });
 }
+
+test("splash acompanha a sincronização real e revela a interface pelo símbolo", async ({ page }) => {
+  await installMockSession(page, 4000);
+  await page.setViewportSize({ width: 375, height: 844 });
+  await page.goto("/");
+
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toBeVisible();
+  await expect(page.locator('img[src*="valurise-icon"]')).toBeVisible();
+  await expect(page.getByText("Evolução financeira")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toMatch(/rgb\(18, 19, 26\)/);
+
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+
+  const revealMask = page.getByTestId("splash-reveal-mask");
+  await expect(revealMask).toBeAttached({ timeout: 8_000 });
+  await expect(revealMask.locator("mask")).toHaveCount(1);
+  await expect(revealMask.locator("image")).toHaveAttribute("href", "/valurise-icon.webp");
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Mercado QA")).toBeVisible();
+});
+
+test("splash respeita movimento reduzido e libera o dashboard", async ({ page }) => {
+  await installMockSession(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("splash libera o login quando a restauração da sessão falha", async ({ page }) => {
+  await installMockSession(page);
+  await page.route("**/auth/v1/user", (route) => route.fulfill({ status: 503, json: { message: "Indisponível no teste" } }));
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Acesse sua conta" })).toBeVisible();
+  await expect(page.getByText("Abrindo sua conta…", { exact: true })).toHaveCount(0);
+});
+
+test("splash libera o erro de sincronização em vez de permanecer carregando", async ({ page }) => {
+  await installMockSession(page, 0, true);
+  await page.goto("/");
+
+  await expect(page.getByText("Não foi possível confirmar seus dados", { exact: true })).toBeVisible();
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+});
 
 test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px", async ({ page }) => {
   await installMockSession(page);

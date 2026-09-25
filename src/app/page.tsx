@@ -77,6 +77,7 @@ import { createValuriseBackup, parseValuriseBackup } from "@/lib/backup";
 import { GEMINI_SUPPORTED_MODELS, getInitialAIModelOptions, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
 import { AI_PROVIDER_METADATA, AI_PROVIDERS, type AIModelOption, type AIProvider } from "@/lib/personal-ai/provider-config";
 import { formatValResponse } from "@/lib/personal-ai/presentation";
+import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise-splash";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -180,41 +181,62 @@ const choices = [
 export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [splashStatus, setSplashStatus] = useState<ValuriseSplashStatus>("opening");
+  const [splashVisible, setSplashVisible] = useState(true);
+  const updateSplashStatus = useCallback((status: ValuriseSplashStatus) => setSplashStatus(status), []);
+  const completeLogin = useCallback((nextUser: User) => {
+    setSplashStatus(nextUser.role === "user" && nextUser.status === "active" ? "syncing" : "ready");
+    setSplashVisible(true);
+    setUser(nextUser);
+  }, []);
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     if (!supabase) {
+      setSplashStatus("ready");
       setCheckingAuth(false);
       return;
     }
     void supabase.auth.getUser().then(async ({ data }) => {
-      if (!data.user) return;
+      if (!data.user) {
+        setSplashStatus("ready");
+        return;
+      }
       const { data: profile } = await supabase
         .from("profiles")
         .select("full_name, account_status, account_role")
         .eq("id", data.user.id)
         .maybeSingle();
-      setUser({
+      const authenticatedUser: User = {
         username: data.user.id,
         name: profile?.full_name || String(data.user.user_metadata?.full_name || "").trim() || data.user.email?.split("@")[0] || "Você",
         status: (profile?.account_status as AccountStatus | undefined) || "pending",
         role: profile?.account_role === "master" ? "master" : "user",
-      });
+      };
+      setSplashStatus(authenticatedUser.role === "user" && authenticatedUser.status === "active" ? "syncing" : "ready");
+      setUser(authenticatedUser);
+    }).catch(() => {
+      // Uma falha ao restaurar a sessão deve liberar o login em vez de prender o splash.
+      setSplashStatus("ready");
     }).finally(() => setCheckingAuth(false));
   }, []);
   const logout = () => {
     void getSupabaseBrowserClient()?.auth.signOut();
     setUser(null);
   };
-  if (checkingAuth) return <main className="grid min-h-dvh place-items-center bg-[var(--bg)]"><span className="muted text-sm">Abrindo sua conta…</span></main>;
-  if (user?.role === "master") return <MasterConsole user={user} logout={logout} />;
-  if (user && user.status && user.status !== "active") return <AccountWaiting user={user} logout={logout} />;
-  return user ? (
-    <App
-      user={user}
-      logout={logout}
-    />
-  ) : (
-    <Login done={setUser} />
+  let content: ReactNode = null;
+  if (!checkingAuth) {
+    if (user?.role === "master") content = <MasterConsole user={user} logout={logout} />;
+    else if (user && user.status && user.status !== "active") content = <AccountWaiting user={user} logout={logout} />;
+    else if (user) content = <App user={user} logout={logout} onLoadingStatusChange={updateSplashStatus} />;
+    else content = <Login done={completeLogin} />;
+  }
+  return (
+    <>
+      <div aria-hidden={splashVisible} inert={splashVisible ? true : undefined} className="min-h-dvh">
+        {content}
+      </div>
+      {splashVisible && <ValuriseSplash status={splashStatus} onComplete={() => setSplashVisible(false)} />}
+    </>
   );
 }
 function Login({ done }: { done: (u: User) => void }) {
@@ -342,7 +364,7 @@ function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
     </MotionConfig>
   );
 }
-function App({ user, logout }: { user: User; logout: () => void }) {
+function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () => void; onLoadingStatusChange: (status: ValuriseSplashStatus) => void }) {
   const key = `valurise:v2:${user.username}`;
   const legacyKey = `lume:v2:${user.username}`;
   const [data, setData] = useState<Data>({
@@ -388,6 +410,9 @@ function App({ user, logout }: { user: User; logout: () => void }) {
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { txRef.current = tx; }, [tx]);
   useEffect(() => { profileRef.current = profile; }, [profile]);
+  useEffect(() => {
+    onLoadingStatusChange(stateLoadError ? "error" : stateReady ? "ready" : "syncing");
+  }, [onLoadingStatusChange, stateLoadError, stateReady]);
   useEffect(() => {
     let stale = false;
     setStateReady(false);
@@ -685,8 +710,10 @@ function App({ user, logout }: { user: User; logout: () => void }) {
     setDismissedNotificationIds(next);
     localStorage.setItem(`${key}:dismissed-alerts`, JSON.stringify(next));
   };
-  if (!stateReady)
-    return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5 text-center"><section className="panel w-full max-w-md rounded-2xl p-6"><b className="text-base">{stateLoadError ? "Não foi possível confirmar seus dados" : "Sincronizando sua conta…"}</b><p className="muted mt-2 text-sm leading-6">{stateLoadError ? "Por segurança, a Valurise não vai substituir os dados salvos. Verifique sua conexão e tente novamente." : "Estamos carregando seus dados financeiros com segurança."}</p>{stateLoadError && <button onClick={() => window.location.reload()} className="primary mt-4 min-h-11 rounded-xl px-4 text-sm font-semibold">Tentar novamente</button>}</section></main>;
+  if (!stateReady) {
+    if (!stateLoadError) return null;
+    return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5 text-center"><section className="panel w-full max-w-md rounded-2xl p-6"><b className="text-base">Não foi possível confirmar seus dados</b><p className="muted mt-2 text-sm leading-6">Por segurança, a Valurise não vai substituir os dados salvos. Verifique sua conexão e tente novamente.</p><button onClick={() => window.location.reload()} className="primary mt-4 min-h-11 rounded-xl px-4 text-sm font-semibold">Tentar novamente</button></section></main>;
+  }
   if (!data.onboarded)
     return (
       <Onboard
