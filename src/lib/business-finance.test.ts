@@ -60,11 +60,37 @@ describe("indicadores gerenciais empresariais", () => {
     expect(snapshot.actualVsReferencePercent).toBe(-20);
   });
 
+  it("compara trechos equivalentes dos meses e inclui o ponto de equilíbrio somente com base suficiente", () => {
+    const snapshot = calculateBusinessFinanceSnapshot({
+      period: "2025-04", asOf: new Date("2025-04-10T23:00:00.000Z"), cashAvailableCents: null,
+      transactions: [
+        transaction("current", "income", 100_000, "2025-04-05T12:00:00.000Z"),
+        transaction("previous-comparable", "income", 50_000, "2025-03-05T12:00:00.000Z"),
+        transaction("previous-outside", "income", 100_000, "2025-03-11T12:00:00.000Z"),
+      ],
+      assumptions: completeAssumptions(),
+    });
+    expect(snapshot.previousPeriodRevenue).toMatchObject({ amountCents: 50_000, nature: "actual" });
+    expect(snapshot.actualVsPreviousPercent).toBe(100);
+    expect(snapshot.previousComparisonLabel).toBe("até 10 de março de 2025");
+    expect(snapshot.comparisonIsPartial).toBe(true);
+    expect(snapshot.contributionMarginPercent).toBe(82.5);
+    expect(snapshot.breakEvenRevenue).toMatchObject({ amountCents: 36_364, nature: "estimated" });
+
+    const insufficient = calculateBusinessFinanceSnapshot({
+      period, transactions: [], assumptions: [row("fixed_expenses", 10_000)], cashAvailableCents: null,
+      asOf: new Date("2025-04-30T23:00:00.000Z"),
+    });
+    expect(insufficient.breakEvenRevenue.amountCents).toBeNull();
+  });
+
   it("calcula fluxo de caixa somente quando há saldo de conta conhecido", () => {
     const noCash = calculateBusinessFinanceSnapshot({ period, transactions: [transaction("in", "income", 40_000)], assumptions: [], cashAvailableCents: null, asOf: new Date("2025-04-30T23:00:00.000Z") });
     const cash = calculateBusinessFinanceSnapshot({ period, transactions: [transaction("in", "income", 40_000), transaction("out", "expense", 15_000)], assumptions: [], cashAvailableCents: 125_000, asOf: new Date("2025-04-30T23:00:00.000Z") });
+    const future = calculateBusinessFinanceSnapshot({ period: "2025-05", transactions: [transaction("future", "income", 90_000, "2025-05-05T12:00:00.000Z")], assumptions: [], cashAvailableCents: 125_000, asOf: new Date("2025-04-30T23:00:00.000Z") });
     expect(noCash.cashflow.openingCents).toBeNull();
     expect(cash.cashflow).toEqual({ openingCents: 100_000, inflowsCents: 40_000, outflowsCents: 15_000, closingCents: 125_000 });
+    expect(future.cashflow).toEqual({ openingCents: null, inflowsCents: null, outflowsCents: null, closingCents: null });
   });
 
   it("trata valores brasileiros em centavos sem ponto flutuante", () => {

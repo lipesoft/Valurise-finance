@@ -131,15 +131,6 @@ export function BusinessFinanceDashboard({
       cashAvailableCents: currentCash(data, allTransactions),
     });
   }, [allTransactions, assumptions, data, period]);
-  const previousActualRevenue = useMemo(() => {
-    const previousDate = new Date(month.getFullYear(), month.getMonth() - 1, 1);
-    const previousPeriod = monthKey(previousDate);
-    const rows = allTransactions.filter((item) => item.type === "income" && monthKey(new Date(item.date)) === previousPeriod);
-    return rows.length ? rows.reduce((sum, item) => sum + item.amountCents, 0) : null;
-  }, [allTransactions, month]);
-  const monthlyChange = snapshot.actualIncomeCount && previousActualRevenue !== null && previousActualRevenue > 0 && snapshot.grossRevenue.amountCents !== null
-    ? Math.round((snapshot.grossRevenue.amountCents - previousActualRevenue) / previousActualRevenue * 1000) / 10 : null;
-
   if (loading) return <section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-5 sm:p-6"><p className="muted text-sm">Carregando indicadores empresariais…</p></section>;
   return <section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-4 sm:p-6">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Building2 size={17} className="text-[var(--accent)]"/><h2 className="text-lg font-semibold">Visão da empresa</h2></div><p className="muted mt-1 text-xs">Regime de caixa · movimentações registradas e referências informadas</p></div><button type="button" onClick={() => go("settings")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Perfil financeiro</button></header>
@@ -156,8 +147,9 @@ export function BusinessFinanceDashboard({
       <PercentageMetric label="Margem bruta" percent={snapshot.grossMarginPercent} nature={snapshot.grossResultDre.nature} explanation="Resultado bruto gerencial dividido pela receita líquida. Só aparece quando as linhas necessárias estão preenchidas." />
       <Metric label="Caixa projetado · 30 dias" item={snapshot.projectedCash30Days} currency={profile.default_currency}/>
     </div>
-    {monthlyChange !== null && <p className="mt-3 text-xs text-[var(--accent)]">Faturamento registrado {monthlyChange > 0 ? "subiu" : monthlyChange < 0 ? "caiu" : "ficou estável"} {Math.abs(monthlyChange).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% em relação ao mês anterior completo.</p>}
-    {snapshot.actualVsReferencePercent !== null && <p className="muted mt-2 text-xs">Referência mensal informada: {monthlyMoney(snapshot.monthlyReference.amountCents, profile.default_currency)} · realizado até agora: {snapshot.actualVsReferencePercent.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% da referência (mês em andamento).</p>}
+    {snapshot.actualVsPreviousPercent !== null && snapshot.previousComparisonLabel && <p className="mt-3 text-xs text-[var(--accent)]">Faturamento registrado {snapshot.actualVsPreviousPercent > 0 ? "subiu" : snapshot.actualVsPreviousPercent < 0 ? "caiu" : "ficou estável"} {Math.abs(snapshot.actualVsPreviousPercent).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% em comparação com {snapshot.previousComparisonLabel}{snapshot.comparisonIsPartial ? " (mesmo trecho do mês)" : ""}.</p>}
+    {snapshot.actualVsReferencePercent !== null && <p className="muted mt-2 text-xs">Referência mensal informada: {monthlyMoney(snapshot.monthlyReference.amountCents, profile.default_currency)} · realizado {snapshot.comparisonIsPartial ? "no trecho equivalente do mês" : "no período"}: {snapshot.actualVsReferencePercent.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% da referência.</p>}
+    {snapshot.breakEvenRevenue.amountCents !== null && <div className="mt-3 max-w-sm"><Metric label="Ponto de equilíbrio gerencial mensal" item={snapshot.breakEvenRevenue} currency={profile.default_currency}/><p className="muted px-1 pt-2 text-[10px]">Margem de contribuição estimada: {snapshot.contributionMarginPercent?.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%.</p></div>}
     <div className="mt-5 grid gap-4 xl:grid-cols-2">
       <section className="rounded-2xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">DRE gerencial simplificada</h3><span className="muted text-[10px]">Não é demonstração contábil ou fiscal</span></div><div className="mt-3 space-y-2 text-sm">
         <DreRow label="Receita bruta" item={snapshot.grossDre} currency={profile.default_currency}/>

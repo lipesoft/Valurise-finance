@@ -162,7 +162,7 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
 
   await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
   await expect(page.getByText("Mercado QA")).toHaveCount(0);
-  await page.getByRole("button", { name: "Continuar depois" }).click();
+  await page.getByRole("button", { name: "Pular por enquanto" }).click();
   await expect(page.getByRole("button", { name: "Registrar movimentação" })).toBeVisible();
 
   await page.getByLabel("Espaço financeiro ativo").selectOption(personalWorkspaceId);
@@ -180,9 +180,7 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
   await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
   await dialog.getByRole("button", { name: "Criar empresa" }).click();
-  await page.getByRole("button", { name: "Continuar depois" }).click();
-  await expect(page.getByRole("heading", { name: "Visão da empresa" })).toBeVisible();
-  await page.getByRole("button", { name: "Ajustes" }).click();
+  await page.getByRole("button", { name: "Completar perfil financeiro" }).click();
   await expect(page.getByRole("heading", { name: "Perfil financeiro da empresa" })).toBeVisible();
   await page.getByLabel("Faturamento médio mensal").fill("5000,00");
   await page.getByLabel("Custos diretos médios").fill("1000,00");
@@ -202,6 +200,7 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   await expect(page.getByText("Resultado gerencial", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("DRE gerencial simplificada")).toBeVisible();
   await expect(page.getByText("Fluxo de caixa registrado")).toBeVisible();
+  await expect(page.getByText("Ponto de equilíbrio gerencial mensal")).toBeVisible();
   for (const width of [375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
