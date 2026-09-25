@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
   const [{ data, error }, { data: consent }] = await Promise.all([
     admin
     .from("personal_ai_connections")
-    .select("provider, model, insights_enabled, notifications_enabled, actions_enabled, connected_at, updated_at")
+    .select("provider, model, insights_enabled, notifications_enabled, actions_enabled, connected_at, updated_at, validated_at, validated_model")
     .eq("user_id", user.id)
     .maybeSingle(),
     admin.from("user_consents").select("ai_data_sharing_version, ai_data_sharing_accepted_at")
@@ -38,6 +38,7 @@ export async function GET(request: NextRequest) {
     insights_enabled: Boolean(data.insights_enabled && canUseFinancialContext),
     actions_enabled: Boolean(data.actions_enabled && data.insights_enabled && canUseFinancialContext),
     consentRenewalRequired,
+    validated: Boolean(data.validated_at && data.validated_model === data.model),
   } : null });
 }
 
@@ -54,11 +55,12 @@ export async function POST(request: NextRequest) {
     const value = parsed.data;
     const admin = getSupabaseAdminClient();
     const { data: existing, error: existingError } = await admin.from("personal_ai_connections")
-      .select("provider, encrypted_api_key, actions_enabled").eq("user_id", user.id).maybeSingle();
+      .select("provider, model, encrypted_api_key, actions_enabled, validated_at, validated_model").eq("user_id", user.id).maybeSingle();
     if (existingError) return NextResponse.json({ error: "Não foi possível consultar a conexão atual." }, { status: 500 });
     if (!value.apiKey && (!existing || existing.provider !== value.provider)) {
       return NextResponse.json({ error: "Informe a API key para conectar este provedor." }, { status: 400 });
     }
+    const sameSavedModel = Boolean(existing && existing.provider === value.provider && existing.model === value.model && !value.apiKey);
     const actionsEnabled = value.insightsEnabled && (value.actionsEnabled ?? Boolean(existing?.actions_enabled));
     let pendingProposalsCancelled = false;
     if (actionsEnabled) {
@@ -77,6 +79,8 @@ export async function POST(request: NextRequest) {
       insights_enabled: value.insightsEnabled,
       notifications_enabled: value.insightsEnabled && value.notificationsEnabled,
       actions_enabled: actionsEnabled,
+      validated_at: sameSavedModel ? existing!.validated_at : null,
+      validated_model: sameSavedModel ? existing!.validated_model : null,
       connected_at: acceptedAt,
       updated_at: acceptedAt,
     }, { onConflict: "user_id" });
@@ -95,7 +99,8 @@ export async function POST(request: NextRequest) {
       if (cancelError) return NextResponse.json({ error: "A permissão foi desligada, mas não foi possível encerrar propostas antigas. Elas não podem ser confirmadas; tente salvar novamente." }, { status: 503 });
       pendingProposalsCancelled = Boolean(cancelled?.length);
     }
-    return NextResponse.json({ ok: true, pendingProposalsCancelled });
+    const validated = Boolean(sameSavedModel && existing?.validated_at && existing.validated_model === value.model);
+    return NextResponse.json({ ok: true, pendingProposalsCancelled, validated, validatedAt: validated ? existing?.validated_at : null });
   } catch {
     return NextResponse.json({ error: "Não foi possível proteger a chave da IA." }, { status: 503 });
   }

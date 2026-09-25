@@ -191,8 +191,9 @@ test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem
   let savedConnection: Record<string, unknown> | null = null;
   await page.route("**/api/personal-ai/connection", async (route) => {
     if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { connection: null } });
-    savedConnection = route.request().postDataJSON();
-    return route.fulfill({ status: 200, json: { ok: true } });
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    savedConnection = body;
+    return route.fulfill({ status: 200, json: { ok: true, validated: !Object.hasOwn(body, "apiKey"), validatedAt: "2026-09-24T12:00:00.000Z" } });
   });
   await page.route("**/api/personal-ai/models", (route) => route.fulfill({ status: 200, json: {
     provider: "gemini",
@@ -203,6 +204,7 @@ test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem
   } }));
   await page.route("**/api/personal-ai/test", (route) => route.fulfill({ status: 200, json: {
     ok: true, provider: "gemini", model: "gemini-3.8-flash", latencyMs: 842,
+    validated: Boolean(savedConnection), validatedAt: "2026-09-24T12:00:00.000Z",
     usage: { inputTokens: 3, outputTokens: 1 },
   } }));
   await page.goto("/");
@@ -220,10 +222,15 @@ test("configura a Val com catálogo dinâmico, teste mínimo e uso de tokens sem
   await expect(page.getByLabel("Modelos disponíveis para esta chave")).toBeVisible();
   await page.getByLabel("Modelos disponíveis para esta chave").selectOption("gemini-3.8-flash");
   await page.getByRole("button", { name: "Testar conexão" }).click();
-  await expect(page.getByRole("status")).toContainText("Conectado · 842 ms");
+  await expect(page.getByRole("status").filter({ hasText: "ainda não está salvo" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Conectar Val" })).toBeVisible();
+  await page.getByRole("button", { name: "Conectar Val" }).click();
+  await expect.poll(() => savedConnection).toMatchObject({ insightsEnabled: true, actionsEnabled: true });
+  await page.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "842 ms" })).toContainText("Conexão validada · 842 ms");
   await expect(page.getByText("Solicitações")).toBeVisible();
   await expect(page.getByText("140", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Conectar Val" }).click();
+  await page.getByRole("button", { name: "Salvar configuração" }).click();
   await expect.poll(() => savedConnection).toMatchObject({ insightsEnabled: true, actionsEnabled: true });
   await page.getByLabel("Autorizar uso dos meus dados financeiros pela Val").uncheck();
   await expect(actionPermission).toBeDisabled();
@@ -237,7 +244,7 @@ test("a Val só registra receita ou despesa depois da aprovação explícita da 
   await installMockSession(page);
   const decisions: Array<{ proposalId: string; decision: string }> = [];
   await page.route("**/api/personal-ai/connection", (route) => route.fulfill({ status: 200, json: {
-    connection: { provider: "openai", model: "gpt-test", insights_enabled: true, actions_enabled: true },
+    connection: { provider: "openai", model: "gpt-test", insights_enabled: true, actions_enabled: true, validated: true, validated_model: "gpt-test", validated_at: "2026-09-24T12:00:00.000Z" },
   } }));
   await page.route("**/api/personal-ai/actions", async (route) => {
     if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { proposals: [] } });

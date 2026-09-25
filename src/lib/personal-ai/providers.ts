@@ -136,12 +136,31 @@ export function logAIError(error: AIProviderError, latencyMs: number) {
 
 export function createProviderModel(provider: AIProvider, apiKey: string, model: string): LanguageModel {
   if (provider === "openai") return createOpenAI({ apiKey }).chat(model);
-  if (provider === "gemini") return createGoogle({ apiKey })(model);
+  if (provider === "gemini") return createGoogle({ apiKey, fetch: createSingle503RetryFetch() })(model);
   return createOpenAICompatible({
     name: "deepseek",
     apiKey,
     baseURL: "https://api.deepseek.com/v1",
   })(model);
+}
+
+export function isGemini3Model(model: string) {
+  return /^gemini-3(?:\.|-)/i.test(model);
+}
+
+/** Retries one Gemini 503 only. Billing, quota and invalid-model errors are never replayed. */
+export function createSingle503RetryFetch(fetchImplementation: typeof fetch = fetch, retryDelayMs = 500): typeof fetch {
+  return async (input, init) => {
+    const retryInput = input instanceof Request ? input.clone() : input;
+    const signal = init?.signal || (input instanceof Request ? input.signal : undefined);
+    const firstResponse = await fetchImplementation(input, init);
+    if (firstResponse.status !== 503 || signal?.aborted) return firstResponse;
+
+    await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+    if (signal?.aborted) return firstResponse;
+    await firstResponse.body?.cancel().catch(() => undefined);
+    return fetchImplementation(retryInput, init);
+  };
 }
 
 async function fetchJSON(provider: AIProvider, model: string, url: string, apiKey: string, signal?: AbortSignal) {
@@ -195,6 +214,7 @@ export async function listProviderModels(provider: AIProvider, apiKey: string, s
     const supported = row.supportedGenerationMethods;
     const textModel = provider === "gemini"
       ? Array.isArray(supported) && supported.includes("generateContent")
+        && !/(preview|computer-use|image|audio|tts|live|deep-research|robotics)/i.test(id)
       : /^(gpt-|chatgpt-|o[134](?:-|$)|deepseek-)/i.test(id)
         && !/(embedding|whisper|tts|transcri|image|realtime|moderation|search-preview)/i.test(id);
     if (!textModel || !/^[A-Za-z0-9._:-]{2,100}$/.test(id)) return [];

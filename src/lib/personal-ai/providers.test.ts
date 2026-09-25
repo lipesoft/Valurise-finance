@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { classifyAIError, listProviderModels, type AIProvider } from "./providers";
+import { classifyAIError, createSingle503RetryFetch, isGemini3Model, listProviderModels, type AIProvider } from "./providers";
 
 describe("diagnóstico seguro dos provedores de IA", () => {
   it("classifica chave inválida sem devolver mensagem ou segredo do provedor", () => {
@@ -23,6 +23,8 @@ describe("diagnóstico seguro dos provedores de IA", () => {
     const payloadByProvider: Record<AIProvider, unknown> = {
       gemini: { models: [
         { name: "models/gemini-3.8-flash", displayName: "Gemini 3.8 Flash", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-2.5-computer-use-preview-10-2025", displayName: "Computer use preview", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-3.8-flash-preview", displayName: "Flash preview", supportedGenerationMethods: ["generateContent"] },
         { name: "models/gemini-image", displayName: "Image generator", supportedGenerationMethods: ["generateImage"] },
       ] },
       deepseek: { data: [{ id: "deepseek-v4-flash" }, { id: "deepseek-v4-pro" }] },
@@ -44,6 +46,36 @@ describe("diagnóstico seguro dos provedores de IA", () => {
     await expect(listProviderModels("openai", "fake-key")).resolves.toEqual([
       { id: "gpt-5-mini", label: "gpt-5-mini", tier: "recommended" },
     ]);
+  });
+});
+
+describe("resiliência controlada do Gemini", () => {
+  it("identifica modelos Gemini 3 sem alterar outros modelos", () => {
+    expect(isGemini3Model("gemini-3.8-flash")).toBe(true);
+    expect(isGemini3Model("gemini-3-pro-preview")).toBe(true);
+    expect(isGemini3Model("gemini-2.5-flash")).toBe(false);
+  });
+
+  it("repete uma única resposta 503 e retorna a segunda resposta", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response("temporário", { status: 503 }))
+      .mockResolvedValueOnce(new Response("ok", { status: 200 }));
+    const resilientFetch = createSingle503RetryFetch(fetchMock as typeof fetch, 0);
+
+    const response = await resilientFetch("https://provider.invalid/generate", { method: "POST", body: "{}" });
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("não repete erro de cota 429", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("quota", { status: 429 }));
+    const resilientFetch = createSingle503RetryFetch(fetchMock as typeof fetch, 0);
+
+    const response = await resilientFetch("https://provider.invalid/generate", { method: "POST", body: "{}" });
+
+    expect(response.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

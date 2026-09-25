@@ -4031,6 +4031,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
   ]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
+  const [configured, setConfigured] = useState(false);
   const [connected, setConnected] = useState(false);
   const [provider, setProvider] = useState("");
   const [actionsEnabled, setActionsEnabled] = useState(false);
@@ -4053,7 +4054,8 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
         if (cancelled) return;
         if (!response.ok) throw new Error(result.error || "Não foi possível verificar a conexão da IA.");
         if (result.connection) {
-          setConnected(true);
+          setConfigured(true);
+          setConnected(Boolean(result.connection.validated));
           setProvider(result.connection.provider);
           setActionsEnabled(Boolean(result.connection.actions_enabled));
           const historyResponse = await fetch("/api/personal-ai/chat", { headers });
@@ -4085,7 +4087,9 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
     const next = [...messages, { id: crypto.randomUUID(), role: "user" as const, content }];
     setMessages(next); setInput(""); setError("");
     if (!connected) {
-      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: "Sua IA pessoal ainda não está conectada. Para conversar sobre suas finanças, configure OpenAI, Gemini ou DeepSeek em Configurações." }]);
+      setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: configured
+        ? "Sua configuração está salva, mas ainda não foi validada. Acesse Configurações, teste a conexão e volte para conversar. Você pode continuar usando os atalhos para registrar movimentações."
+        : "Sua IA pessoal ainda não está conectada. Para conversar sobre suas finanças, configure OpenAI, Gemini ou DeepSeek em Configurações. Você pode continuar usando os atalhos para registrar movimentações." }]);
       return;
     }
     const supabase = getSupabaseBrowserClient();
@@ -4149,7 +4153,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
   return <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
     <div className="flex shrink-0 items-center gap-3 border-b border-[var(--border)] pb-4">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-      <div className="min-w-0 flex-1"><b id="personal-finance-chat-title" className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} conectado à sua conta.` : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
+      <div className="min-w-0 flex-1"><b id="personal-finance-chat-title" className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} validado para sua conta.` : configured ? "Configuração salva · falta validar em Configurações." : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
       <button type="button" onClick={close} aria-label="Voltar ao painel" className="flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-2 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"><ChevronLeft size={18} /><span>Voltar</span></button>
     </div>
     <div aria-live="polite" className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
@@ -4168,10 +4172,10 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
       {choices.map(([kind, label, Icon]) => <button key={label} type="button" onClick={() => startMovement(kind)} className="flex min-h-10 w-full min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--panel2)] px-2 text-[11px] font-medium hover:ring-1 hover:ring-[var(--accent)] sm:w-auto sm:gap-2 sm:px-3 sm:text-xs"><Icon size={14} className="shrink-0 text-[var(--accent)]" />{label}</button>)}
     </div>
     <form className="mt-2 flex shrink-0 items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--panel2)] p-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-      <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : "Escreva uma dúvida"} />
+      <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder={connected ? "Pergunte sobre suas finanças..." : configured ? "Valide a conexão em Configurações" : "Escreva uma dúvida"} />
       <button type="submit" disabled={!input.trim() || loading} aria-label="Enviar mensagem" className="primary grid h-10 w-10 shrink-0 place-items-center rounded-xl disabled:opacity-50"><SendHorizontal size={17} /></button>
     </form>
-    <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Ações limitadas com sua aprovação obrigatória" : "Somente leitura"}${lastUsage === null ? " · O provedor não informou o consumo desta resposta." : ` · ${lastUsage.toLocaleString("pt-BR")} tokens nesta resposta.`}` : "Sem IA? Use os atalhos para lançar. Conecte um provedor nas Configurações para conversar com a Val."}</p>
+    <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Ações limitadas com sua aprovação obrigatória" : "Somente leitura"}${lastUsage === null ? " · O provedor não informou o consumo desta resposta." : ` · ${lastUsage.toLocaleString("pt-BR")} tokens nesta resposta.`}` : configured ? "A configuração foi salva, mas a Val só conversa depois que o teste do provedor passar. Os atalhos de movimentação continuam disponíveis." : "Sem IA? Use os atalhos para lançar. Conecte um provedor nas Configurações para conversar com a Val."}</p>
   </section>;
 }
 function Launcher({ data, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
@@ -5747,6 +5751,9 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [actionsEnabled, setActionsEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [connectionValidated, setConnectionValidated] = useState(false);
+  const [savedModel, setSavedModel] = useState("");
+  const [validatedAt, setValidatedAt] = useState<string | null>(null);
   const [consentRenewalRequired, setConsentRenewalRequired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [catalogBusy, setCatalogBusy] = useState(false);
@@ -5782,6 +5789,9 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         setModel(result.connection.model);
         setCustomModel(true);
         setSavedProvider(result.connection.provider);
+        setSavedModel(result.connection.model);
+        setConnectionValidated(Boolean(result.connection.validated && result.connection.validated_model === result.connection.model));
+        setValidatedAt(result.connection.validated_at || null);
         setInsightsEnabled(result.connection.insights_enabled);
         setNotificationsEnabled(result.connection.notifications_enabled);
         setActionsEnabled(Boolean(result.connection.actions_enabled));
@@ -5841,7 +5851,18 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
       if (!response.ok) throw new Error(result.error || "Não foi possível validar a conexão.");
       const tokenCount = typeof result.usage?.inputTokens === "number" && typeof result.usage?.outputTokens === "number"
         ? ` · ${result.usage.inputTokens + result.usage.outputTokens} tokens` : "";
-      setTestStatus({ ok: true, message: `Conectado · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}` });
+      if (result.validated) {
+        const testedAt = typeof result.validatedAt === "string" ? result.validatedAt : new Date().toISOString();
+        setConnected(true);
+        setSavedProvider(provider);
+        setSavedModel(model);
+        setConnectionValidated(true);
+        setValidatedAt(testedAt);
+        setApiKey("");
+        setTestStatus({ ok: true, message: `Conexão validada · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}` });
+      } else {
+        setTestStatus({ ok: true, message: `O teste respondeu · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}. Esta chave ou modelo ainda não está salvo; salve a configuração e teste novamente para liberar o chat.` });
+      }
       await loadUsage(token);
     } catch (reason) {
       setTestStatus({ ok: false, message: reason instanceof Error ? reason.message : "Não foi possível validar a conexão." });
@@ -5862,9 +5883,13 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Não foi possível salvar sua conexão.");
-      setApiKey(""); setConnected(true); setSavedProvider(provider);
+      setApiKey(""); setConnected(true); setSavedProvider(provider); setSavedModel(model);
+      setConnectionValidated(Boolean(result.validated));
+      setValidatedAt(typeof result.validatedAt === "string" ? result.validatedAt : null);
       setConsentRenewalRequired(false);
-      setTestStatus({ ok: false, message: "Configuração salva. Teste a conexão antes da primeira conversa." });
+      setTestStatus(result.validated
+        ? { ok: true, message: "Configuração salva. A conexão continua validada para este modelo." }
+        : { ok: false, message: "Configuração salva, mas ainda não validada. Clique em “Testar conexão”; o chat será liberado quando o teste passar." });
       toast(result.pendingProposalsCancelled
         ? "Conexão salva. As propostas pendentes anteriores foram encerradas por segurança."
         : "Conexão salva. A chave foi protegida no servidor.");
@@ -5881,7 +5906,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
       const response = await fetch("/api/personal-ai/connection", { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Não foi possível remover a conexão.");
-      setConnected(false); setSavedProvider(null); setApiKey(""); setTestStatus(null); setUsage(null);
+      setConnected(false); setConnectionValidated(false); setSavedProvider(null); setSavedModel(""); setValidatedAt(null); setApiKey(""); setTestStatus(null); setUsage(null);
       setActionsEnabled(false);
       setConsentRenewalRequired(false);
       toast("Conexão de IA removida.");
@@ -5889,6 +5914,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     finally { setBusy(false); }
   };
 
+  const currentConfigValidated = Boolean(connected && connectionValidated && provider === savedProvider && model === savedModel && !apiKey.trim());
   const tierLabel = (tier: PersonalAIModelOption["tier"]) => ({ recommended: "Recomendado", economical: "Rápido/econômico", advanced: "Mais capaz", other: "Outro" })[tier];
   return (
     <section className="panel mt-4 rounded-2xl p-5">
@@ -5918,6 +5944,12 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
           <input value={model} onChange={(event) => { setModel(event.target.value); setTestStatus(null); }} className="field mt-1" placeholder={defaultAIModel[provider]} autoComplete="off" />
         </label>}
         <button type="button" disabled={catalogBusy} onClick={() => void loadModels()} className="min-h-10 w-fit rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-60">{catalogBusy ? "Consultando catálogo…" : "Atualizar modelos disponíveis"}</button>
+        <p className="muted -mt-1 text-xs leading-5">O catálogo indica compatibilidade de texto, não garante cota ou disponibilidade para sua conta. Escolha um modelo e teste antes de conversar.</p>
+        {connected && <p role="status" className={`rounded-xl px-3 py-2 text-xs leading-5 ${currentConfigValidated ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--text)]"}`}>
+          {currentConfigValidated
+            ? `Conexão validada para ${savedModel}${validatedAt ? ` · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(validatedAt))}` : ""}.`
+            : "A configuração selecionada ainda não foi validada. Salve qualquer alteração e teste a conexão para liberar o chat."}
+        </p>}
         <label className="text-sm">API key
           <input value={apiKey} onChange={(event) => { setApiKey(event.target.value); setTestStatus(null); }} className="field mt-1" type="password" autoComplete="new-password" placeholder={connected && provider === savedProvider ? "Salva e protegida · cole outra para substituir" : "Cole sua API key"} />
         </label>

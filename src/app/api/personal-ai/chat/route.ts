@@ -5,7 +5,7 @@ import { z } from "zod";
 import { createPersonalFinanceTools } from "@/lib/personal-ai/tools";
 import { createPersonalAiTransactionProposalTool, type PersonalAiTransactionDraft } from "@/lib/personal-ai/actions";
 import { NO_FINANCIAL_CONTEXT_INSTRUCTION, requestsTransactionAction, requiresPersonalFinanceData, VAL_PERSONA } from "@/lib/personal-ai";
-import { AIProviderError, classifyAIError, createProviderModel, logAIError, type AIProvider } from "@/lib/personal-ai/providers";
+import { AIProviderError, classifyAIError, createProviderModel, isGemini3Model, logAIError, type AIProvider } from "@/lib/personal-ai/providers";
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
 import { createUserScopedSupabaseClient } from "@/lib/supabase/user-scoped";
@@ -70,10 +70,13 @@ export async function POST(request: NextRequest) {
   if (allowed !== true) return NextResponse.json({ error: "Você atingiu o limite de mensagens desta hora. Tente novamente mais tarde." }, { status: 429, headers: { "Retry-After": "3600" } });
 
   const [{ data: connection, error: connectionError }, { data: consent }] = await Promise.all([
-    admin.from("personal_ai_connections").select("provider, encrypted_api_key, model, insights_enabled, actions_enabled").eq("user_id", user.id).maybeSingle(),
+    admin.from("personal_ai_connections").select("provider, encrypted_api_key, model, insights_enabled, actions_enabled, validated_at, validated_model").eq("user_id", user.id).maybeSingle(),
     admin.from("user_consents").select("ai_data_sharing_version, ai_data_sharing_accepted_at").eq("user_id", user.id).maybeSingle(),
   ]);
   if (connectionError || !connection) return NextResponse.json({ error: "Conecte sua IA pessoal nas Configurações antes de conversar." }, { status: 409 });
+  if (!connection.validated_at || connection.validated_model !== connection.model) {
+    return NextResponse.json({ error: "Sua configuração está salva, mas ainda não foi validada. Teste a conexão em Configurações antes de conversar." }, { status: 409, headers: { "Cache-Control": "no-store" } });
+  }
 
   const provider = connection.provider as AIProvider;
   if (!["openai", "gemini", "deepseek"].includes(provider)) return NextResponse.json({ error: "O provedor de IA conectado não é suportado." }, { status: 422 });
@@ -155,9 +158,13 @@ export async function POST(request: NextRequest) {
       stopWhen: isStepCount(4),
       toolChoice: canUseFinancialContext && requiresPersonalFinanceData(conversation)
         && !(connection.actions_enabled && requestsTransactionAction(current.content)) ? "required" : "auto",
-      maxOutputTokens: 700,
+      // Gemini 3 may spend output-token budget on internal reasoning even at low thinking level.
+      maxOutputTokens: provider === "gemini" && isGemini3Model(connection.model) ? 1200 : 700,
       maxRetries: 0,
-      temperature: 0.2,
+      ...(provider !== "gemini" ? { temperature: 0.2 } : {}),
+      ...(provider === "gemini" && isGemini3Model(connection.model)
+        ? { providerOptions: { google: { thinkingConfig: { thinkingLevel: "low" as const } } } }
+        : {}),
       allowSystemInMessages: false,
     });
     const result = await agent.generate({ messages: conversation, timeout: 27_000, abortSignal: timeout });
@@ -165,7 +172,7 @@ export async function POST(request: NextRequest) {
       ? `Preparei uma proposta de ${createdProposals[0].action_type === "expense" ? "despesa" : "receita"}. Confira os dados e confirme ou descarte; nada será registrado sem sua aprovação.`
       : result.text.trim();
     if (!reply) {
-      const failure = new AIProviderError({ provider, model: connection.model, category: result.finishReason === "content-filter" ? "CONTENT_BLOCKED" : "MALFORMED_RESPONSE" });
+      const failure = new AIProviderError({ provider, model: connection.model, category: result.finishReason === "content-filter" ? "CONTENT_BLOCKED" : "MALFORMED_RESPONSE", providerCode: result.finishReason });
       logAIError(failure, Date.now() - startedAt);
       await recordPersonalAIUsage({ userId: user.id, provider, model: connection.model, latencyMs: Date.now() - startedAt, kind: "chat", error: failure });
       return NextResponse.json({ error: failure.message, category: failure.category }, { status: 502 });
