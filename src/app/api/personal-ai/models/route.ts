@@ -4,15 +4,18 @@ import { z } from "zod";
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { AIProviderError, classifyAIError, listProviderModels } from "@/lib/personal-ai/providers";
 import { AI_PROVIDERS } from "@/lib/personal-ai/provider-config";
-import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
+import { getSupabaseAdminClient } from "@/lib/supabase/admin";
+import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
 
 export const maxDuration = 15;
 
 const schema = z.object({ provider: z.enum(AI_PROVIDERS), apiKey: z.string().trim().min(12).max(512).optional() }).strict();
 
 export async function POST(request: NextRequest) {
-  const user = await getVerifiedActiveUser(request.headers.get("authorization"));
-  if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+  const active = await getVerifiedWorkspaceContext(request.headers.get("authorization"), request.headers.get("x-valurise-workspace-id"));
+  if (!active.ok) return NextResponse.json({ error: active.error }, { status: active.status });
+  const { user, workspace } = active;
+  if (workspace.role !== "owner" && workspace.role !== "admin") return NextResponse.json({ error: "Somente quem administra este workspace pode configurar a IA." }, { status: 403 });
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Selecione um provedor e informe uma chave válida." }, { status: 400 });
   const { provider } = parsed.data;
@@ -27,7 +30,7 @@ export async function POST(request: NextRequest) {
 
   let apiKey = parsed.data.apiKey;
   if (!apiKey) {
-    const { data: saved, error } = await admin.from("personal_ai_connections").select("provider, encrypted_api_key").eq("user_id", user.id).maybeSingle();
+    const { data: saved, error } = await admin.from("personal_ai_connections").select("provider, encrypted_api_key").eq("workspace_id", workspace.id).maybeSingle();
     if (error) return NextResponse.json({ error: "Não foi possível consultar a conexão salva." }, { status: 500 });
     if (saved?.provider === provider) {
       try { apiKey = decryptPersonalAiKey(saved.encrypted_api_key); }

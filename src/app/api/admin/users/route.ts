@@ -76,7 +76,12 @@ export async function POST(request: NextRequest) {
     if (ban.error) error = ban.error;
     if (!error) {
       const removed = await admin.auth.admin.deleteUser(userId);
-      if (removed.error) error = removed.error;
+      if (removed.error) {
+        if (removed.error.message.includes("workspace owner must transfer ownership before deletion")) {
+          return NextResponse.json({ error: "Esta conta ainda administra uma empresa com outros integrantes. Transfira a titularidade antes de excluir definitivamente." }, { status: 409 });
+        }
+        error = removed.error;
+      }
     }
   } else {
     const accountStatus = statusByAction[action];

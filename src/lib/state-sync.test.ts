@@ -27,8 +27,9 @@ describe("synchronização financeira versionada", () => {
     const select = vi.fn().mockReturnValue({ eq });
     mocks.client.from.mockReturnValue({ select });
 
-    await expect(loadValuriseState()).resolves.toEqual({ state, version: 7 });
+    await expect(loadValuriseState("workspace-1")).resolves.toEqual({ state, version: 7 });
     expect(select).toHaveBeenCalledWith("state, version");
+    expect(eq).toHaveBeenCalledWith("workspace_id", "workspace-1");
   });
 
   it("atualiza somente se a versão esperada ainda for a atual", async () => {
@@ -39,8 +40,8 @@ describe("synchronização financeira versionada", () => {
     const update = vi.fn().mockReturnValue({ eq: eqUser });
     mocks.client.from.mockReturnValue({ update });
 
-    await expect(saveValuriseState(state, 7)).resolves.toEqual({ synced: true, version: 8 });
-    expect(eqUser).toHaveBeenCalledWith("user_id", "user-1");
+    await expect(saveValuriseState(state, { id: "workspace-1", type: "personal" }, 7)).resolves.toEqual({ synced: true, version: 8 });
+    expect(eqUser).toHaveBeenCalledWith("workspace_id", "workspace-1");
     expect(eqVersion).toHaveBeenCalledWith("version", 7);
   });
 
@@ -52,6 +53,22 @@ describe("synchronização financeira versionada", () => {
     const update = vi.fn().mockReturnValue({ eq: eqUser });
     mocks.client.from.mockReturnValue({ update });
 
-    await expect(saveValuriseState(state, 7)).resolves.toEqual({ synced: false, reason: "conflict" });
+    await expect(saveValuriseState(state, { id: "workspace-1", type: "business" }, 7)).resolves.toEqual({ synced: false, reason: "conflict" });
+  });
+
+  it("cria o primeiro documento pessoal preservando a atribuição legada", async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null });
+    mocks.client.from.mockReturnValue({ insert });
+
+    await expect(saveValuriseState(state, { id: "personal-1", type: "personal" })).resolves.toEqual({ synced: true, version: 1 });
+    expect(insert).toHaveBeenCalledWith({ workspace_id: "personal-1", user_id: "user-1", state, version: 1 });
+  });
+
+  it("cria o estado empresarial sem atribuí-lo à conta pessoal do proprietário", async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null });
+    mocks.client.from.mockReturnValue({ insert });
+
+    await expect(saveValuriseState(state, { id: "business-1", type: "business" })).resolves.toEqual({ synced: true, version: 1 });
+    expect(insert).toHaveBeenCalledWith({ workspace_id: "business-1", user_id: null, state, version: 1 });
   });
 });

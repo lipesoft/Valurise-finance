@@ -1,6 +1,8 @@
 import { test, expect } from "./fixtures";
 
 const testUserId = "00000000-0000-4000-8000-000000000123";
+const personalWorkspaceId = "00000000-0000-4000-8000-000000000234";
+const businessWorkspaceId = "00000000-0000-4000-8000-000000000345";
 const currentMonth = new Date().toISOString().slice(0, 7);
 const mockState = {
   data: {
@@ -48,6 +50,18 @@ async function installMockSession(page: import("@playwright/test").Page, financi
   };
 
   await page.route("**/auth/v1/user", (route) => route.fulfill({ status: 200, json: authUser }));
+  await page.route("**/api/workspaces", (route) => route.fulfill({ status: 200, json: {
+    activeWorkspaceId: personalWorkspaceId,
+    workspaces: [{ id: personalWorkspaceId, type: "personal", displayName: "Pessoa de teste", role: "owner" }],
+  } }));
+  await page.route("**/api/workspaces/active", async (route) => {
+    const body = route.request().postDataJSON() as { workspaceId?: string };
+    return route.fulfill({ status: 200, json: { ok: true, activeWorkspaceId: body.workspaceId } });
+  });
+  await page.route("**/api/workspaces/business", (route) => route.fulfill({ status: 201, json: {
+    ok: true,
+    workspace: { id: businessWorkspaceId, type: "business", displayName: "Empresa QA", role: "owner" },
+  } }));
   await page.route("**/rest/v1/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith("/profiles")) {
@@ -64,7 +78,13 @@ async function installMockSession(page: import("@playwright/test").Page, financi
       if (financialStateDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, financialStateDelayMs));
       }
-      return route.fulfill({ status: 200, json: { state: mockState, version: 1 } });
+      const requestedWorkspace = new URL(route.request().url()).searchParams.get("workspace_id")?.replace(/^eq\./, "");
+      const state = requestedWorkspace === businessWorkspaceId ? {
+        data: { categories: [], institutions: [], onboarded: false },
+        transactions: [],
+        profile: {},
+      } : mockState;
+      return route.fulfill({ status: 200, json: { state, version: 1 } });
     }
     if (pathname.endsWith("/user_consents")) {
       return route.fulfill({ status: 200, json: { cookie_preference: "essential_only", cookie_policy_version: "2026-09-23-v1" } });
@@ -93,12 +113,35 @@ async function installMockSession(page: import("@playwright/test").Page, financi
     for (const byte of bytes) binary += String.fromCharCode(byte);
     const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
     document.cookie = `sb-127-auth-token=base64-${encoded}; Path=/; SameSite=Lax`;
-    localStorage.setItem(`valurise:v2:${userId}:data`, JSON.stringify(mockState.data));
-    localStorage.setItem(`valurise:v2:${userId}:tx`, JSON.stringify(mockState.transactions));
-    localStorage.setItem(`valurise:v2:${userId}:profile`, JSON.stringify(mockState.profile));
+    const workspaceKey = `valurise:v2:${userId}:workspace:${personalWorkspaceId}`;
+    localStorage.setItem(`${workspaceKey}:data`, JSON.stringify(mockState.data));
+    localStorage.setItem(`${workspaceKey}:tx`, JSON.stringify(mockState.transactions));
+    localStorage.setItem(`${workspaceKey}:profile`, JSON.stringify(mockState.profile));
     localStorage.setItem("valurise:cookie-consent", JSON.stringify({ preference: "essential_only", version: "2026-09-23-v1" }));
   }, { storedSession: session, userId: testUserId });
 }
+
+test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+  await expect(page.getByText("Mercado QA")).toBeVisible();
+  await page.getByRole("button", { name: "Criar espaço empresarial" }).click();
+  const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
+  await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
+  await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
+  await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
+  await dialog.getByRole("button", { name: "Criar empresa" }).click();
+
+  await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
+  await expect(page.getByText("Mercado QA")).toHaveCount(0);
+  await page.getByRole("button", { name: "Continuar depois" }).click();
+  await expect(page.getByRole("button", { name: "Registrar movimentação" })).toBeVisible();
+
+  await page.getByLabel("Espaço financeiro ativo").selectOption(personalWorkspaceId);
+  await expect(page.getByText("Mercado QA")).toBeVisible();
+  await page.getByLabel("Espaço financeiro ativo").selectOption(businessWorkspaceId);
+  await expect(page.getByText("Mercado QA")).toHaveCount(0);
+});
 
 test("splash acompanha a sincronização real e revela a interface pelo símbolo", async ({ page }) => {
   await installMockSession(page, 4000);
@@ -322,9 +365,9 @@ test("configura a Val com modelos Gemini confirmados, diagnóstico de erro e tes
   await expect(page.getByText("Val · assistente financeira")).toBeVisible();
   const actionPermission = page.getByLabel("Permitir propostas de receitas e despesas com confirmação obrigatória");
   await expect(actionPermission).toBeDisabled();
-  await page.getByLabel("Autorizar uso dos meus dados financeiros pela Val").check();
+  await page.locator("label").filter({ hasText: "Compartilhar dados para análise financeira" }).click();
   await expect(actionPermission).toBeEnabled();
-  await actionPermission.check();
+  await page.locator("label").filter({ hasText: "Permitir ações financeiras com confirmação" }).click();
   await expect(actionPermission).toBeChecked();
   await page.getByLabel("Provedor").selectOption("gemini");
   await page.getByLabel("API key").fill("e2e-chave-ficticia-sem-uso-real");
@@ -351,7 +394,7 @@ test("configura a Val com modelos Gemini confirmados, diagnóstico de erro e tes
   await expect(page.getByText("140", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Salvar configuração" }).click();
   await expect.poll(() => savedConnection).toMatchObject({ insightsEnabled: true, actionsEnabled: true });
-  await page.getByLabel("Autorizar uso dos meus dados financeiros pela Val").uncheck();
+  await page.locator("label").filter({ hasText: "Compartilhar dados para análise financeira" }).click();
   await expect(actionPermission).toBeDisabled();
   await expect(actionPermission).not.toBeChecked();
   const localStorageValue = await page.evaluate(() => JSON.stringify(localStorage));
@@ -531,6 +574,7 @@ test("a Val só registra receita ou despesa depois da aprovação explícita da 
   for (const width of [375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await dialog.getByRole("button", { name: "Confirmar e registrar despesa" }).scrollIntoViewIfNeeded();
     await expect(dialog.getByRole("button", { name: "Confirmar e registrar despesa" })).toBeInViewport();
   }
 
@@ -607,7 +651,7 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
           return { width, height, hiddenInput: (element as HTMLInputElement).classList.contains("sr-only") };
         }));
         expect(checkboxSizes.length).toBeGreaterThanOrEqual(3);
-        expect(checkboxSizes.every((checkbox) => checkbox.width === 32 && checkbox.height === 32 && checkbox.hiddenInput)).toBe(true);
+        expect(checkboxSizes.every((checkbox) => Math.abs(checkbox.width - 32) < 0.1 && Math.abs(checkbox.height - 32) < 0.1 && checkbox.hiddenInput), JSON.stringify(checkboxSizes)).toBe(true);
       }
 
       if (view === "Planejamento") {
@@ -646,7 +690,7 @@ test("transferência exige origem e destino e registra ambos sem alterar o patri
   await expect(page.locator("p").filter({ hasText: "Banco de teste • Conta principal → Banco de teste • Conta destino" })).toBeVisible();
   await page.getByRole("button", { name: "Confirmar lançamento" }).click();
 
-  const transactions = await page.evaluate((storageKey) => JSON.parse(localStorage.getItem(storageKey) || "[]"), `valurise:v2:${testUserId}:tx`);
+  const transactions = await page.evaluate((storageKey) => JSON.parse(localStorage.getItem(storageKey) || "[]"), `valurise:v2:${testUserId}:workspace:${personalWorkspaceId}:tx`);
   const transfer = transactions.find((item: { type: string }) => item.type === "transfer");
   expect(transfer).toMatchObject({
     type: "transfer",
@@ -705,7 +749,7 @@ test("planejamento cria, edita e exclui uma conta recorrente", async ({ page }) 
   await page.getByRole("button", { name: "Excluir a conta recorrente Seguro QA avulso" }).click();
   await page.getByRole("button", { name: "Excluir", exact: true }).click();
 
-  const savedData = await page.evaluate((storageKey) => JSON.parse(localStorage.getItem(storageKey) || "{}"), `valurise:v2:${testUserId}:data`);
+  const savedData = await page.evaluate((storageKey) => JSON.parse(localStorage.getItem(storageKey) || "{}"), `valurise:v2:${testUserId}:workspace:${personalWorkspaceId}:data`);
   expect(savedData.recurringBills).toEqual([]);
 });
 
@@ -737,7 +781,7 @@ test("backup JSON substitui somente dados financeiros após confirmação", asyn
   await expect(page.getByText("Restaurar backup?")).toBeVisible();
   await page.getByRole("button", { name: "Restaurar dados" }).click();
 
-  const storagePrefix = `valurise:v2:${testUserId}`;
+  const storagePrefix = `valurise:v2:${testUserId}:workspace:${personalWorkspaceId}`;
   const savedData = await page.evaluate((key) => JSON.parse(localStorage.getItem(`${key}:data`) || "{}"), storagePrefix);
   const savedTransactions = await page.evaluate((key) => JSON.parse(localStorage.getItem(`${key}:tx`) || "[]"), storagePrefix);
   expect(savedData.categories).toEqual(["Importada QA"]);

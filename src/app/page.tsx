@@ -9,6 +9,7 @@ import {
   BarChart3,
   Bell,
   Bot,
+  Building2,
   CalendarDays,
   ChartNoAxesCombined,
   Check,
@@ -78,6 +79,8 @@ import { GEMINI_SUPPORTED_MODELS, getInitialAIModelOptions, isSupportedGeminiMod
 import { AI_PROVIDER_METADATA, AI_PROVIDERS, type AIModelOption, type AIProvider } from "@/lib/personal-ai/provider-config";
 import { formatValResponse } from "@/lib/personal-ai/presentation";
 import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise-splash";
+import { isValidCnpj } from "@/lib/workspaces/cnpj";
+import type { WorkspaceSummary } from "@/lib/workspaces/types";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -183,7 +186,10 @@ export default function Page() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [splashStatus, setSplashStatus] = useState<ValuriseSplashStatus>("opening");
   const [splashVisible, setSplashVisible] = useState(true);
-  const updateSplashStatus = useCallback((status: ValuriseSplashStatus) => setSplashStatus(status), []);
+  const updateSplashStatus = useCallback((status: ValuriseSplashStatus) => {
+    setSplashStatus(status);
+    if (status === "syncing") setSplashVisible(true);
+  }, []);
   const completeLogin = useCallback((nextUser: User) => {
     setSplashStatus(nextUser.role === "user" && nextUser.status === "active" ? "syncing" : "ready");
     setSplashVisible(true);
@@ -227,7 +233,7 @@ export default function Page() {
   if (!checkingAuth) {
     if (user?.role === "master") content = <MasterConsole user={user} logout={logout} />;
     else if (user && user.status && user.status !== "active") content = <AccountWaiting user={user} logout={logout} />;
-    else if (user) content = <App user={user} logout={logout} onLoadingStatusChange={updateSplashStatus} />;
+    else if (user) content = <WorkspaceGate user={user} logout={logout} onLoadingStatusChange={updateSplashStatus} />;
     else content = <Login done={completeLogin} />;
   }
   return (
@@ -239,6 +245,127 @@ export default function Page() {
     </>
   );
 }
+function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; logout: () => void; onLoadingStatusChange: (status: ValuriseSplashStatus) => void }) {
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [switching, setSwitching] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [tradeName, setTradeName] = useState("");
+  const [legalName, setLegalName] = useState("");
+  const [cnpj, setCnpj] = useState("");
+  const [formError, setFormError] = useState("");
+  const [creating, setCreating] = useState(false);
+  const beforeSwitchRef = useRef<() => Promise<void>>(async () => {});
+  const registerBeforeSwitch = useCallback((flush: () => Promise<void>) => {
+    beforeSwitchRef.current = flush;
+  }, []);
+
+  const loadWorkspaces = useCallback(async () => {
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    const token = data?.session?.access_token;
+    if (!token) throw new Error("Sua sessão expirou. Entre novamente para carregar seus espaços.");
+    const response = await fetch("/api/workspaces", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Não foi possível carregar seus espaços.");
+    if (!Array.isArray(result.workspaces) || !result.activeWorkspaceId) throw new Error("Nenhum espaço financeiro está disponível para esta conta.");
+    return { workspaces: result.workspaces as WorkspaceSummary[], activeWorkspaceId: String(result.activeWorkspaceId) };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadWorkspaces().then((result) => {
+      if (cancelled) return;
+      setWorkspaces(result.workspaces);
+      setActiveWorkspaceId(result.activeWorkspaceId);
+      setLoadError("");
+      setLoading(false);
+    }).catch((error) => {
+      if (cancelled) return;
+      setLoadError(error instanceof Error ? error.message : "Não foi possível carregar seus espaços.");
+      setLoading(false);
+      onLoadingStatusChange("error");
+    });
+    return () => { cancelled = true; };
+  }, [loadWorkspaces, onLoadingStatusChange]);
+
+  const switchWorkspace = async (workspaceId: string) => {
+    if (!workspaceId || workspaceId === activeWorkspaceId || switching) return;
+    const flushPreviousWorkspaceWrites = beforeSwitchRef.current;
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    const token = data?.session?.access_token;
+    if (!token) return setLoadError("Sua sessão expirou. Entre novamente para trocar de espaço.");
+    setSwitching(true);
+    setLoadError("");
+    onLoadingStatusChange("syncing");
+    try {
+      await flushPreviousWorkspaceWrites();
+      const response = await fetch("/api/workspaces/active", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ workspaceId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível trocar o espaço ativo.");
+      setActiveWorkspaceId(result.activeWorkspaceId);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Não foi possível trocar o espaço ativo.");
+      onLoadingStatusChange("ready");
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  const createBusiness = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setFormError("");
+    if (!tradeName.trim() || !legalName.trim() || !isValidCnpj(cnpj)) {
+      setFormError("Informe o nome fantasia, a razão social e um CNPJ válido.");
+      return;
+    }
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    const token = data?.session?.access_token;
+    if (!token) return setFormError("Sua sessão expirou. Entre novamente para criar uma empresa.");
+    setCreating(true);
+    onLoadingStatusChange("syncing");
+    try {
+      await beforeSwitchRef.current();
+      const response = await fetch("/api/workspaces/business", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ tradeName: tradeName.trim(), legalName: legalName.trim(), cnpj }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível criar o espaço empresarial.");
+      const created = result.workspace as WorkspaceSummary;
+      setWorkspaces((current) => [...current.filter((item) => item.id !== created.id), created]);
+      setActiveWorkspaceId(created.id);
+      setTradeName(""); setLegalName(""); setCnpj(""); setCreateOpen(false);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "Não foi possível criar o espaço empresarial.");
+      onLoadingStatusChange("ready");
+    } finally { setCreating(false); }
+  };
+
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || null;
+  if (loading || switching) return null;
+  if (loadError && !activeWorkspace) return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5"><section className="panel w-full max-w-md rounded-2xl p-6 text-center"><div className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-[var(--accent)]/10 text-[var(--accent)]"><Building2 size={20}/></div><h1 className="mt-4 text-lg font-semibold">Não foi possível abrir seus espaços</h1><p role="alert" className="muted mt-2 text-sm leading-6">{loadError}</p><div className="mt-5 flex justify-center gap-2"><button onClick={() => { setLoading(true); setLoadError(""); void loadWorkspaces().then((result) => { setWorkspaces(result.workspaces); setActiveWorkspaceId(result.activeWorkspaceId); setLoading(false); }).catch((error) => { setLoadError(error instanceof Error ? error.message : "Não foi possível carregar seus espaços."); setLoading(false); }); }} className="primary min-h-10 rounded-xl px-4 text-sm">Tentar novamente</button><button onClick={logout} className="min-h-10 rounded-xl bg-[var(--panel2)] px-4 text-sm">Sair</button></div></section></main>;
+  if (!activeWorkspace) return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5"><section className="panel w-full max-w-md rounded-2xl p-6 text-center"><h1 className="text-lg font-semibold">Nenhum espaço disponível</h1><p className="muted mt-2 text-sm">Recarregue a página ou entre em contato com o suporte.</p><button onClick={logout} className="mt-5 min-h-10 rounded-xl bg-[var(--panel2)] px-4 text-sm">Sair</button></section></main>;
+
+  return <>
+    <App key={`${user.username}:${activeWorkspace.id}`} user={user} workspace={activeWorkspace} workspaces={workspaces} onSwitchWorkspace={switchWorkspace} onRegisterBeforeWorkspaceSwitch={registerBeforeSwitch} onCreateWorkspace={() => { setFormError(""); setCreateOpen(true); }} logout={logout} onLoadingStatusChange={onLoadingStatusChange} />
+    {loadError && <div role="status" className="fixed left-1/2 top-20 z-[70] w-[min(92vw,32rem)] -translate-x-1/2 rounded-xl border border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-3 text-sm shadow-xl">{loadError}</div>}
+    {createOpen && <div className="fixed inset-0 z-[90] grid place-items-end bg-black/55 p-0 backdrop-blur-sm sm:place-items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !creating) setCreateOpen(false); }}><section role="dialog" aria-modal="true" aria-labelledby="business-workspace-title" className="panel w-full max-w-lg rounded-t-3xl p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl sm:p-6"><div className="flex items-start justify-between gap-4"><div><h2 id="business-workspace-title" className="text-lg font-semibold">Criar espaço empresarial</h2><p className="muted mt-1 text-sm">Os dados da empresa começam vazios e separados do seu espaço pessoal.</p></div><button type="button" aria-label="Fechar" disabled={creating} onClick={() => setCreateOpen(false)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--panel2)]"><X size={18}/></button></div><form onSubmit={(event) => void createBusiness(event)} className="mt-5 space-y-4"><label className="block text-sm">Nome fantasia<input autoFocus value={tradeName} onChange={(event) => setTradeName(event.target.value)} maxLength={120} autoComplete="organization" className="field mt-2" required /></label><label className="block text-sm">Razão social<input value={legalName} onChange={(event) => setLegalName(event.target.value)} maxLength={180} autoComplete="organization" className="field mt-2" required /></label><label className="block text-sm">CNPJ<input inputMode="numeric" autoComplete="off" value={cnpj} onChange={(event) => setCnpj(event.target.value)} maxLength={24} className="field mt-2" placeholder="00.000.000/0000-00" required /></label>{formError && <p role="alert" className="text-sm text-[var(--danger)]">{formError}</p>}<div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end"><button type="button" disabled={creating} onClick={() => setCreateOpen(false)} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Cancelar</button><button type="submit" disabled={creating} className="primary min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-60">{creating ? "Criando espaço…" : "Criar empresa"}</button></div></form></section></div>}
+  </>;
+}
+function BusinessWorkspaceWelcome({ displayName, openAccounts, continueToDashboard }: { displayName: string; openAccounts: () => void; continueToDashboard: () => void }) {
+  return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-4 py-8"><section className="panel w-full max-w-2xl rounded-3xl p-6 sm:p-9"><span className="grid h-12 w-12 place-items-center rounded-2xl bg-[var(--accent)]/12 text-[var(--accent)]"><Building2 size={22}/></span><p className="muted mt-6 text-xs font-semibold uppercase tracking-[0.16em]">Novo espaço empresarial</p><h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">{displayName}</h1><p className="muted mt-3 max-w-xl text-sm leading-6">Este espaço começa separado e vazio. Cadastre as contas da empresa para acompanhar o caixa sem misturar com suas finanças pessoais.</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl bg-[var(--panel2)] p-4"><Landmark className="text-[var(--accent)]" size={18}/><b className="mt-3 block text-sm">Caixa e contas</b><p className="muted mt-1 text-xs leading-5">Contas bancárias da empresa.</p></div><div className="rounded-2xl bg-[var(--panel2)] p-4"><ReceiptText className="text-[var(--accent)]" size={18}/><b className="mt-3 block text-sm">Entradas e saídas</b><p className="muted mt-1 text-xs leading-5">Movimente somente neste espaço.</p></div><div className="rounded-2xl bg-[var(--panel2)] p-4"><WalletCards className="text-[var(--accent)]" size={18}/><b className="mt-3 block text-sm">Visão empresarial</b><p className="muted mt-1 text-xs leading-5">Preparado para crescer com seu negócio.</p></div></div><div className="mt-7 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" onClick={continueToDashboard} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Continuar depois</button><button type="button" onClick={openAccounts} className="primary min-h-11 rounded-xl px-4 text-sm font-semibold">Cadastrar primeira conta</button></div></section></main>;
+}
+
 function Login({ done }: { done: (u: User) => void }) {
   const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">("login");
   const [inviteToken, setInviteToken] = useState("");
@@ -364,8 +491,9 @@ function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
     </MotionConfig>
   );
 }
-function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () => void; onLoadingStatusChange: (status: ValuriseSplashStatus) => void }) {
-  const key = `valurise:v2:${user.username}`;
+function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeWorkspaceSwitch, onCreateWorkspace, logout, onLoadingStatusChange }: { user: User; workspace: WorkspaceSummary; workspaces: WorkspaceSummary[]; onSwitchWorkspace: (workspaceId: string) => void; onRegisterBeforeWorkspaceSwitch: (flush: () => Promise<void>) => void; onCreateWorkspace: () => void; logout: () => void; onLoadingStatusChange: (status: ValuriseSplashStatus) => void }) {
+  const oldPersonalKey = `valurise:v2:${user.username}`;
+  const key = `${oldPersonalKey}:workspace:${workspace.id}`;
   const legacyKey = `lume:v2:${user.username}`;
   const [data, setData] = useState<Data>({
     categories: [],
@@ -389,6 +517,13 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
   const stateVersionRef = useRef<number | null>(null);
   const stateWriteQueue = useRef<Promise<void>>(Promise.resolve());
   const stateConflictRef = useRef(false);
+  useEffect(() => {
+    onRegisterBeforeWorkspaceSwitch(async () => {
+      await stateWriteQueue.current;
+      if (stateConflictRef.current) throw new Error("Resolva a sincronização pendente antes de trocar de espaço.");
+    });
+    return () => onRegisterBeforeWorkspaceSwitch(async () => {});
+  }, [onRegisterBeforeWorkspaceSwitch]);
   const [theme, setTheme] = useState("dark");
   const [systemPrefersLight, setSystemPrefersLight] = useState(false);
   const [toast, setToast] = useState("");
@@ -406,7 +541,7 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
     () => (data.goals || []).map((goal) => goal.sharedGoalId).filter((id): id is string => Boolean(id)),
     [data.goals],
   );
-  const inviteInbox = useSharedGoalInvites(user.username, localSharedGoalIds, setToast);
+  const inviteInbox = useSharedGoalInvites(workspace.type === "personal" ? user.username : "", workspace.type === "personal" ? localSharedGoalIds : [], setToast);
   useEffect(() => { dataRef.current = data; }, [data]);
   useEffect(() => { txRef.current = tx; }, [tx]);
   useEffect(() => { profileRef.current = profile; }, [profile]);
@@ -421,9 +556,9 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
       try {
         for (const suffix of [":data", ":tx", ":theme", ":profile"]) {
           const currentValue = localStorage.getItem(key + suffix);
-          const legacyValue = localStorage.getItem(legacyKey + suffix);
-          if (!currentValue && legacyValue) localStorage.setItem(key + suffix, legacyValue);
-          if (localStorage.getItem(key + suffix)) localStorage.removeItem(legacyKey + suffix);
+          const legacyPersonalValue = workspace.type === "personal" ? localStorage.getItem(oldPersonalKey + suffix) : null;
+          const legacyValue = workspace.type === "personal" ? localStorage.getItem(legacyKey + suffix) : null;
+          if (!currentValue && (legacyPersonalValue || legacyValue)) localStorage.setItem(key + suffix, legacyPersonalValue || legacyValue || "");
         }
         const localData = JSON.parse(
           localStorage.getItem(key + ":data") ||
@@ -443,7 +578,7 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
           Data,
           FinanceTransaction,
           ProfilePreference
-        >();
+        >(workspace.id);
         const remote = remoteResult?.state || null;
         stateVersionRef.current = remoteResult?.version ?? null;
         if (stale) return;
@@ -475,10 +610,10 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
         setTx(state.transactions);
         setProfile(state.profile);
         if (!remote) {
-          const result = await saveValuriseState(state, null);
+          const result = await saveValuriseState(state, workspace, null);
           if (result.synced) stateVersionRef.current = result.version ?? 1;
           if (result.reason === "conflict") {
-            const latest = await loadValuriseState<Data, FinanceTransaction, ProfilePreference>();
+            const latest = await loadValuriseState<Data, FinanceTransaction, ProfilePreference>(workspace.id);
             if (!latest) throw new Error("Outra sessão criou seus dados durante o carregamento.");
             stateVersionRef.current = latest.version;
             setData(latest.state.data); setTx(latest.state.transactions); setProfile(latest.state.profile);
@@ -496,7 +631,7 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
     return () => {
       stale = true;
     };
-  }, [key, legacyKey, user.username]);
+  }, [key, legacyKey, oldPersonalKey, user.username, workspace]);
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: light)");
     const update = () => setSystemPrefersLight(media.matches);
@@ -557,7 +692,7 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
   const persistState = (state: { data: Data; transactions: FinanceTransaction[]; profile: ProfilePreference }) => {
     const write = async () => {
       if (stateConflictRef.current) return;
-      const result = await saveValuriseState(state, stateVersionRef.current);
+      const result = await saveValuriseState(state, workspace, stateVersionRef.current);
       if (result.synced) { stateVersionRef.current = result.version ?? 1; return; }
       if (result.reason === "conflict") {
         stateConflictRef.current = true;
@@ -581,13 +716,13 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
     if (!token) throw new Error("Sua sessão expirou. Entre novamente para confirmar.");
     const response = await fetch("/api/personal-ai/actions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspace.id },
       body: JSON.stringify({ proposalId, decision: "approve" }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Não foi possível confirmar a proposta.");
 
-    const latest = await loadValuriseState<Data, FinanceTransaction, ProfilePreference>();
+    const latest = await loadValuriseState<Data, FinanceTransaction, ProfilePreference>(workspace.id);
     if (!latest) throw new Error("A proposta foi registrada, mas não foi possível atualizar esta tela. Recarregue os dados antes de tentar novamente.");
     stateVersionRef.current = latest.version;
     dataRef.current = latest.state.data;
@@ -608,6 +743,10 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
     date: string;
     localGoalId?: string;
   }) => {
+    if (workspace.type !== "personal") {
+      setToast("O compartilhamento de metas está disponível no espaço pessoal.");
+      return Promise.resolve(false);
+    }
     const operation = stateWriteQueue.current.catch(() => undefined).then(async () => {
       if (stateConflictRef.current || stateVersionRef.current === null) {
         setToast("Atualize os dados sincronizados antes de contribuir com a meta.");
@@ -715,12 +854,12 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
     return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5 text-center"><section className="panel w-full max-w-md rounded-2xl p-6"><b className="text-base">Não foi possível confirmar seus dados</b><p className="muted mt-2 text-sm leading-6">Por segurança, a Valurise não vai substituir os dados salvos. Verifique sua conexão e tente novamente.</p><button onClick={() => window.location.reload()} className="primary mt-4 min-h-11 rounded-xl px-4 text-sm font-semibold">Tentar novamente</button></section></main>;
   }
   if (!data.onboarded)
-    return (
+    return workspace.type === "personal" ? (
       <Onboard
         user={user}
         finish={(n) => saveData({ ...n, onboarded: true })}
       />
-    );
+    ) : <BusinessWorkspaceWelcome displayName={workspace.displayName} openAccounts={() => { saveData({ ...data, onboarded: true }); setView("accounts"); }} continueToDashboard={() => saveData({ ...data, onboarded: true })} />;
   const setT = (next: string) => {
     setTheme(next);
     localStorage.setItem(key + ":theme", next);
@@ -819,9 +958,16 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
       )}
       </AnimatePresence>
       <section className="min-w-0 pb-[calc(11rem+env(safe-area-inset-bottom))] lg:ml-60 lg:pb-40">
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-[var(--border)] bg-[var(--bg)]/95 px-4 backdrop-blur-xl lg:px-10">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--bg)]/95 px-3 backdrop-blur-xl sm:px-4 lg:px-10">
           <div className="lg:hidden">
             <Brand />
+          </div>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <label className="sr-only" htmlFor="active-workspace">Espaço financeiro ativo</label>
+            <select id="active-workspace" aria-label="Espaço financeiro ativo" value={workspace.id} onChange={(event) => onSwitchWorkspace(event.target.value)} className="field h-10 min-h-10 min-w-0 max-w-[min(40vw,190px)] px-2 text-xs font-medium sm:max-w-[260px] sm:px-3">
+              {workspaces.map((item) => <option key={item.id} value={item.id}>{item.type === "personal" ? "Pessoal" : "Empresa"} · {item.displayName}</option>)}
+            </select>
+            <button type="button" onClick={onCreateWorkspace} aria-label="Criar espaço empresarial" title="Criar espaço empresarial" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]"><Plus size={18}/></button>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -952,7 +1098,7 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
           <Budgets data={data} tx={tx} month={month} save={saveData} toast={setToast} />
         )}
         {view === "goals" && (
-          <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} invites={inviteInbox.invites} respondInvite={inviteInbox.respond} sharedGoals={inviteInbox.sharedGoals} recordSharedGoalContribution={recordSharedGoalContribution} userId={user.username} />
+          <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} invites={inviteInbox.invites} respondInvite={inviteInbox.respond} sharedGoals={inviteInbox.sharedGoals} recordSharedGoalContribution={recordSharedGoalContribution} userId={user.username} allowSharing={workspace.type === "personal"} />
         )}
         {view === "categories" && (
           <Categories data={data} tx={tx} month={month} save={saveData} saveTx={saveTx} toast={setToast} />
@@ -973,6 +1119,7 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
             toast={setToast}
             logout={logout}
             localStoragePrefix={key}
+            workspaceId={workspace.id}
           />
         )}
         </AnimatedPage>
@@ -1005,6 +1152,7 @@ function App({ user, logout, onLoadingStatusChange }: { user: User; logout: () =
         {sheet && (
           <Launcher
             data={data}
+            workspace={workspace}
             createCategory={createCategory}
             createInvestment={createInvestment}
             close={() => setSheet(false)}
@@ -3118,7 +3266,7 @@ function Budgets({ data, tx, month, save, toast }: any) {
     </section>
   );
 }
-function Goals({ data, transactions = [], save, saveTransactions, toast, invites = [], respondInvite, sharedGoals = [], recordSharedGoalContribution, userId }: any) {
+function Goals({ data, transactions = [], save, saveTransactions, toast, invites = [], respondInvite, sharedGoals = [], recordSharedGoalContribution, userId, allowSharing = true }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
@@ -3310,7 +3458,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
                 )}
                 <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
                   <button onClick={() => { setContributionFor(item.id); setContribution(""); setContributionAccount(""); setContributionDate(format(new Date(), "yyyy-MM-dd")); }} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button>
-                  <button onClick={() => setSharingGoal({ ...item, currentCents })} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button>
+                  {allowSharing && <button onClick={() => setSharingGoal({ ...item, currentCents })} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button>}
                 </div>
                 {!item.sharedGoalId && <ItemActions label={`a meta ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />}
               </article>
@@ -3410,7 +3558,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
           </section>
         </Sheet>
       )}
-      {sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Ela só verá esta meta depois de aceitar o convite; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
+      {allowSharing && sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Ela só verá esta meta depois de aceitar o convite; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
       {deleting && <DeleteConfirm title="Excluir meta?" description={`A meta “${deleting.name}” e o seu progresso individual serão removidos. Isso não apaga lançamentos da sua conta.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, goals: items.filter((item: any) => item.id !== deleting.id) }); toast("Meta excluída."); setDeleting(null); }} />}
     </section>
   );
@@ -4049,7 +4197,7 @@ type PersonalChatProposal = {
   expires_at: string;
 };
 type PersonalChatError = Pick<PersonalAITestStatus, "message" | "category" | "providerMessage" | "providerCode" | "providerHttpStatus" | "requestId" | "model">;
-function PersonalFinanceChat({ startMovement, approveAction, close }: { startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void>; close: () => void }) {
+function PersonalFinanceChat({ workspace, startMovement, approveAction, close }: { workspace: WorkspaceSummary; startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void>; close: () => void }) {
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
     { id: "welcome", role: "assistant", content: "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
   ]);
@@ -4072,7 +4220,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
         const supabase = getSupabaseBrowserClient();
         const { data } = await supabase?.auth.getSession() || {};
         if (!data?.session?.access_token) return;
-        const headers = { Authorization: `Bearer ${data.session.access_token}` };
+        const headers = { Authorization: `Bearer ${data.session.access_token}`, "X-Valurise-Workspace-Id": workspace.id };
         const response = await fetch("/api/personal-ai/connection", { headers });
         const result = await response.json();
         if (cancelled) return;
@@ -4099,11 +4247,11 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
     };
     void loadConnection();
     return () => { cancelled = true; };
-  }, []);
+  }, [workspace.id]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, loading]);
+  }, [messages, proposals, loading]);
 
   const send = async () => {
     const content = input.trim();
@@ -4123,7 +4271,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
     try {
       const response = await fetch("/api/personal-ai/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}`, "X-Valurise-Workspace-Id": workspace.id },
         body: JSON.stringify({ messages: next.slice(-12).map(({ role, content: text }) => ({ role, content: text })) }),
       });
       const result = await response.json();
@@ -4153,7 +4301,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
         if (!token) throw new Error("Sua sessão expirou. Entre novamente para descartar.");
         const response = await fetch("/api/personal-ai/actions", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspace.id },
           body: JSON.stringify({ proposalId, decision }),
         });
         const result = await response.json();
@@ -4169,7 +4317,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
           const { data } = await supabase?.auth.getSession() || {};
           const token = data?.session?.access_token;
           if (token) {
-            const response = await fetch("/api/personal-ai/actions", { headers: { Authorization: `Bearer ${token}` } });
+            const response = await fetch("/api/personal-ai/actions", { headers: { Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspace.id } });
             const result = await response.json();
             if (response.ok && Array.isArray(result.proposals)) setProposals(result.proposals);
           }
@@ -4180,7 +4328,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
   return <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
     <div className="flex shrink-0 items-center gap-3 border-b border-[var(--border)] pb-4">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-      <div className="min-w-0 flex-1"><b id="personal-finance-chat-title" className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected && provider ? `${AI_PROVIDER_METADATA[provider].label} validado para sua conta.` : configured ? "Configuração salva · falta validar em Configurações." : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
+      <div className="min-w-0 flex-1"><b id="personal-finance-chat-title" className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{workspace.type === "business" ? `Contexto: empresa · ${workspace.displayName}` : `Contexto: pessoal · ${workspace.displayName}`} · {connected && provider ? `${AI_PROVIDER_METADATA[provider].label} validado.` : configured ? "Configuração salva · falta validar em Configurações." : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
       <button type="button" onClick={close} aria-label="Voltar ao painel" className="flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-2 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"><ChevronLeft size={18} /><span>Voltar</span></button>
     </div>
     <div aria-live="polite" className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
@@ -4215,7 +4363,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
     <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Ações limitadas com sua aprovação obrigatória" : "Somente leitura"}${lastUsage === null ? " · O provedor não informou o consumo desta resposta." : ` · ${lastUsage.toLocaleString("pt-BR")} tokens nesta resposta.`}` : configured ? "A configuração foi salva, mas a Val só conversa depois que o teste do provedor passar. Os atalhos de movimentação continuam disponíveis." : "Sem IA? Use os atalhos para lançar. Conecte um provedor nas Configurações para conversar com a Val."}</p>
   </section>;
 }
-function Launcher({ data, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
+function Launcher({ data, workspace, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
   const [k, setK] = useState<Kind | null>(null),
     [step, setStep] = useState(0),
     [amount, setAmount] = useState(""),
@@ -4312,7 +4460,7 @@ function Launcher({ data, close, saved, createCategory, createInvestment, approv
   if (!k)
     return (
       <ChatOverlay close={close}>
-        <PersonalFinanceChat startMovement={(kind) => { setK(kind); setStep(0); }} approveAction={approvePersonalAiAction} close={close} />
+        <PersonalFinanceChat workspace={workspace} startMovement={(kind) => { setK(kind); setStep(0); }} approveAction={approvePersonalAiAction} close={close} />
       </ChatOverlay>
     );
   if (showCat)
@@ -5611,7 +5759,7 @@ function Statement({ tx, month, save, toast }: any) {
     </section>
   );
 }
-function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancialBackup, toast, logout, localStoragePrefix }: any) {
+function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancialBackup, toast, logout, localStoragePrefix, workspaceId }: any) {
   const syncEnabled = Boolean(getSupabaseBrowserClient());
   const [restoreCandidate, setRestoreCandidate] = useState<any | null>(null);
   const [backupError, setBackupError] = useState("");
@@ -5740,7 +5888,7 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
         <LegalPreferences toast={toast} />
       </section>
       <AccountDeletion logout={logout} localStoragePrefix={localStoragePrefix} />
-      <PersonalAISettings toast={toast} />
+      <PersonalAISettings toast={toast} workspaceId={workspaceId} />
       {restoreCandidate && <Sheet close={() => setRestoreCandidate(null)}><section className="space-y-4"><div><b className="text-lg">Restaurar backup?</b><p className="muted mt-2 text-sm leading-6">Isso substituirá contas, cartões, categorias, metas, orçamentos, investimentos e lançamentos atuais pelos dados do arquivo. Essa ação não pode ser desfeita dentro do app. Exporte o estado atual antes se quiser preservá-lo.</p><p className="muted mt-2 text-xs">{restoreCandidate.transactions.length} lançamento(s) no arquivo{restoreCandidate.exportedAt ? ` · exportado em ${format(new Date(restoreCandidate.exportedAt), "dd/MM/yyyy 'às' HH:mm")}` : " · formato legado"}</p></div><div className="flex gap-2"><button onClick={() => setRestoreCandidate(null)} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium">Cancelar</button><button onClick={() => { restoreFinancialBackup(restoreCandidate.data, restoreCandidate.transactions); setRestoreCandidate(null); toast("Backup restaurado e sincronização iniciada."); }} className="primary h-11 flex-1 rounded-xl text-sm font-semibold">Restaurar dados</button></div></section></Sheet>}
     </section>
   );
@@ -5802,7 +5950,7 @@ const aiErrorCategoryLabels: Record<string, string> = {
 const defaultAIModel: Record<PersonalAIProvider, string> = Object.fromEntries(
   AI_PROVIDERS.map((item) => [item, AI_PROVIDER_METADATA[item].defaultModel]),
 ) as Record<PersonalAIProvider, string>;
-function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
+function PersonalAISettings({ toast, workspaceId }: { toast: (text: string) => void; workspaceId: string }) {
   const [provider, setProvider] = useState<PersonalAIProvider>("openai");
   const [savedProvider, setSavedProvider] = useState<PersonalAIProvider | null>(null);
   const [apiKey, setApiKey] = useState("");
@@ -5828,7 +5976,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     return data?.session?.access_token || null;
   };
   const loadUsage = async (token: string) => {
-    const response = await fetch("/api/personal-ai/usage", { headers: { Authorization: `Bearer ${token}` } });
+    const response = await fetch("/api/personal-ai/usage", { headers: { Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspaceId } });
     const result = await response.json();
     if (response.ok && result.usage) setUsage(result.usage);
   };
@@ -5838,7 +5986,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     const load = async () => {
       const token = await getAccessToken();
       if (!token) return;
-      const headers = { Authorization: `Bearer ${token}` };
+      const headers = { Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspaceId };
       const [response, usageResponse] = await Promise.all([
         fetch("/api/personal-ai/connection", { headers }),
         fetch("/api/personal-ai/usage", { headers }).catch(() => null),
@@ -5875,7 +6023,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     };
     void load();
     return () => { cancelled = true; };
-  }, []);
+  }, [workspaceId]);
 
   const loadModels = async () => {
     if (!AI_PROVIDER_METADATA[provider].supportsDynamicCatalog) {
@@ -5890,7 +6038,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     try {
       const response = await fetch("/api/personal-ai/models", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspaceId },
         body: JSON.stringify({ provider, ...(apiKey.trim() ? { apiKey } : {}) }),
       });
       const result = await response.json();
@@ -5927,7 +6075,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     try {
       const response = await fetch("/api/personal-ai/test", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspaceId },
         body: JSON.stringify({ provider, model, ...(apiKey.trim() ? { apiKey } : {}) }),
       });
       const result = await response.json();
@@ -5965,7 +6113,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     try {
       const response = await fetch("/api/personal-ai/connection", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspaceId },
         body: JSON.stringify({ provider, ...(apiKey.trim() ? { apiKey } : {}), model: model.trim(), insightsEnabled, notificationsEnabled, actionsEnabled: insightsEnabled && actionsEnabled }),
       });
       const result = await response.json();
@@ -5990,7 +6138,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
     if (!token) return;
     setBusy(true);
     try {
-      const response = await fetch("/api/personal-ai/connection", { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+      const response = await fetch("/api/personal-ai/connection", { method: "DELETE", headers: { Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspaceId } });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Não foi possível remover a conexão.");
       setConnected(false); setConnectionValidated(false); setSavedProvider(null); setSavedModel(""); setValidatedAt(null); setApiKey(""); setTestStatus(null); setUsage(null);

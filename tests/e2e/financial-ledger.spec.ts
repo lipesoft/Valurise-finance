@@ -2,6 +2,8 @@ import { test, expect } from "./fixtures";
 import type { Page, Route } from "@playwright/test";
 
 const supabaseOrigin = "http://127.0.0.1:54321";
+const appOrigin = process.env.E2E_APP_ORIGIN || "http://127.0.0.1:3000";
+const personalWorkspaceId = "00000000-0000-4000-8000-000000000234";
 const user = {
   id: "00000000-0000-4000-8000-000000000124",
   aud: "authenticated",
@@ -38,7 +40,7 @@ async function fulfillCors(route: Route, status: number, body?: unknown) {
     status,
     contentType: "application/json",
     headers: {
-      "access-control-allow-origin": "http://127.0.0.1:3000",
+      "access-control-allow-origin": appOrigin,
       "access-control-allow-credentials": "true",
       "access-control-allow-headers": "*",
       "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
@@ -131,6 +133,15 @@ async function loginWithFinancialSeed(page: Page, initialInvites: Record<string,
     return fulfillCors(route, 200, []);
   });
 
+  await page.route("**/api/workspaces", (route) => route.fulfill({ status: 200, json: {
+    activeWorkspaceId: personalWorkspaceId,
+    workspaces: [{ id: personalWorkspaceId, type: "personal", displayName: "Pessoa de teste", role: "owner" }],
+  } }));
+  await page.route("**/api/workspaces/active", async (route) => {
+    const body = route.request().postDataJSON() as { workspaceId?: string };
+    return route.fulfill({ status: 200, json: { ok: true, activeWorkspaceId: body.workspaceId } });
+  });
+
   const session = {
     access_token: "e2e-access-token-not-valid-outside-this-test",
     refresh_token: "e2e-refresh-token-not-valid-outside-this-test",
@@ -139,14 +150,18 @@ async function loginWithFinancialSeed(page: Page, initialInvites: Record<string,
     expires_at: Math.floor(Date.now() / 1000) + 3600,
     user,
   };
-  await page.addInitScript(({ storedSession }) => {
+  await page.addInitScript(({ storedSession, workspaceId, financialState }) => {
     const bytes = new TextEncoder().encode(JSON.stringify(storedSession));
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
     const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
     document.cookie = `sb-127-auth-token=base64-${encoded}; Path=/; SameSite=Lax`;
+    const workspaceKey = `valurise:v2:${storedSession.user.id}:workspace:${workspaceId}`;
+    localStorage.setItem(`${workspaceKey}:data`, JSON.stringify(financialState.data));
+    localStorage.setItem(`${workspaceKey}:tx`, JSON.stringify(financialState.transactions));
+    localStorage.setItem(`${workspaceKey}:profile`, JSON.stringify(financialState.profile));
     localStorage.setItem("valurise:cookie-consent", JSON.stringify({ preference: "essential_only", version: "2026-09-23-v1" }));
-  }, { storedSession: session });
+  }, { storedSession: session, workspaceId: personalWorkspaceId, financialState: initialState() });
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Pessoa de teste/ })).toBeVisible({ timeout: 20_000 });

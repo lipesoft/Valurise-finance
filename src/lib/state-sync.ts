@@ -6,12 +6,15 @@ export type ValuriseStateDocument<TData, TTransaction, TProfile> = {
   profile: TProfile;
 };
 
+export type FinancialWorkspaceRef = { id: string; type: "personal" | "business" };
+
 /**
  * A small, versioned sync envelope used while the UI is progressively moved
- * from local persistence to normalized Supabase tables. RLS always keys it by
- * the authenticated user's UUID; no user id supplied by the browser is trusted.
+ * from local persistence to normalized Supabase tables. RLS always scopes it
+ * to the server-selected workspace and active membership; no owner id supplied
+ * by the browser is used to decide which financial state may be read or written.
  */
-export async function loadValuriseState<TData, TTransaction, TProfile>() {
+export async function loadValuriseState<TData, TTransaction, TProfile>(workspaceId: string) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) return null;
   const { data: auth, error: authError } = await supabase.auth.getUser();
@@ -20,7 +23,7 @@ export async function loadValuriseState<TData, TTransaction, TProfile>() {
   const { data, error } = await supabase
     .from("user_financial_state")
     .select("state, version")
-    .eq("user_id", auth.user.id)
+    .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (error) throw new Error("Não foi possível ler os dados financeiros sincronizados.");
   if (!data?.state) return null;
@@ -32,6 +35,7 @@ export async function loadValuriseState<TData, TTransaction, TProfile>() {
 
 export async function saveValuriseState<TData, TTransaction, TProfile>(
   state: ValuriseStateDocument<TData, TTransaction, TProfile>,
+  workspace: FinancialWorkspaceRef,
   expectedVersion: number | null = null,
 ) {
   const supabase = getSupabaseBrowserClient();
@@ -40,7 +44,7 @@ export async function saveValuriseState<TData, TTransaction, TProfile>(
   if (authError || !auth.user) return { synced: false, reason: "not-signed-in" as const };
   if (expectedVersion === null) {
     const { error } = await supabase.from("user_financial_state")
-      .insert({ user_id: auth.user.id, state, version: 1 });
+      .insert({ workspace_id: workspace.id, user_id: workspace.type === "personal" ? auth.user.id : null, state, version: 1 });
     if (error?.code === "23505") return { synced: false, reason: "conflict" as const };
     return error
       ? { synced: false, reason: "write-failed" as const }
@@ -49,7 +53,7 @@ export async function saveValuriseState<TData, TTransaction, TProfile>(
 
   const { data, error } = await supabase.from("user_financial_state")
     .update({ state, version: expectedVersion + 1 })
-    .eq("user_id", auth.user.id)
+    .eq("workspace_id", workspace.id)
     .eq("version", expectedVersion)
     .select("version")
     .maybeSingle();

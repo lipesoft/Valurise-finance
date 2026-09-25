@@ -4,13 +4,14 @@ import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import type { AIProvider, AIProviderError } from "@/lib/personal-ai/providers";
 
 export async function recordPersonalAIUsage(args: {
-  userId: string; provider: AIProvider; model: string; inputTokens?: number; outputTokens?: number;
+  userId: string; workspaceId: string; provider: AIProvider; model: string; inputTokens?: number; outputTokens?: number;
   latencyMs: number; kind: "chat" | "connection_test"; error?: AIProviderError;
 }) {
   try {
     const admin = getSupabaseAdminClient();
     const { error } = await admin.from("personal_ai_usage_events").insert({
       user_id: args.userId,
+      workspace_id: args.workspaceId,
       provider: args.provider,
       model: args.model,
       input_tokens: args.inputTokens ?? null,

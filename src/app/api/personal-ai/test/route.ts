@@ -6,7 +6,8 @@ import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { AIProviderError, classifyAIError, createProviderModel, logAIError } from "@/lib/personal-ai/providers";
 import { AI_MODEL_ID_PATTERN, AI_PROVIDERS } from "@/lib/personal-ai/provider-config";
 import { isGemini25FlashModel, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
-import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
+import { getSupabaseAdminClient } from "@/lib/supabase/admin";
+import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
 import { recordPersonalAIUsage } from "@/lib/personal-ai/usage";
 
 export const maxDuration = 15;
@@ -18,8 +19,10 @@ const schema = z.object({
 }).strict();
 
 export async function POST(request: NextRequest) {
-  const user = await getVerifiedActiveUser(request.headers.get("authorization"));
-  if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+  const active = await getVerifiedWorkspaceContext(request.headers.get("authorization"), request.headers.get("x-valurise-workspace-id"));
+  if (!active.ok) return NextResponse.json({ error: active.error }, { status: active.status });
+  const { user, workspace } = active;
+  if (workspace.role !== "owner" && workspace.role !== "admin") return NextResponse.json({ error: "Somente quem administra este workspace pode testar a conexão da Val." }, { status: 403 });
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Provedor, modelo ou chave inválidos." }, { status: 400 });
   const { provider, model } = parsed.data;
@@ -36,7 +39,7 @@ export async function POST(request: NextRequest) {
   if (allowed !== true) return NextResponse.json({ error: "Limite de testes desta hora atingido no Valurise. Tente novamente mais tarde.", category: "APP_RATE_LIMITED", retryable: true, model }, { status: 429, headers: { "Retry-After": "3600" } });
 
   const { data: saved, error: savedError } = await admin.from("personal_ai_connections")
-    .select("provider, model, encrypted_api_key, updated_at").eq("user_id", user.id).maybeSingle();
+    .select("provider, model, encrypted_api_key, updated_at").eq("workspace_id", workspace.id).maybeSingle();
   if (savedError) return NextResponse.json({ error: "Não foi possível consultar a conexão salva." }, { status: 500 });
   let apiKey = parsed.data.apiKey;
   if (!apiKey && saved?.provider === provider) {
@@ -102,14 +105,14 @@ export async function POST(request: NextRequest) {
       toolCallingValidated = true;
     }
     const latencyMs = Date.now() - startedAt;
-    await recordPersonalAIUsage({ userId: user.id, provider, model, inputTokens, outputTokens, latencyMs, kind: "connection_test" });
+    await recordPersonalAIUsage({ userId: user.id, workspaceId: workspace.id, provider, model, inputTokens, outputTokens, latencyMs, kind: "connection_test" });
     let validatedAt: string | null = null;
     if (matchesSavedConnection && saved) {
       const testedAt = new Date().toISOString();
       const { data: updated, error: validationError } = await admin.from("personal_ai_connections")
         .update({ validated_at: testedAt, validated_model: model })
-        .eq("user_id", user.id).eq("provider", provider).eq("model", model).eq("updated_at", saved.updated_at)
-        .select("user_id").maybeSingle();
+        .eq("workspace_id", workspace.id).eq("provider", provider).eq("model", model).eq("updated_at", saved.updated_at)
+        .select("workspace_id").maybeSingle();
       if (validationError) {
         console.error("Val AI connection validation persistence failed", JSON.stringify({ provider, code: validationError.code || "UNKNOWN" }));
         return NextResponse.json({ error: "O provedor respondeu, mas não foi possível registrar a validação. Tente o teste novamente." }, { status: 503 });
@@ -121,7 +124,7 @@ export async function POST(request: NextRequest) {
     const failure = classifyAIError(error, provider, model);
     const latencyMs = Date.now() - startedAt;
     logAIError(failure, latencyMs);
-    await recordPersonalAIUsage({ userId: user.id, provider, model, inputTokens, outputTokens, latencyMs, kind: "connection_test", error: failure });
+    await recordPersonalAIUsage({ userId: user.id, workspaceId: workspace.id, provider, model, inputTokens, outputTokens, latencyMs, kind: "connection_test", error: failure });
     return NextResponse.json({ error: failure.message, category: failure.category, providerMessage: failure.providerMessage, providerCode: failure.providerCode, providerHttpStatus: failure.httpStatus, requestId: failure.requestId, retryable: failure.retryable, model }, { status: failure.httpStatus === 429 ? 429 : 502 });
   }
 }

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
+import { getSupabaseAdminClient } from "@/lib/supabase/admin";
+import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
+import { legalVersions } from "@/lib/legal-content";
 
 const decisionSchema = z.object({
   proposalId: z.string().uuid(),
@@ -8,21 +10,22 @@ const decisionSchema = z.object({
 }).strict();
 
 export async function GET(request: NextRequest) {
-  const user = await getVerifiedActiveUser(request.headers.get("authorization"));
-  if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+  const active = await getVerifiedWorkspaceContext(request.headers.get("authorization"), request.headers.get("x-valurise-workspace-id"));
+  if (!active.ok) return NextResponse.json({ error: active.error }, { status: active.status });
+  const { user, workspace } = active;
 
   const admin = getSupabaseAdminClient();
   const [{ data: connection, error: connectionError }, { data: proposals, error: proposalError }] = await Promise.all([
-    admin.from("personal_ai_connections").select("actions_enabled").eq("user_id", user.id).maybeSingle(),
+    admin.from("personal_ai_connections").select("actions_enabled").eq("workspace_id", workspace.id).maybeSingle(),
     admin.from("personal_ai_action_proposals")
       .select("id, action_type, amount_cents, category, account_label, description, transaction_date, created_at, expires_at")
-      .eq("user_id", user.id).eq("status", "pending").gt("expires_at", new Date().toISOString())
+      .eq("workspace_id", workspace.id).eq("user_id", user.id).eq("status", "pending").gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false }).limit(5),
   ]);
   if (connectionError || proposalError) return NextResponse.json({ error: "Não foi possível carregar as propostas da Val." }, { status: 503 });
   if (!connection?.actions_enabled) {
     await admin.from("personal_ai_action_proposals").update({ status: "cancelled", acted_at: new Date().toISOString() })
-      .eq("user_id", user.id).eq("status", "pending");
+      .eq("workspace_id", workspace.id).eq("user_id", user.id).eq("status", "pending");
     return NextResponse.json({ proposals: [] });
   }
   return NextResponse.json({ proposals: (proposals || []).map((proposal) => ({
@@ -33,8 +36,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const authorization = request.headers.get("authorization");
-  const user = await getVerifiedActiveUser(authorization);
-  if (!user) return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+  const active = await getVerifiedWorkspaceContext(authorization, request.headers.get("x-valurise-workspace-id"));
+  if (!active.ok) return NextResponse.json({ error: active.error }, { status: active.status });
+  const { user, workspace } = active;
   if (Number(request.headers.get("content-length") || 0) > 1024) return NextResponse.json({ error: "A confirmação excede o tamanho permitido." }, { status: 413 });
   const rawBody = await request.text().catch(() => "");
   if (rawBody.length > 1024) return NextResponse.json({ error: "A confirmação excede o tamanho permitido." }, { status: 413 });
@@ -47,7 +51,7 @@ export async function POST(request: NextRequest) {
   if (parsed.data.decision === "reject") {
     const { data, error } = await admin.from("personal_ai_action_proposals")
       .update({ status: "rejected", acted_at: new Date().toISOString() })
-      .eq("id", parsed.data.proposalId).eq("user_id", user.id).eq("status", "pending")
+      .eq("id", parsed.data.proposalId).eq("user_id", user.id).eq("workspace_id", workspace.id).eq("status", "pending")
       .select("id").maybeSingle();
     if (error) return NextResponse.json({ error: "Não foi possível descartar a proposta." }, { status: 503 });
     if (!data) return NextResponse.json({ error: "A proposta expirou ou já foi respondida." }, { status: 409 });
@@ -55,9 +59,11 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { data, error } = await admin.rpc("confirm_personal_ai_transaction", {
+    const { data, error } = await admin.rpc("confirm_workspace_ai_transaction", {
       p_proposal_id: parsed.data.proposalId,
       p_user_id: user.id,
+      p_workspace_id: workspace.id,
+      p_expected_consent_version: legalVersions.aiSharing,
     });
     if (error) return NextResponse.json({ error: "Não foi possível confirmar a proposta. Atualize os dados e tente novamente." }, { status: 503 });
     const result = data as { ok?: boolean; reason?: string; version?: number; transaction?: unknown } | null;
