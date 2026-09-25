@@ -9,6 +9,8 @@
   background: #12131a;
   color: #f4f5f6;
   isolation: isolate;
+  opacity: 1;
+  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .splash::before {
@@ -18,6 +20,7 @@
   background: radial-gradient(ellipse at 50% 46%, rgb(25 76 62 / 12%), transparent 46%);
   content: "";
   pointer-events: none;
+  transition: opacity 180ms ease-out;
 }
 
 .revealing {
@@ -28,35 +31,48 @@
   opacity: 0;
 }
 
+.exiting {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .brandContent {
+  position: relative;
+  z-index: 2;
   display: flex;
   width: min(100%, 19rem);
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  will-change: opacity;
+  transform: translateZ(0);
+  transition:
+    opacity 210ms ease-out,
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.brandLeaving {
+  opacity: 0;
+  transform: scale(0.97);
+  pointer-events: none;
 }
 
 .mark {
   position: relative;
   width: clamp(4.75rem, 20vw, 7rem);
   aspect-ratio: 1;
-  will-change: transform;
+  transform: scale(1);
 }
 
-.completeMark,
-.fragment {
+.waiting {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+.fragment,
+.completeMark {
   position: absolute;
   inset: 0;
-}
-
-.completeMark {
-  will-change: opacity;
-}
-
-.logoImage {
-  object-fit: contain;
 }
 
 .fragment {
@@ -64,15 +80,61 @@
   background-position: center;
   background-repeat: no-repeat;
   background-size: contain;
+  backface-visibility: hidden;
+  opacity: 0;
   will-change: transform, opacity;
 }
 
 .fragmentLeft {
   clip-path: polygon(4% 19%, 25% 19%, 53% 55%, 41% 77%, 4% 19%);
+  animation: assemble-left 540ms cubic-bezier(0.22, 1, 0.36, 1) 40ms both;
 }
 
 .fragmentRight {
   clip-path: polygon(52% 55%, 75% 21%, 98% 1%, 64% 77%, 52% 55%);
+  animation: assemble-right 560ms cubic-bezier(0.22, 1, 0.36, 1) 110ms both;
+}
+
+.completeMark {
+  opacity: 0;
+  transform: scale(0.965);
+  pointer-events: none;
+}
+
+.formed .completeMark {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.enteringMark {
+  animation: mark-forms 420ms cubic-bezier(0.22, 1, 0.36, 1) 280ms both;
+}
+
+.logoImage {
+  object-fit: contain;
+}
+
+.markHighlight {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background: linear-gradient(108deg, transparent 42%, rgb(255 255 255 / 52%) 50%, transparent 58%);
+  background-size: 240% 100%;
+  background-position: 0 0;
+  -webkit-mask-image: url("/valurise-icon.webp");
+  mask-image: url("/valurise-icon.webp");
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.formed .markHighlight {
+  animation: highlight-pass 620ms ease-out 30ms both;
 }
 
 .wordmark {
@@ -83,6 +145,9 @@
   font-weight: 500;
   letter-spacing: 0.27em;
   line-height: 1.4;
+  opacity: 0;
+  transform: translateY(4px);
+  animation: wordmark-arrives 340ms cubic-bezier(0.22, 1, 0.36, 1) 420ms both;
 }
 
 .status {
@@ -101,17 +166,107 @@
   display: block;
   width: 100%;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
+  transform: scale(1);
+  transform-origin: 50% 50%;
+  transition: transform 760ms cubic-bezier(0.2, 0.8, 0.2, 1);
   pointer-events: none;
-  will-change: opacity;
+}
+
+.revealing .revealCurtain {
+  transform: scale(var(--reveal-scale));
+  will-change: transform;
+}
+
+@keyframes assemble-left {
+  from {
+    opacity: 0;
+    transform: translate3d(-7px, 3px, 0) scale(0.985);
+  }
+
+  to {
+    opacity: 0.9;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes assemble-right {
+  from {
+    opacity: 0;
+    transform: translate3d(7px, -3px, 0) scale(0.985);
+  }
+
+  to {
+    opacity: 0.9;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes mark-forms {
+  from {
+    opacity: 0;
+    transform: scale(0.965);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes highlight-pass {
+  0% {
+    opacity: 0;
+    background-position: 0 0;
+  }
+
+  35% {
+    opacity: 0.42;
+  }
+
+  100% {
+    opacity: 0;
+    background-position: 100% 0;
+  }
+}
+
+@keyframes wordmark-arrives {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.012);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .splash::before {
-    background: none;
+  .splash,
+  .splash::before,
+  .brandContent,
+  .revealCurtain {
+    transition-duration: 100ms;
   }
 
-  .fragment {
+  .fragment,
+  .markHighlight,
+  .waiting {
     display: none;
+    animation: none;
+  }
+
+  .completeMark,
+  .wordmark {
+    opacity: 1;
+    transform: none;
+    animation: none;
   }
 }

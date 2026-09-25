@@ -116,7 +116,11 @@ test("splash acompanha a sincronização real e revela a interface pelo símbolo
   }
 
   const revealMask = page.getByTestId("splash-reveal-mask");
-  await expect(revealMask).toBeAttached({ timeout: 8_000 });
+  await expect(revealMask).toHaveAttribute("data-intro-complete", "true", { timeout: 2_000 });
+  await expect.poll(() => page.getByTestId("splash-mark").locator("div").first().evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
+  await expect(revealMask).toHaveAttribute("data-state", "revealing", { timeout: 10_000 });
+  await expect(revealMask).toHaveCSS("transition-property", "transform");
+  await expect(revealMask).toHaveCSS("will-change", "transform");
   await expect(revealMask.locator("mask")).toHaveCount(1);
   await expect(revealMask.locator("image")).toHaveAttribute("href", "/valurise-icon.webp");
   await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 8_000 });
