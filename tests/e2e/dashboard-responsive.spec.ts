@@ -251,6 +251,112 @@ test("configura a Val com modelos Gemini confirmados, diagnóstico de erro e tes
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test("configura Groq e OpenRouter com catálogos mockados, modelo gratuito priorizado e chaves fora do navegador", async ({ page }) => {
+  await installMockSession(page);
+  let savedConnection: Record<string, unknown> | null = null;
+  const catalogProviders: string[] = [];
+  const testedConfigs: Array<{ provider: string; model: string; includedApiKey: boolean }> = [];
+
+  await page.route("**/api/personal-ai/connection", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { connection: null } });
+    savedConnection = route.request().postDataJSON() as Record<string, unknown>;
+    return route.fulfill({ status: 200, json: { ok: true, validated: false, validatedAt: null } });
+  });
+  await page.route("**/api/personal-ai/models", async (route) => {
+    const body = route.request().postDataJSON() as { provider: string };
+    catalogProviders.push(body.provider);
+    const models = body.provider === "groq"
+      ? [
+        { id: "openai/gpt-oss-20b", label: "openai/gpt-oss-20b", tier: "recommended", provider: "groq" },
+        { id: "qwen/qwen3-32b", label: "qwen/qwen3-32b", tier: "other", provider: "groq" },
+      ]
+      : [
+        { id: "openrouter/free", label: "OpenRouter Free · Recomendado", tier: "recommended", free: true, provider: "openrouter" },
+        { id: "qwen/model:free", label: "Qwen Free", tier: "economical", free: true, provider: "openrouter" },
+        { id: "paid/provider-model", label: "Paid provider model", tier: "other", free: false, provider: "openrouter" },
+      ];
+    return route.fulfill({ status: 200, json: { provider: body.provider, models } });
+  });
+  await page.route("**/api/personal-ai/test", async (route) => {
+    const body = route.request().postDataJSON() as { provider: string; model: string; apiKey?: string };
+    testedConfigs.push({ provider: body.provider, model: body.model, includedApiKey: Object.hasOwn(body, "apiKey") });
+    const matchesSaved = Boolean(savedConnection
+      && savedConnection.provider === body.provider
+      && savedConnection.model === body.model
+      && !Object.hasOwn(body, "apiKey"));
+    return route.fulfill({ status: 200, json: {
+      ok: true,
+      provider: body.provider,
+      model: body.model,
+      latencyMs: 120,
+      validated: matchesSaved,
+      validatedAt: matchesSaved ? "2026-09-25T12:00:00.000Z" : null,
+      toolCallingValidated: body.provider === "groq" || body.provider === "openrouter",
+      usage: { inputTokens: null, outputTokens: null },
+    } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByText("Val · assistente financeira")).toBeVisible();
+  const providerSelect = page.getByLabel("Provedor");
+  await expect(providerSelect.locator("option")).toHaveText(["OpenAI", "Gemini", "DeepSeek", "Groq", "OpenRouter"]);
+  const apiKeyInput = page.getByLabel("API key");
+
+  for (const width of [375, 390, 430, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+
+  await providerSelect.selectOption("groq");
+  await apiKeyInput.fill("e2e-groq-fake-key-never-valid-0001");
+  await page.getByRole("button", { name: "Atualizar modelos disponíveis" }).click();
+  const modelSelect = page.getByLabel("Modelos disponíveis para esta chave");
+  await expect(modelSelect.locator("option").first()).toHaveValue("openai/gpt-oss-20b");
+  await expect(modelSelect).toHaveValue("openai/gpt-oss-20b");
+  await modelSelect.selectOption("qwen/qwen3-32b");
+  await page.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "ainda não está salvo" })).toContainText("qwen/qwen3-32b");
+  await page.getByRole("button", { name: "Conectar Val" }).click();
+  await expect.poll(() => savedConnection).toMatchObject({ provider: "groq", model: "qwen/qwen3-32b" });
+  await expect(apiKeyInput).toHaveValue("");
+  await page.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Conexão validada com qwen/qwen3-32b" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Conexão validada com qwen/qwen3-32b" })).toContainText("ferramentas da Val confirmadas");
+
+  await providerSelect.selectOption("openrouter");
+  await apiKeyInput.fill("e2e-openrouter-fake-key-never-valid-0002");
+  await page.getByRole("button", { name: "Atualizar modelos disponíveis" }).click();
+  const openRouterModelSelect = page.getByLabel("Modelos disponíveis para esta chave");
+  await expect(openRouterModelSelect.locator("option").first()).toHaveValue("openrouter/free");
+  await expect(openRouterModelSelect.locator("option").nth(0)).toContainText("OpenRouter Free · Recomendado");
+  await expect(openRouterModelSelect.locator("option").nth(1)).toContainText("Gratuito");
+  await expect(openRouterModelSelect.locator("option").nth(2)).toContainText("Paid provider model");
+  await openRouterModelSelect.selectOption("qwen/model:free");
+  await page.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "ainda não está salvo" })).toContainText("qwen/model:free");
+  await page.getByRole("button", { name: "Salvar configuração" }).click();
+  await expect.poll(() => savedConnection).toMatchObject({ provider: "openrouter", model: "qwen/model:free" });
+  await expect(apiKeyInput).toHaveValue("");
+  await page.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Conexão validada com qwen/model:free" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Conexão validada com qwen/model:free" })).toContainText("ferramentas da Val confirmadas");
+
+  expect(catalogProviders).toEqual(["groq", "openrouter"]);
+  expect(testedConfigs).toEqual([
+    { provider: "groq", model: "qwen/qwen3-32b", includedApiKey: true },
+    { provider: "groq", model: "qwen/qwen3-32b", includedApiKey: false },
+    { provider: "openrouter", model: "qwen/model:free", includedApiKey: true },
+    { provider: "openrouter", model: "qwen/model:free", includedApiKey: false },
+  ]);
+  const browserStorage = await page.evaluate(() => JSON.stringify(localStorage));
+  const visiblePageText = await page.locator("body").innerText();
+  expect(browserStorage).not.toContain("e2e-groq-fake-key-never-valid-0001");
+  expect(browserStorage).not.toContain("e2e-openrouter-fake-key-never-valid-0002");
+  expect(visiblePageText).not.toContain("e2e-groq-fake-key-never-valid-0001");
+  expect(visiblePageText).not.toContain("e2e-openrouter-fake-key-never-valid-0002");
+});
+
 test("chat mostra o diagnóstico devolvido pelo provedor Gemini", async ({ page }) => {
   await installMockSession(page);
   await page.route("**/api/personal-ai/connection", (route) => route.fulfill({ status: 200, json: {
@@ -385,11 +491,21 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
       }
 
       if (view === "Ajustes") {
-        const checkboxSizes = await page.locator('input[type="checkbox"]').evaluateAll((elements) => elements.map((element) => {
-          const { offsetWidth: checkboxWidth, offsetHeight: height } = element as HTMLInputElement;
-          return { width: checkboxWidth, height };
+        const checkboxes = page.getByRole("checkbox");
+        await expect(checkboxes).toHaveCount(3);
+        const checkboxSizes = await checkboxes.evaluateAll((elements) => elements.map((element) => {
+          const indicator = element.closest("label")?.querySelector('[aria-hidden="true"]') as HTMLElement | null;
+          const { width, height } = indicator?.getBoundingClientRect() || { width: 0, height: 0 };
+          return { width, height, hiddenInput: (element as HTMLInputElement).classList.contains("sr-only") };
         }));
-        expect(checkboxSizes.every((checkbox) => checkbox.width === 18 && checkbox.height === 18)).toBe(true);
+        expect(checkboxSizes.length).toBeGreaterThanOrEqual(3);
+        expect(checkboxSizes.every((checkbox) => checkbox.width === 32 && checkbox.height === 32 && checkbox.hiddenInput)).toBe(true);
+      }
+
+      if (view === "Planejamento") {
+        await expect(page.getByText("Calendário financeiro", { exact: true })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Mês anterior" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Próximo mês" })).toBeVisible();
       }
     }
 
@@ -436,24 +552,50 @@ test("planejamento cria, edita e exclui uma conta recorrente", async ({ page }) 
   await installMockSession(page);
   await page.goto("/");
   await page.getByRole("button", { name: "Planejamento" }).click();
-  await page.getByRole("button", { name: "Adicionar conta recorrente" }).click();
+  await page.getByRole("button", { name: "Adicionar compromisso" }).click();
 
   await page.getByPlaceholder("Ex.: Internet, aluguel, Netflix").fill("Internet QA");
-  await page.getByPlaceholder("Valor mensal").fill("89,90");
+  await page.getByPlaceholder("Valor previsto").fill("89,90");
   await page.getByPlaceholder("Dia de vencimento").fill("28");
   await page.getByPlaceholder("Categoria (opcional)").fill("Moradia");
-  await page.getByRole("button", { name: "Criar conta recorrente" }).click();
+  await page.getByLabel("Repetição").selectOption("monthly");
+  await page.getByRole("button", { name: "Adicionar ao planejamento" }).click();
   await expect(page.getByText("Internet QA", { exact: false }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: new RegExp(`28 de .*1 vencimento`) }).click();
+  await page.getByRole("button", { name: "Marcar paga" }).click();
 
   await page.getByRole("button", { name: "Editar a conta recorrente Internet QA" }).click();
   await page.getByPlaceholder("Ex.: Internet, aluguel, Netflix").fill("Internet QA editada");
-  await page.getByPlaceholder("Valor mensal").fill("99,90");
+  await page.getByPlaceholder("Valor previsto").fill("99,90");
   await page.getByRole("button", { name: "Salvar alterações" }).click();
   await expect(page.getByRole("button", { name: "Excluir a conta recorrente Internet QA editada" })).toBeVisible();
 
+  await page.getByRole("button", { name: "Próximo mês" }).click();
+  await page.getByRole("button", { name: new RegExp(`28 de .*1 vencimento`) }).click();
+  await expect(page.getByRole("button", { name: "Marcar paga" })).toBeVisible();
+  await page.getByRole("button", { name: "Marcar paga" }).click();
+  await page.getByRole("button", { name: "Mês anterior" }).click();
+  await page.getByRole("button", { name: new RegExp(`28 de .*1 vencimento`) }).click();
+  await expect(page.getByRole("button", { name: "Desfazer" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Próximo mês" }).click();
+  await page.getByRole("button", { name: "Adicionar compromisso" }).click();
+  await page.getByPlaceholder("Ex.: Internet, aluguel, Netflix").fill("Seguro QA avulso");
+  await page.getByPlaceholder("Valor previsto").fill("50,00");
+  await page.getByPlaceholder("Dia de vencimento").fill("15");
+  await page.getByLabel("Repetição").selectOption("once");
+  await page.getByRole("button", { name: "Adicionar ao planejamento" }).click();
+  await expect(page.getByText("Seguro QA avulso", { exact: false }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Próximo mês" }).click();
+  await expect(page.getByText("Seguro QA avulso", { exact: false })).toHaveCount(0);
+  await page.getByRole("button", { name: "Mês anterior" }).click();
+
   await page.getByRole("button", { name: "Excluir a conta recorrente Internet QA editada" }).click();
   await page.getByRole("button", { name: "Excluir", exact: true }).click();
-  await expect(page.getByText("Nenhuma conta recorrente.")).toBeVisible();
+  await expect(page.getByText("Internet QA editada", { exact: false })).toHaveCount(0);
+  await page.getByRole("button", { name: "Excluir a conta recorrente Seguro QA avulso" }).click();
+  await page.getByRole("button", { name: "Excluir", exact: true }).click();
 
   const savedData = await page.evaluate((storageKey) => JSON.parse(localStorage.getItem(storageKey) || "{}"), `valurise:v2:${testUserId}:data`);
   expect(savedData.recurringBills).toEqual([]);

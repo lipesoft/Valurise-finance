@@ -52,6 +52,12 @@ import {
   splitInstallmentCents,
   type FinanceTransaction,
 } from "@/lib/finance";
+import {
+  isRecurringBillPaidInMonth,
+  isRecurringBillScheduledInMonth,
+  recurringBillDueDay,
+  setRecurringBillPaidInMonth,
+} from "@/lib/recurring-bills";
 import { bestPurchaseDay } from "@/lib/cards";
 import {
   AnimatedCard,
@@ -68,7 +74,8 @@ import { loadValuriseState, saveValuriseState } from "@/lib/state-sync";
 import { useSharedGoalInvites, type SharedGoalInvite, type SharedGoalSummary } from "@/hooks/use-shared-goal-invites";
 import { normalizeUsername } from "@/lib/auth/username";
 import { createValuriseBackup, parseValuriseBackup } from "@/lib/backup";
-import { GEMINI_SUPPORTED_MODELS, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
+import { GEMINI_SUPPORTED_MODELS, getInitialAIModelOptions, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
+import { AI_PROVIDER_METADATA, AI_PROVIDERS, type AIModelOption, type AIProvider } from "@/lib/personal-ai/provider-config";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -141,9 +148,11 @@ type Data = {
     dueDay: number;
     category?: string;
     account?: string;
-    frequency: "monthly" | "yearly";
+    frequency: "once" | "monthly" | "yearly";
     active: boolean;
+    startMonth?: string;
     paidMonth?: string;
+    paidMonths?: string[];
   }[];
   activity?: { id: string; text: string; date: string }[];
   monthlyReview?: Record<string, string[]>;
@@ -1018,20 +1027,21 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
   const items: AppNotification[] = [];
 
   (data.recurringBills || []).forEach((bill) => {
-    if (!bill.active || bill.paidMonth === month) return;
-    if (bill.dueDay < day) {
+    if (!isRecurringBillScheduledInMonth(bill, month) || isRecurringBillPaidInMonth(bill, month)) return;
+    const dueDay = recurringBillDueDay(bill, month);
+    if (dueDay < day) {
       items.push({
         id: `late-${bill.id}-${month}`,
         title: `${bill.name} está atrasada`,
-        text: `Venceu no dia ${bill.dueDay}. Marque como paga ou confira o lançamento.`,
+        text: `Venceu no dia ${dueDay}. Marque como paga ou confira o lançamento.`,
         tone: "danger",
         view: "planning",
       });
-    } else if (bill.dueDay - day <= 3) {
+    } else if (dueDay - day <= 3) {
       items.push({
         id: `due-${bill.id}-${month}`,
-        title: `${bill.name} vence em ${bill.dueDay - day} dia(s)`,
-        text: `${formatBRL(bill.amountCents)} · vencimento dia ${bill.dueDay}.`,
+        title: `${bill.name} vence em ${dueDay - day} dia(s)`,
+        text: `${formatBRL(bill.amountCents)} · vencimento dia ${dueDay}.`,
         tone: "warning",
         view: "planning",
       });
@@ -2070,15 +2080,14 @@ function CalendarDashboardPreview({ data, go }: any) {
   const today = new Date();
   const key = format(today, "yyyy-MM");
   const bills = (data.recurringBills || []).filter((bill: any) => bill.active);
-  const upcoming = [...bills]
-    .filter(
-      (bill: any) => bill.paidMonth !== key && bill.dueDay >= today.getDate(),
-    )
-    .sort((a: any, b: any) => a.dueDay - b.dueDay)
-    .slice(0, 3);
-  const late = bills.filter(
-    (bill: any) => bill.paidMonth !== key && bill.dueDay < today.getDate(),
-  ).length;
+  const nextSevenDays = Array.from({ length: 7 }, (_, offset) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset));
+  const upcoming = nextSevenDays.flatMap((day) => {
+    const monthKey = format(day, "yyyy-MM");
+    return bills
+      .filter((bill: any) => isRecurringBillScheduledInMonth(bill, monthKey) && !isRecurringBillPaidInMonth(bill, monthKey) && recurringBillDueDay(bill, monthKey) === day.getDate())
+      .map((bill: any) => ({ bill, day }));
+  }).slice(0, 3);
+  const late = bills.filter((bill: any) => isRecurringBillScheduledInMonth(bill, key) && !isRecurringBillPaidInMonth(bill, key) && recurringBillDueDay(bill, key) < today.getDate()).length;
   return (
     <section className="panel rounded-2xl p-5">
       <div className="flex items-center justify-between">
@@ -2103,18 +2112,13 @@ function CalendarDashboardPreview({ data, go }: any) {
         </button>
       </div>
       <div className="mt-4 grid grid-cols-7 gap-1">
-        {Array.from(
-          { length: 7 },
-          (_, offset) =>
-            new Date(
-              today.getFullYear(),
-              today.getMonth(),
-              today.getDate() + offset,
-            ),
-        ).map((day) => {
+        {nextSevenDays.map((day) => {
+          const dayMonth = format(day, "yyyy-MM");
           const dayBills = bills.filter(
             (bill: any) =>
-              bill.dueDay === day.getDate() && bill.paidMonth !== key,
+              isRecurringBillScheduledInMonth(bill, dayMonth) &&
+              !isRecurringBillPaidInMonth(bill, dayMonth) &&
+              recurringBillDueDay(bill, dayMonth) === day.getDate(),
           );
           const active = day.toDateString() === today.toDateString();
           return (
@@ -2139,14 +2143,14 @@ function CalendarDashboardPreview({ data, go }: any) {
       </div>
       {upcoming.length ? (
         <div className="mt-4 space-y-2">
-          {upcoming.slice(0, 2).map((bill: any) => (
+          {upcoming.slice(0, 2).map(({ bill, day }: any) => (
             <div
-              key={bill.id}
+              key={`${bill.id}-${day.toISOString()}`}
               className="flex items-center justify-between text-xs"
             >
               <span className="truncate">
                 <b>{bill.name}</b>
-                <small className="muted"> · dia {bill.dueDay}</small>
+                <small className="muted"> · {format(day, "dd/MM")}</small>
               </span>
               <b>{formatBRL(bill.amountCents)}</b>
             </div>
@@ -2344,17 +2348,13 @@ function ImprovementsPanel({ data, tx, sum }: any) {
         `${goal.name}: reserve ${formatBRL(monthlyContributionNeeded(goal.targetCents, goal.currentCents, goal.targetDate))}/mês para chegar ao prazo.`,
       );
   });
+  const todayMonth = format(today, "yyyy-MM");
   (data.recurringBills || [])
-    .filter(
-      (bill: any) =>
-        bill.active &&
-        bill.dueDay >= today.getDate() &&
-        bill.dueDay - today.getDate() <= 3,
-    )
-    .forEach((bill: any) =>
-      insights.push(
-        `${bill.name} vence em ${bill.dueDay - today.getDate()} dia(s).`,
-      ),
+    .filter((bill: any) => isRecurringBillScheduledInMonth(bill, todayMonth) && !isRecurringBillPaidInMonth(bill, todayMonth))
+    .map((bill: any) => ({ bill, dueDay: recurringBillDueDay(bill, todayMonth) }))
+    .filter(({ dueDay }: { dueDay: number }) => dueDay >= today.getDate() && dueDay - today.getDate() <= 3)
+    .forEach(({ bill, dueDay }: { bill: any; dueDay: number }) =>
+      insights.push(`${bill.name} vence em ${dueDay - today.getDate()} dia(s).`),
     );
   if (!insights.length && (sum.incomeCents || sum.expenseCents))
     insights.push(
@@ -3401,6 +3401,12 @@ function SharedGoalStatement({ goal, currentUserId }: { goal: SharedGoalSummary;
 function Empty({ text }: any) {
   return <p className="muted mt-4 text-sm">{text}</p>;
 }
+function isCommitmentLateInMonth(bill: any, monthKey: string, today: Date) {
+  const currentMonth = format(today, "yyyy-MM");
+  const dueDay = recurringBillDueDay(bill, monthKey);
+  return monthKey < currentMonth || (monthKey === currentMonth && dueDay < today.getDate());
+}
+
 function Planning({ data, tx, month, save, toast }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
@@ -3410,15 +3416,16 @@ function Planning({ data, tx, month, save, toast }: any) {
   const [amount, setAmount] = useState("");
   const [dueDay, setDueDay] = useState("");
   const [category, setCategory] = useState("");
+  const [frequency, setFrequency] = useState<"once" | "monthly" | "yearly">("monthly");
+  const [startMonth, setStartMonth] = useState(format(month, "yyyy-MM"));
   const bills = data.recurringBills || [];
   const today = new Date();
-  const upcoming = [...bills]
-    .filter((bill: any) => bill.active)
-    .sort((a: any, b: any) => a.dueDay - b.dueDay);
-  const monthlyCommitted = upcoming
-    .filter((bill: any) => bill.frequency === "monthly")
-    .reduce((total: number, bill: any) => total + bill.amountCents, 0);
-  const currentMonth = format(month, "yyyy-MM");
+  const currentMonth = format(calendarMonth, "yyyy-MM");
+  const monthBills = bills
+    .filter((bill: any) => isRecurringBillScheduledInMonth(bill, currentMonth))
+    .map((bill: any) => ({ ...bill, occurrenceDay: recurringBillDueDay(bill, currentMonth) }))
+    .sort((a: any, b: any) => a.occurrenceDay - b.occurrenceDay);
+  const monthlyCommitted = monthBills.reduce((total: number, bill: any) => total + bill.amountCents, 0);
   const spent = tx
     .filter(
       (item: FinanceTransaction) =>
@@ -3430,65 +3437,58 @@ function Planning({ data, tx, month, save, toast }: any) {
     );
   const projected = projectMonthEnd(
     spent,
-    isSameMonth(month, today) ? today.getDate() : new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate(),
-    new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate(),
+    isSameMonth(calendarMonth, today) ? today.getDate() : new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate(),
+    new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate(),
   );
-  const paidCount = bills.filter(
-    (bill: any) => bill.paidMonth === currentMonth,
-  ).length;
-  const lateCount = bills.filter(
-    (bill: any) =>
-      bill.active &&
-      bill.paidMonth !== currentMonth &&
-      bill.dueDay < today.getDate(),
-  ).length;
-  const pendingCount = bills.filter(
-    (bill: any) =>
-      bill.active &&
-      bill.paidMonth !== currentMonth &&
-      bill.dueDay >= today.getDate(),
-  ).length;
+  const paidCount = monthBills.filter((bill: any) => isRecurringBillPaidInMonth(bill, currentMonth)).length;
+  const lateCount = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, currentMonth) && (currentMonth < format(today, "yyyy-MM") || (currentMonth === format(today, "yyyy-MM") && bill.occurrenceDay < today.getDate()))).length;
+  const pendingCount = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, currentMonth) && !isCommitmentLateInMonth(bill, currentMonth, today)).length;
+  const openNew = (monthKey = currentMonth, day?: number) => {
+    setName(""); setAmount(""); setCategory(""); setFrequency("monthly"); setStartMonth(monthKey);
+    setDueDay(day ? String(day) : ""); setAdding(true); setEditing(null);
+  };
   const persist = () => {
     const amountCents = Math.round(Number(amount.replace(",", ".")) * 100);
     const due = Number(dueDay);
-    if (!name.trim() || !amountCents || due < 1 || due > 31) return;
+    if (!name.trim() || !amountCents || due < 1 || due > 31 || (frequency === "once" && !startMonth)) return;
+    const schedule = { frequency, ...(startMonth ? { startMonth } : {}) };
     save({
       ...data,
-      recurringBills: editing ? bills.map((bill: any) => bill.id === editing.id ? { ...bill, name: name.trim(), amountCents, dueDay: due, category: category.trim() || undefined } : bill) : [...bills, {
+      recurringBills: editing ? bills.map((bill: any) => bill.id === editing.id ? { ...bill, name: name.trim(), amountCents, dueDay: due, category: category.trim() || undefined, ...schedule } : bill) : [...bills, {
           id: crypto.randomUUID(),
           name: name.trim(),
           amountCents,
           dueDay: due,
           category: category.trim() || undefined,
-          frequency: "monthly",
+          ...schedule,
           active: true,
         }],
     });
-    toast(editing ? "Conta recorrente atualizada." : "Conta recorrente criada com sucesso.");
+    toast(editing ? "Compromisso atualizado." : frequency === "once" ? "Compromisso adicionado ao calendário." : "Compromisso recorrente adicionado ao calendário.");
     setName("");
     setAmount("");
     setDueDay("");
     setCategory("");
+    setFrequency("monthly");
+    setStartMonth(currentMonth);
     setAdding(false);
     setEditing(null);
   };
-  const startEdit = (bill: any) => { setEditing(bill); setName(bill.name); setAmount(centsInput(bill.amountCents)); setDueDay(String(bill.dueDay)); setCategory(bill.category || ""); };
+  const startEdit = (bill: any) => { setEditing(bill); setName(bill.name); setAmount(centsInput(bill.amountCents)); setDueDay(String(bill.dueDay)); setCategory(bill.category || ""); setFrequency(bill.frequency || "monthly"); setStartMonth(bill.startMonth || ""); };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
         title="Planejamento"
-        help="Cadastre contas recorrentes para enxergar compromissos futuros e receber avisos dentro da Valurise."
-        onAdd={() => setAdding(true)}
-        addLabel="Adicionar conta recorrente"
+        help="Organize contas e pagamentos previstos. Defina se aparecem uma vez ou se repetem automaticamente nos próximos meses."
+        onAdd={() => openNew()}
+        addLabel="Adicionar compromisso"
       />
       <div className="mt-5 grid gap-4 sm:grid-cols-2">
         <section className="panel rounded-2xl p-5">
-          <p className="muted text-xs">COMPROMETIDO TODO MÊS</p>
+          <p className="muted text-xs">COMPROMISSOS DO PERÍODO</p>
           <b className="mt-2 block text-2xl">{formatBRL(monthlyCommitted)}</b>
           <p className="muted mt-2 text-sm">
-            {upcoming.length} conta{upcoming.length === 1 ? "" : "s"} recorrente
-            {upcoming.length === 1 ? "" : "s"} ativa
-            {upcoming.length === 1 ? "" : "s"}
+            {monthBills.length} compromisso{monthBills.length === 1 ? "" : "s"} em {format(calendarMonth, "MMMM", { locale: ptBR })}
           </p>
         </section>
         <section className="panel rounded-2xl p-5">
@@ -3524,15 +3524,16 @@ function Planning({ data, tx, month, save, toast }: any) {
         save={save}
         data={data}
         toast={toast}
+        onAddForDate={openNew}
       />
       <section className="panel mt-4 rounded-2xl p-5">
         <div className="flex items-center justify-between">
-          <b>Próximos vencimentos</b>
-          <span className="muted text-xs">alertas no app</span>
+          <b>Compromissos do período</b>
+          <span className="muted text-xs">{format(calendarMonth, "MM/yyyy")}</span>
         </div>
-        {upcoming.length ? (
+        {monthBills.length ? (
           <div className="mt-3 divide-y divide-[var(--border)]">
-            {upcoming.map((bill: any) => (
+            {monthBills.map((bill: any) => (
               <div
                 key={bill.id}
                 className="flex items-center justify-between py-3"
@@ -3540,7 +3541,7 @@ function Planning({ data, tx, month, save, toast }: any) {
                 <span>
                   <b className="block text-sm">{bill.name}</b>
                   <small className="muted">
-                    vence dia {bill.dueDay}
+                    vence dia {bill.occurrenceDay} · {bill.frequency === "once" ? "uma vez" : bill.frequency === "yearly" ? "anual" : "mensal"}
                     {bill.category ? ` · ${bill.category}` : ""}
                   </small>
                 </span>
@@ -3549,7 +3550,7 @@ function Planning({ data, tx, month, save, toast }: any) {
             ))}
           </div>
         ) : (
-          <Empty text="Nenhuma conta recorrente. Adicione aluguel, internet, assinaturas ou faturas." />
+          <Empty text="Nenhum compromisso neste mês. Adicione aluguel, internet, água, luz ou assinaturas para planejar os próximos vencimentos." />
         )}
       </section>
       <CardInvoicePreview data={data} tx={tx} />
@@ -3569,7 +3570,7 @@ function Planning({ data, tx, month, save, toast }: any) {
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               inputMode="decimal"
-              placeholder="Valor mensal"
+              placeholder="Valor previsto"
             />
             <input
               className="field"
@@ -3578,6 +3579,23 @@ function Planning({ data, tx, month, save, toast }: any) {
               inputMode="numeric"
               placeholder="Dia de vencimento"
             />
+            <label className="block space-y-1.5 text-sm">
+              <span>Repetição</span>
+              <select className="field" value={frequency} onChange={(event) => {
+                const nextFrequency = event.target.value as "once" | "monthly" | "yearly";
+                setFrequency(nextFrequency);
+                if (!startMonth && nextFrequency !== "monthly") setStartMonth(currentMonth);
+                if (!startMonth && nextFrequency === "monthly" && !editing) setStartMonth(currentMonth);
+              }}>
+                <option value="once">Uma vez</option>
+                <option value="monthly">Todo mês</option>
+                <option value="yearly">Todo ano</option>
+              </select>
+            </label>
+            <label className="block space-y-1.5 text-sm">
+              <span>{frequency === "once" ? "Mês do vencimento" : "Começar em"}</span>
+              <input className="field" type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} />
+            </label>
             <input
               className="field"
               value={category}
@@ -3594,8 +3612,9 @@ function Planning({ data, tx, month, save, toast }: any) {
               onClick={persist}
               className="primary h-11 w-full rounded-xl text-sm"
             >
-              {editing ? "Salvar alterações" : "Criar conta recorrente"}
+              {editing ? "Salvar alterações" : "Adicionar ao planejamento"}
             </button>
+            <p className="muted text-xs leading-5">A repetição cria lembretes nos meses seguintes; ela não registra uma despesa nem debita sua conta automaticamente. Registre o pagamento no extrato quando acontecer.</p>
           </section>
         </Sheet>
       )}
@@ -3603,6 +3622,50 @@ function Planning({ data, tx, month, save, toast }: any) {
     </section>
   );
 }
+function PlanningCheckRow({
+  checked,
+  onChange,
+  label,
+  description,
+  marker,
+  disabled = false,
+  ariaLabel,
+  className = "",
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: string;
+  description?: string;
+  marker?: number;
+  disabled?: boolean;
+  ariaLabel?: string;
+  className?: string;
+}) {
+  return (
+    <label className={`group flex min-h-14 cursor-pointer items-center gap-3 rounded-xl p-3 text-left text-sm transition-colors ${checked ? "bg-[var(--accent)]/10" : "hover:bg-[var(--panel2)]"} ${disabled ? "cursor-not-allowed opacity-55" : ""} ${className}`}>
+      <input
+        type="checkbox"
+        className="peer sr-only"
+        checked={checked}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span
+        aria-hidden="true"
+        className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-semibold transition-colors peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--accent)] ${checked ? "bg-[var(--accent)] text-[var(--accentfg)]" : marker !== undefined ? "bg-[var(--panel2)] text-[var(--muted)]" : "border border-[var(--border)] bg-[var(--panel2)] text-[var(--muted)]"}`}
+      >
+        {checked ? <Check size={16} /> : marker ?? null}
+      </span>
+      <span className="min-w-0 flex-1">
+        <b className={`block text-sm ${checked ? "text-[var(--accent)]" : ""}`}>{label}</b>
+        {description && <small className="muted mt-0.5 block leading-4">{description}</small>}
+      </span>
+      {checked && <span className="text-xs font-medium text-[var(--accent)]">Feito</span>}
+    </label>
+  );
+}
+
 function MonthlyReview({ data, save }: any) {
   const monthKey = format(new Date(), "yyyy-MM");
   const steps = [
@@ -3666,195 +3729,126 @@ function MonthlyReview({ data, save }: any) {
         {steps.map((step, index) => {
           const done = complete.includes(step.id);
           return (
-            <button
+            <PlanningCheckRow
               key={step.id}
-              onClick={() => toggle(step.id)}
-              className={`flex w-full items-center gap-3 rounded-xl p-3 text-left transition ${done ? "bg-[var(--accent)]/10" : "hover:bg-[var(--panel2)]"}`}
-            >
-              <span
-                className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-semibold ${done ? "bg-[var(--accent)] text-[var(--accentfg)]" : "bg-[var(--panel2)] text-[var(--muted)]"}`}
-              >
-                {done ? <Check size={16} /> : index + 1}
-              </span>
-              <span className="min-w-0 flex-1">
-                <b
-                  className={`block text-sm ${done ? "text-[var(--accent)]" : ""}`}
-                >
-                  {step.title}
-                </b>
-                <small className="muted mt-0.5 block leading-4">
-                  {step.text}
-                </small>
-              </span>
-              {done && (
-                <span className="text-xs font-medium text-[var(--accent)]">
-                  Feito
-                </span>
-              )}
-            </button>
+              checked={done}
+              onChange={() => toggle(step.id)}
+              label={step.title}
+              description={step.text}
+              marker={index + 1}
+            />
           );
         })}
       </div>
     </section>
   );
 }
-function FinancialCalendar({ month, setMonth, bills, save, data, toast }: any) {
-  const [selectedDay, setSelectedDay] = useState<number | null>(null);
+function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddForDate }: any) {
+  const [selectedDay, setSelectedDay] = useState<number | null>(() => {
+    const now = new Date();
+    return format(month, "yyyy-MM") === format(now, "yyyy-MM") ? now.getDate() : null;
+  });
   const key = format(month, "yyyy-MM");
   const today = new Date();
   const isCurrent = key === format(today, "yyyy-MM");
-  const firstWeekday =
-    (new Date(month.getFullYear(), month.getMonth(), 1).getDay() + 6) % 7;
+  const firstWeekday = (new Date(month.getFullYear(), month.getMonth(), 1).getDay() + 6) % 7;
   const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
-  const cells = Array.from(
-    { length: Math.ceil((firstWeekday + days) / 7) * 7 },
-    (_, index) => index - firstWeekday + 1,
-  );
-  const dayBills = (day: number) =>
-    bills.filter((bill: any) => bill.active && bill.dueDay === day);
-  const status = (bill: any) =>
-    bill.paidMonth === key
-      ? "paid"
-      : isCurrent && bill.dueDay < today.getDate()
-        ? "late"
-        : "pending";
+  const cellCount = Math.ceil((firstWeekday + days) / 7) * 7;
+  const cells = Array.from({ length: cellCount }, (_, index) => index - firstWeekday + 1);
+  const monthBills = bills.filter((bill: any) => isRecurringBillScheduledInMonth(bill, key));
+  const dayBills = (day: number) => monthBills.filter((bill: any) => recurringBillDueDay(bill, key) === day);
+  const status = (bill: any) => isRecurringBillPaidInMonth(bill, key) ? "paid" : isCommitmentLateInMonth(bill, key, today) ? "late" : "pending";
+  const total = monthBills.reduce((sum: number, bill: any) => sum + Number(bill.amountCents || 0), 0);
+  const unpaid = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, key)).reduce((sum: number, bill: any) => sum + Number(bill.amountCents || 0), 0);
+  const selected = selectedDay === null ? [] : dayBills(selectedDay);
+  const changeMonth = (offset: number) => {
+    setMonth(startOfMonth(addMonths(month, offset)));
+    setSelectedDay(null);
+  };
   const togglePaid = (bill: any) => {
-    const paid = bill.paidMonth !== key;
+    const paid = !isRecurringBillPaidInMonth(bill, key);
     save({
       ...data,
-      recurringBills: bills.map((item: any) =>
-        item.id === bill.id
-          ? { ...item, paidMonth: paid ? key : undefined }
-          : item,
-      ),
+      recurringBills: bills.map((item: any) => item.id === bill.id ? setRecurringBillPaidInMonth(item, key, paid) : item),
     });
-    toast(
-      paid
-        ? `${bill.name} marcada como paga.`
-        : `${bill.name} voltou para pendente.`,
-    );
+    toast(paid ? `${bill.name} marcada como paga neste mês.` : `${bill.name} voltou para pendente neste mês.`);
   };
-  const selected = selectedDay ? dayBills(selectedDay) : [];
   return (
-    <section className="panel mt-4 rounded-2xl p-4 sm:p-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <b>Calendário financeiro</b>
-          <p className="muted mt-1 text-xs">
-            Vencimentos e status das suas contas
-          </p>
-        </div>
-        <span className="grid h-8 w-8 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]">
-          <CalendarDays size={16} />
-        </span>
-      </div>
-      <div className="mt-4 flex items-center justify-between">
-        <button
-          aria-label="Mês anterior"
-          onClick={() => setMonth(startOfMonth(addMonths(month, -1)))}
-          className="rounded-lg p-2 hover:bg-[var(--panel2)]"
-        >
-          <ChevronLeft size={18} />
-        </button>
-        <b className="capitalize text-sm">
-          {format(month, "MMMM yyyy", { locale: ptBR })}
-        </b>
-        <button
-          aria-label="Próximo mês"
-          onClick={() => setMonth(startOfMonth(addMonths(month, 1)))}
-          className="rounded-lg p-2 hover:bg-[var(--panel2)]"
-        >
-          <ChevronRight size={18} />
-        </button>
-      </div>
-      <div className="mt-3 grid grid-cols-7 text-center text-[10px] text-[var(--muted)]">
-        {["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map((day) => (
-          <span key={day}>{day}</span>
-        ))}
-      </div>
-      <div className="mt-2 grid grid-cols-7 gap-1">
-        {cells.map((day, index) => {
-          const items = day > 0 && day <= days ? dayBills(day) : [];
-          const hasLate = items.some((bill: any) => status(bill) === "late");
-          const hasPending = items.some(
-            (bill: any) => status(bill) === "pending",
-          );
-          const hasPaid = items.some((bill: any) => status(bill) === "paid");
-          const todayCell = isCurrent && day === today.getDate();
-          return (
-            <button
-              key={index}
-              disabled={!items.length}
-              onClick={() => setSelectedDay(day)}
-              className={`relative min-h-12 rounded-xl p-1 text-left text-xs ${items.length ? "bg-[var(--panel2)] hover:ring-1 hover:ring-[var(--accent)]" : ""} ${todayCell ? "ring-1 ring-[var(--accent)]" : ""} disabled:cursor-default`}
-            >
-              <span
-                className={`grid h-5 w-5 place-items-center rounded-full ${todayCell ? "bg-[var(--accent)] text-[var(--accentfg)]" : ""}`}
-              >
-                {day > 0 && day <= days ? day : ""}
-              </span>
-              {items.length > 0 && (
-                <span
-                  className={`absolute bottom-2 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full ${hasLate ? "bg-[var(--danger)]" : hasPending ? "bg-amber-400" : hasPaid ? "bg-[var(--accent)]" : ""}`}
-                />
-              )}
-            </button>
-          );
-        })}
-      </div>
-      <div className="muted mt-3 flex flex-wrap gap-3 text-[11px]">
-        <span>
-          <i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400" />
-          Pendente
-        </span>
-        <span>
-          <i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--danger)]" />
-          Atrasada
-        </span>
-        <span>
-          <i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />
-          Paga
-        </span>
-      </div>
-      {selectedDay && (
-        <div className="mt-4 border-t border-[var(--border)] pt-4">
-          <div className="flex justify-between">
-            <b className="text-sm">Dia {selectedDay}</b>
-            <button
-              onClick={() => setSelectedDay(null)}
-              aria-label="Fechar detalhes do dia"
-            >
-              <X size={16} />
-            </button>
+    <section className="panel mt-4 overflow-hidden rounded-2xl">
+      <div className="border-b border-[var(--border)] p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/12 text-[var(--accent)]"><CalendarDays size={18} /></span>
+            <div className="min-w-0">
+              <b className="block">Calendário financeiro</b>
+              <p className="muted mt-1 text-xs">Vencimentos e pagamentos planejados</p>
+            </div>
           </div>
-          <div className="mt-2 space-y-2">
-            {selected.map((bill: any) => (
-              <div
-                key={bill.id}
-                className="flex items-center justify-between rounded-xl bg-[var(--panel2)] p-3 text-sm"
-              >
-                <span>
-                  <b className="block">{bill.name}</b>
-                  <small className="muted">
-                    {formatBRL(bill.amountCents)} ·{" "}
-                    {status(bill) === "paid"
-                      ? "Paga"
-                      : status(bill) === "late"
-                        ? "Atrasada"
-                        : "Pendente"}
-                  </small>
-                </span>
-                <button
-                  onClick={() => togglePaid(bill)}
-                  className={`rounded-lg px-3 py-2 text-xs ${status(bill) === "paid" ? "bg-[var(--panel)]" : "primary"}`}
-                >
-                  {status(bill) === "paid" ? "Desfazer" : "Marcar paga"}
-                </button>
-              </div>
-            ))}
-          </div>
+          {!isCurrent && <button onClick={() => { setMonth(startOfMonth(today)); setSelectedDay(today.getDate()); }} className="min-h-10 shrink-0 rounded-xl px-3 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)]">Hoje</button>}
         </div>
-      )}
+        <div className="mt-4 flex items-center justify-between gap-2 rounded-xl bg-[var(--panel2)] p-2">
+          <button aria-label="Mês anterior" onClick={() => changeMonth(-1)} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg hover:bg-[var(--panel)]"><ChevronLeft size={18} /></button>
+          <b className="min-w-0 truncate text-center text-sm capitalize">{format(month, "MMMM yyyy", { locale: ptBR })}</b>
+          <button aria-label="Próximo mês" onClick={() => changeMonth(1)} className="grid h-10 w-10 shrink-0 place-items-center rounded-lg hover:bg-[var(--panel)]"><ChevronRight size={18} /></button>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <span><b>{monthBills.length}</b><span className="muted"> compromisso{monthBills.length === 1 ? "" : "s"}</span></span>
+          <span><b>{formatBRL(total)}</b><span className="muted"> previsto</span></span>
+          <span><b className="text-amber-400">{formatBRL(unpaid)}</b><span className="muted"> em aberto</span></span>
+        </div>
+      </div>
+      <div className="p-3 sm:p-5">
+        <div className="grid grid-cols-7 text-center text-[10px] font-medium text-[var(--muted)] sm:text-xs">
+          {["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map((day) => <span key={day} className="py-2">{day}</span>)}
+        </div>
+        <div className="grid grid-cols-7 gap-1 sm:gap-2">
+          {cells.map((day, index) => {
+            if (day < 1 || day > days) return <span key={`blank-${index}`} aria-hidden="true" className="min-h-[54px] sm:min-h-16" />;
+            const items = dayBills(day);
+            const statuses = items.map(status);
+            const todayCell = isCurrent && day === today.getDate();
+            const selectedCell = selectedDay === day;
+            const label = `${format(new Date(month.getFullYear(), month.getMonth(), day), "d 'de' MMMM", { locale: ptBR })}${items.length ? `, ${items.length} vencimento${items.length === 1 ? "" : "s"}` : ", sem vencimentos"}`;
+            return (
+              <button
+                key={day}
+                aria-label={label}
+                aria-pressed={selectedCell}
+                onClick={() => setSelectedDay(day)}
+                className={`relative flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-xl border text-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] sm:min-h-16 ${selectedCell ? "border-[var(--accent)] bg-[var(--accent)]/10" : items.length ? "border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)]/60" : "border-transparent hover:bg-[var(--panel2)]"}`}
+              >
+                <span className={`grid h-7 w-7 place-items-center rounded-full font-medium ${todayCell ? "bg-[var(--accent)] text-[var(--accentfg)]" : ""}`}>{day}</span>
+                {items.length > 0 && <span aria-hidden="true" className="flex h-1.5 items-center gap-0.5">{statuses.slice(0, 3).map((item: string, dotIndex: number) => <i key={dotIndex} className={`h-1.5 w-1.5 rounded-full ${item === "late" ? "bg-[var(--danger)]" : item === "paid" ? "bg-[var(--accent)]" : "bg-amber-400"}`} />)}</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div className="muted mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px]">
+          <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400" />Pendente</span>
+          <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--danger)]" />Atrasada</span>
+          <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />Paga</span>
+        </div>
+        {selectedDay !== null && (
+          <div className="mt-4 border-t border-[var(--border)] pt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div><b className="text-sm capitalize">{format(new Date(month.getFullYear(), month.getMonth(), selectedDay), "EEEE, d 'de' MMMM", { locale: ptBR })}</b><p className="muted mt-0.5 text-xs">{selected.length ? `${selected.length} compromisso${selected.length === 1 ? "" : "s"} neste dia` : "Dia livre no planejamento"}</p></div>
+              <button onClick={() => onAddForDate?.(key, selectedDay)} className="flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-3 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)]"><Plus size={15} />Adicionar</button>
+            </div>
+            {selected.length > 0 && <div className="mt-3 divide-y divide-[var(--border)] rounded-xl bg-[var(--panel2)] px-3">
+              {selected.map((bill: any) => (
+                <div key={bill.id} className="flex items-center justify-between gap-3 py-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${status(bill) === "paid" ? "bg-[var(--accent)]/15 text-[var(--accent)]" : status(bill) === "late" ? "bg-[var(--danger)]/10 text-[var(--danger)]" : "bg-[var(--panel)] text-amber-400"}`}><ReceiptText size={16} /></span>
+                    <span className="min-w-0"><b className="block truncate text-sm">{bill.name}</b><small className="muted block truncate">{bill.category || "Sem categoria"} · {bill.frequency === "once" ? "uma vez" : bill.frequency === "yearly" ? "anual" : "mensal"} · {status(bill) === "paid" ? "Paga" : status(bill) === "late" ? "Atrasada" : "Pendente"}</small></span>
+                  </div>
+                  <div className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b><button onClick={() => togglePaid(bill)} className={`mt-1 min-h-9 rounded-lg px-2 text-xs ${status(bill) === "paid" ? "text-[var(--muted)] hover:bg-[var(--panel)]" : "text-[var(--accent)] hover:bg-[var(--panel)]"}`}>{status(bill) === "paid" ? "Desfazer" : "Marcar paga"}</button></div>
+                </div>
+              ))}
+            </div>}
+            {!selected.length && <p className="muted mt-3 rounded-xl bg-[var(--panel2)] p-3 text-sm">Nenhum vencimento cadastrado para este dia. Use “Adicionar” para planejar uma conta ou pagamento.</p>}
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -4091,7 +4085,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
     if (!connected) {
       setMessages([...next, { id: crypto.randomUUID(), role: "assistant", content: configured
         ? "Sua configuração está salva, mas ainda não foi validada. Acesse Configurações, teste a conexão e volte para conversar. Você pode continuar usando os atalhos para registrar movimentações."
-        : "Sua IA pessoal ainda não está conectada. Para conversar sobre suas finanças, configure OpenAI, Gemini ou DeepSeek em Configurações. Você pode continuar usando os atalhos para registrar movimentações." }]);
+        : "Sua IA pessoal ainda não está conectada. Para conversar sobre suas finanças, configure OpenAI, Gemini, DeepSeek, Groq ou OpenRouter em Configurações. Você pode continuar usando os atalhos para registrar movimentações." }]);
       return;
     }
     const supabase = getSupabaseBrowserClient();
@@ -4158,7 +4152,7 @@ function PersonalFinanceChat({ startMovement, approveAction, close }: { startMov
   return <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
     <div className="flex shrink-0 items-center gap-3 border-b border-[var(--border)] pb-4">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-      <div className="min-w-0 flex-1"><b id="personal-finance-chat-title" className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected ? `${provider === "openai" ? "OpenAI" : provider === "gemini" ? "Gemini" : "DeepSeek"} validado para sua conta.` : configured ? "Configuração salva · falta validar em Configurações." : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
+      <div className="min-w-0 flex-1"><b id="personal-finance-chat-title" className="block text-lg">Conversa com a Val</b><p className="muted mt-1 text-xs">{connected && provider ? `${AI_PROVIDER_METADATA[provider].label} validado para sua conta.` : configured ? "Configuração salva · falta validar em Configurações." : "Clareza para decidir hoje. Constância para prosperar amanhã."}</p></div>
       <button type="button" onClick={close} aria-label="Voltar ao painel" className="flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-2 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"><ChevronLeft size={18} /><span>Voltar</span></button>
     </div>
     <div aria-live="polite" className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pr-1">
@@ -5751,10 +5745,10 @@ function AccountDeletion({ logout, localStoragePrefix }: { logout: () => void; l
   };
   return <section className="panel mt-4 rounded-2xl p-5"><b>Remover minha conta</b><p className="muted mt-1 text-sm leading-6">Sua conta será desativada e movida para a lixeira. Os dados não serão apagados agora; o Master poderá restaurar ou excluir definitivamente a conta depois. Exporte um backup se quiser guardar uma cópia.</p><button onClick={() => { setError(""); setOpen(true); }} className="mt-4 min-h-11 rounded-xl border border-[var(--danger)]/40 px-4 text-sm text-[var(--danger)]">Solicitar remoção</button>{open && <Sheet close={() => { if (!busy) setOpen(false); }}><section className="space-y-4"><div><b className="text-lg">Mover conta para a lixeira?</b><p className="muted mt-2 text-sm leading-6">Você perderá o acesso imediatamente. Os dados serão mantidos até que o Master decida restaurar ou excluir a conta definitivamente.</p></div><label className="block text-sm">Confirme sua senha<input autoComplete="current-password" type="password" className="field mt-2" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="block text-sm">Digite EXCLUIR para confirmar<input className="field mt-2" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>{error && <p role="alert" className="text-sm text-[var(--danger)]">{error}</p>}<button disabled={busy || !password || confirmation !== "EXCLUIR"} onClick={() => void submit()} className="min-h-11 w-full rounded-xl bg-[var(--danger)] px-4 text-sm font-semibold text-[#271313] disabled:opacity-50">{busy ? "Removendo…" : "Mover para a lixeira"}</button></section></Sheet>}</section>;
 }
-type PersonalAIProvider = "openai" | "gemini" | "deepseek";
-type PersonalAIModelOption = { id: string; label: string; tier: "recommended" | "economical" | "advanced" | "other" };
+type PersonalAIProvider = AIProvider;
+type PersonalAIModelOption = AIModelOption;
 type PersonalAIUsage = { requests: number; totalTokens: number; inputTokens: number; outputTokens: number; quotaTokens: number | null };
-type PersonalAITestStatus = { ok: boolean; message: string; category?: string; providerMessage?: string | null; providerCode?: string | null; providerHttpStatus?: number | null; requestId?: string | null; model?: string };
+type PersonalAITestStatus = { ok: boolean; message: string; category?: string; providerMessage?: string | null; providerCode?: string | null; providerHttpStatus?: number | null; requestId?: string | null; model?: string; toolCallingValidated?: boolean };
 const aiErrorCategoryLabels: Record<string, string> = {
   INVALID_API_KEY: "Chave inválida",
   INVALID_MODEL: "Modelo inválido ou não habilitado",
@@ -5773,9 +5767,13 @@ const aiErrorCategoryLabels: Record<string, string> = {
   TIMEOUT: "Tempo limite da conexão",
   NETWORK_ERROR: "Falha de rede",
   MALFORMED_RESPONSE: "Resposta inválida do provedor",
+  TOOL_CALL_ERROR: "Falha ao consultar uma ferramenta",
+  TOOL_CALL_UNSUPPORTED: "Este modelo não oferece as ferramentas da Val",
   UNKNOWN_PROVIDER_ERROR: "Erro retornado pelo provedor",
 };
-const defaultAIModel: Record<PersonalAIProvider, string> = { openai: "gpt-5-mini", gemini: GEMINI_SUPPORTED_MODELS[0].id, deepseek: "deepseek-v4-flash" };
+const defaultAIModel: Record<PersonalAIProvider, string> = Object.fromEntries(
+  AI_PROVIDERS.map((item) => [item, AI_PROVIDER_METADATA[item].defaultModel]),
+) as Record<PersonalAIProvider, string>;
 function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
   const [provider, setProvider] = useState<PersonalAIProvider>("openai");
   const [savedProvider, setSavedProvider] = useState<PersonalAIProvider | null>(null);
@@ -5822,13 +5820,16 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
       if (response.ok && result.connection) {
         const storedProvider = result.connection.provider as PersonalAIProvider;
         const storedModel = String(result.connection.model || "");
+        const initialModels = getInitialAIModelOptions(storedProvider);
         const selectedModel = storedProvider === "gemini" && !isSupportedGeminiModel(storedModel)
           ? defaultAIModel.gemini
           : storedModel;
         setConnected(true);
         setProvider(storedProvider);
         setModel(selectedModel);
-        setCustomModel(storedProvider !== "gemini");
+        setModels(initialModels);
+        setCustomModel(AI_PROVIDER_METADATA[storedProvider].supportsDynamicCatalog
+          && !initialModels.some((item) => item.id === selectedModel));
         setSavedProvider(storedProvider);
         setSavedModel(storedModel);
         setConnectionValidated(Boolean(result.connection.validated && result.connection.validated_model === storedModel
@@ -5849,8 +5850,8 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
   }, []);
 
   const loadModels = async () => {
-    if (provider === "gemini") {
-      setModels(GEMINI_SUPPORTED_MODELS.map((option) => ({ ...option })));
+    if (!AI_PROVIDER_METADATA[provider].supportsDynamicCatalog) {
+      setModels(getInitialAIModelOptions(provider));
       setCustomModel(false);
       setTestStatus(null);
       return;
@@ -5916,9 +5917,9 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         setConnectionValidated(true);
         setValidatedAt(testedAt);
         setApiKey("");
-        setTestStatus({ ok: true, model: result.model || model, message: `Conexão validada com ${result.model || model} · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}` });
+        setTestStatus({ ok: true, model: result.model || model, toolCallingValidated: Boolean(result.toolCallingValidated), message: `Conexão validada com ${result.model || model} · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}${result.toolCallingValidated ? " · ferramentas da Val confirmadas" : ""}` });
       } else {
-        setTestStatus({ ok: true, model: result.model || model, message: `${result.model || model} respondeu · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}. Esta chave ou modelo ainda não está salvo; salve a configuração e teste novamente para liberar o chat.` });
+        setTestStatus({ ok: true, model: result.model || model, toolCallingValidated: Boolean(result.toolCallingValidated), message: `${result.model || model} respondeu · ${Number(result.latencyMs).toLocaleString("pt-BR")} ms${tokenCount}${result.toolCallingValidated ? " · ferramentas da Val confirmadas" : ""}. Esta chave ou modelo ainda não está salvo; salve a configuração e teste novamente para liberar o chat.` });
       }
       await loadUsage(token);
     } catch {
@@ -5974,19 +5975,30 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
 
   const currentConfigValidated = Boolean(connected && connectionValidated && provider === savedProvider && model === savedModel && !apiKey.trim());
   const tierLabel = (tier: PersonalAIModelOption["tier"]) => ({ recommended: "Recomendado", economical: "Rápido/econômico", advanced: "Mais capaz", other: "Outro" })[tier];
+  const modelOptionLabel = (item: PersonalAIModelOption) => item.id === "openrouter/free"
+    ? "OpenRouter Free · Recomendado"
+    : `${item.label} · ${item.free ? "Gratuito" : tierLabel(item.tier)}`;
+  const providerHelp = provider === "gemini"
+    ? "O Valurise prioriza Gemini 2.5 Flash-Lite e Flash. O teste confirma chave, modelo e resposta sem enviar dados financeiros."
+    : provider === "groq"
+      ? "Atualize o catálogo para usar modelos ativos da sua chave. A Groq pode oferecer cota gratuita conforme a conta e o plano; disponibilidade e limites podem mudar."
+      : provider === "openrouter"
+        ? "OpenRouter Free é o roteador recomendado para modelos gratuitos disponíveis; limites e disponibilidade variam. O catálogo prioriza modelos gratuitos sem esconder os pagos."
+        : "O catálogo indica compatibilidade de texto, não garante cota ou disponibilidade para sua conta. Escolha um modelo e teste antes de conversar.";
   return (
     <section className="panel mt-4 rounded-2xl p-5">
       <div className="flex items-start gap-3">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-        <div><b className="block">Val · assistente financeira</b><p className="muted mt-1 text-sm">Clareza para decidir hoje. Constância para prosperar amanhã. Conecte OpenAI, Gemini ou DeepSeek usando sua própria conta.</p></div>
+        <div><b className="block">Val · assistente financeira</b><p className="muted mt-1 text-sm">Clareza para decidir hoje. Constância para prosperar amanhã. Conecte OpenAI, Gemini, DeepSeek, Groq ou OpenRouter usando sua própria conta.</p></div>
       </div>
       <div className="mt-5 grid gap-3">
         <label className="text-sm">Provedor
           <select value={provider} onChange={(event) => {
             const next = event.target.value as PersonalAIProvider;
-            setProvider(next); setModel(defaultAIModel[next]); setModels([]); setCustomModel(false); setTestStatus(null);
+            const initialModels = getInitialAIModelOptions(next);
+            setProvider(next); setModel(defaultAIModel[next]); setModels(initialModels); setCustomModel(false); setTestStatus(null);
           }} className="field mt-1">
-            <option value="openai">OpenAI</option><option value="gemini">Gemini</option><option value="deepseek">DeepSeek</option>
+            {AI_PROVIDERS.map((item) => <option key={item} value={item}>{AI_PROVIDER_METADATA[item].label}</option>)}
           </select>
         </label>
         {provider === "gemini" ? <label className="text-sm">Modelo Gemini
@@ -5998,15 +6010,15 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
             if (event.target.value === "__custom") setCustomModel(true);
             else { setModel(event.target.value); setCustomModel(false); setTestStatus(null); }
           }} className="field mt-1">
-            {models.map((item) => <option key={item.id} value={item.id}>{item.label} · {tierLabel(item.tier)}</option>)}
+          {models.map((item) => <option key={item.id} value={item.id}>{modelOptionLabel(item)}</option>)}
             <option value="__custom">Inserir modelo personalizado…</option>
           </select>
         </label>}
-        {provider !== "gemini" && (models.length === 0 || customModel || !models.some((item) => item.id === model)) && <label className="text-sm">ID do modelo
+        {AI_PROVIDER_METADATA[provider].supportsDynamicCatalog && (models.length === 0 || customModel || !models.some((item) => item.id === model)) && <label className="text-sm">ID do modelo
           <input value={model} onChange={(event) => { setModel(event.target.value); setTestStatus(null); }} className="field mt-1" placeholder={defaultAIModel[provider]} autoComplete="off" />
         </label>}
-        {provider !== "gemini" && <button type="button" disabled={catalogBusy} onClick={() => void loadModels()} className="min-h-10 w-fit rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-60">{catalogBusy ? "Consultando catálogo…" : "Atualizar modelos disponíveis"}</button>}
-        <p className="muted -mt-1 text-xs leading-5">{provider === "gemini" ? "O Valurise prioriza os modelos Gemini 2.5 Flash-Lite e Flash informados como disponíveis no seu projeto. O teste abaixo confirma a chave e o modelo selecionado sem enviar dados financeiros." : "O catálogo indica compatibilidade de texto, não garante cota ou disponibilidade para sua conta. Escolha um modelo e teste antes de conversar."}</p>
+        {AI_PROVIDER_METADATA[provider].supportsDynamicCatalog && <button type="button" disabled={catalogBusy} onClick={() => void loadModels()} className="min-h-10 w-fit rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-60">{catalogBusy ? "Consultando catálogo…" : "Atualizar modelos disponíveis"}</button>}
+        <p className="muted -mt-1 text-xs leading-5">{providerHelp}</p>
         {connected && <p role="status" className={`rounded-xl px-3 py-2 text-xs leading-5 ${currentConfigValidated ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--text)]"}`}>
           {currentConfigValidated
             ? `Conexão validada para ${savedModel}${validatedAt ? ` · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(validatedAt))}` : ""}.`
@@ -6015,9 +6027,32 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         <label className="text-sm">API key
           <input value={apiKey} onChange={(event) => { setApiKey(event.target.value); setTestStatus(null); }} className="field mt-1" type="password" autoComplete="new-password" placeholder={connected && provider === savedProvider ? "Salva e protegida · cole outra para substituir" : "Cole sua API key"} />
         </label>
-        <label className="flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm"><span><b className="block">Compartilhar dados para análise financeira</b><small className="muted">Opcional: sua pergunta e os dados consultados serão enviados ao provedor escolhido (OpenAI, Gemini ou DeepSeek), conforme a política dele.</small></span><input aria-label="Autorizar uso dos meus dados financeiros pela Val" checked={insightsEnabled} onChange={(event) => { setInsightsEnabled(event.target.checked); if (!event.target.checked) { setNotificationsEnabled(false); setActionsEnabled(false); } }} type="checkbox" /></label>
-        <label className={`flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm ${!insightsEnabled ? "opacity-55" : ""}`}><span><b className="block">Notificações por IA</b><small className="muted">Desativadas até você permitir o contexto financeiro.</small></span><input aria-label="Ativar notificações por IA" disabled={!insightsEnabled} checked={notificationsEnabled && insightsEnabled} onChange={(event) => setNotificationsEnabled(event.target.checked)} type="checkbox" /></label>
-        <label className={`flex min-h-12 items-center justify-between gap-4 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm ${!insightsEnabled ? "opacity-55" : ""}`}><span><b className="block">Permitir ações financeiras com confirmação</b><small className="muted">Opcional. A Val só poderá preparar propostas de receita ou despesa comum. Cada proposta mostra os dados exatos e exige que você toque em “Confirmar e registrar”. Você pode descartar ou desligar esta permissão; não permite transferências, cartões/parcelas, investimentos, metas, edição ou exclusão.</small></span><input aria-label="Permitir propostas de receitas e despesas com confirmação obrigatória" disabled={!insightsEnabled} checked={actionsEnabled && insightsEnabled} onChange={(event) => setActionsEnabled(event.target.checked)} type="checkbox" /></label>
+        <PlanningCheckRow
+          checked={insightsEnabled}
+          ariaLabel="Autorizar uso dos meus dados financeiros pela Val"
+          onChange={(checked) => { setInsightsEnabled(checked); if (!checked) { setNotificationsEnabled(false); setActionsEnabled(false); } }}
+          label="Compartilhar dados para análise financeira"
+          description={`Opcional: sua pergunta e os dados consultados serão enviados somente ao provedor escolhido (${AI_PROVIDER_METADATA[provider].label}), conforme a política dele.`}
+          className="bg-[var(--panel2)]/50"
+        />
+        <PlanningCheckRow
+          checked={notificationsEnabled && insightsEnabled}
+          ariaLabel="Ativar notificações por IA"
+          disabled={!insightsEnabled}
+          onChange={setNotificationsEnabled}
+          label="Notificações por IA"
+          description="Desativadas até você permitir o contexto financeiro."
+          className="bg-[var(--panel2)]/50"
+        />
+        <PlanningCheckRow
+          checked={actionsEnabled && insightsEnabled}
+          ariaLabel="Permitir propostas de receitas e despesas com confirmação obrigatória"
+          disabled={!insightsEnabled}
+          onChange={setActionsEnabled}
+          label="Permitir ações financeiras com confirmação"
+          description="Opcional. A Val só poderá preparar propostas de receita ou despesa comum. Cada proposta mostra os dados exatos e exige que você toque em “Confirmar e registrar”. Você pode descartar ou desligar esta permissão; não permite transferências, cartões/parcelas, investimentos, metas, edição ou exclusão."
+          className="bg-[var(--panel2)]/50"
+        />
       </div>
       {consentRenewalRequired && <p role="status" className="mt-3 rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs leading-5">Atualizamos as regras de privacidade da Val. Para voltar a compartilhar contexto financeiro, revise o consentimento acima e salve a configuração.</p>}
       {testStatus && <div role="status" aria-live="polite" className={`mt-3 rounded-xl px-3 py-3 text-sm ${testStatus.ok ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--danger)]"}`}>
@@ -6031,7 +6066,7 @@ function PersonalAISettings({ toast }: { toast: (text: string) => void }) {
         </div>}
         {!testStatus.ok && testStatus.providerMessage && <p className="muted mt-2 break-words text-xs">Detalhe retornado pelo provedor: {testStatus.providerMessage}</p>}
       </div>}
-      <p className="muted mt-4 text-xs leading-5">A chave trafega ao servidor e é criptografada antes de ser salva; ela nunca volta ao navegador nem é enviada à Val como contexto. O teste envia apenas “Responda somente: OK” e pode consumir alguns tokens do seu provedor. Sem a permissão acima, a Val só consulta informações com ferramentas controladas. Com ela, ainda assim nada é gravado sem confirmação explícita no app; a aprovação é validada novamente no servidor. Desconectar revoga o consentimento e cancela propostas pendentes.</p>
+      <p className="muted mt-4 text-xs leading-5">A chave trafega ao servidor e é criptografada antes de ser salva; ela nunca volta ao navegador nem é enviada à Val como contexto. O teste envia uma pergunta mínima sem dados financeiros; Groq e OpenRouter também recebem uma solicitação de ferramenta fictícia, sem dados nem efeitos colaterais, para validar compatibilidade. Isso pode consumir alguns tokens do provedor escolhido. Sem a permissão acima, a Val não consulta informações financeiras. Com ela, ainda assim nada é gravado sem confirmação explícita no app; a aprovação é validada novamente no servidor. Desconectar revoga o consentimento e cancela propostas pendentes.</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <button disabled={busy || testBusy} onClick={() => void save()} className="primary min-h-11 rounded-xl px-4 py-2 text-sm font-semibold">{busy ? "Salvando…" : connected ? "Salvar configuração" : "Conectar Val"}</button>
         <button disabled={testBusy || catalogBusy} onClick={() => void testConnection()} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 py-2 text-sm font-semibold">{testBusy ? "Testando…" : "Testar conexão"}</button>

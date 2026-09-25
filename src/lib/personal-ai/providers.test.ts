@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyAIError, createSingle503RetryFetch, listProviderModels, type AIProvider } from "./providers";
 import { GEMINI_SUPPORTED_MODELS, isGemini25FlashModel, isSupportedGeminiModel } from "./model-options";
+import { AI_MODEL_ID_PATTERN, isSafeAIModelId } from "./provider-config";
 
 describe("diagnóstico seguro dos provedores de IA", () => {
   it("classifica chave inválida sem devolver mensagem ou segredo do provedor", () => {
@@ -49,6 +50,36 @@ describe("diagnóstico seguro dos provedores de IA", () => {
     expect(unavailable.retryable).toBe(true);
   });
 
+  it("classifica erros comuns de Groq/OpenRouter e separa incompatibilidade de ferramentas", () => {
+    const invalidKey = classifyAIError(Object.assign(new Error("Provider request failed"), { statusCode: 401 }), "groq", "openai/gpt-oss-20b");
+    const insufficient = classifyAIError(Object.assign(new Error("Provider request failed"), {
+      statusCode: 402,
+      responseBody: JSON.stringify({ error: { message: "Insufficient credits for this request", code: 402 } }),
+    }), "openrouter", "openrouter/free");
+    const rateLimit = classifyAIError(Object.assign(new Error("Provider request failed"), {
+      statusCode: 429,
+      responseBody: JSON.stringify({ error: { message: "Rate limit exceeded", code: 429 } }),
+    }), "openrouter", "qwen/model:free");
+    const overloaded = classifyAIError(Object.assign(new Error("Provider overloaded"), { statusCode: 503 }), "groq", "openai/gpt-oss-20b");
+    const toolsUnsupported = classifyAIError(Object.assign(new Error("No endpoints found that support tool use"), { statusCode: 404 }), "openrouter", "model/without-tools");
+
+    expect(invalidKey.category).toBe("INVALID_API_KEY");
+    expect(insufficient.category).toBe("INSUFFICIENT_BALANCE");
+    expect(rateLimit.category).toBe("RATE_LIMITED");
+    expect(overloaded.category).toBe("PROVIDER_OVERLOADED");
+    expect(toolsUnsupported.category).toBe("TOOL_CALL_UNSUPPORTED");
+  });
+
+  it("sanitiza chaves OpenRouter/Groq e valores de contexto em detalhes do provedor", () => {
+    const failure = classifyAIError(Object.assign(new Error("Provider request failed"), {
+      statusCode: 400,
+      responseBody: JSON.stringify({ error: { message: 'invalid request sk-or-v1-123456789012345678901234 "prompt":"saldo secreto"' } }),
+    }), "openrouter", "openai/model");
+    expect(failure.providerMessage).not.toContain("sk-or-v1-");
+    expect(failure.providerMessage).not.toContain("saldo secreto");
+    expect(failure.message).not.toContain("sk-or-v1-");
+  });
+
   it("retorna somente modelos de texto presentes no catálogo autorizado", async () => {
     const payloadByProvider: Record<AIProvider, unknown> = {
       gemini: { models: [
@@ -60,24 +91,74 @@ describe("diagnóstico seguro dos provedores de IA", () => {
       ] },
       deepseek: { data: [{ id: "deepseek-v4-flash" }, { id: "deepseek-v4-pro" }] },
       openai: { data: [{ id: "gpt-5-mini" }, { id: "text-embedding-3-small" }] },
+      groq: { data: [
+        { id: "openai/gpt-oss-20b", active: true },
+        { id: "qwen/qwen3-32b", active: true },
+        { id: "whisper-large-v3", active: true },
+        { id: "meta-llama/llama-prompt-guard-2-86m", active: true },
+        { id: "inactive/model", active: false },
+      ] },
+      openrouter: { data: [
+        { id: "anthropic/paid-model", name: "Paid model", pricing: { prompt: "0.0001", completion: "0.0002" } },
+        { id: "qwen/model:free", name: "Qwen Free", pricing: { prompt: "0", completion: "0" } },
+        { id: "provider/zero-priced", name: "Zero-priced model", pricing: { prompt: 0, completion: 0 } },
+        { id: "openrouter/free", name: "Free router", pricing: { prompt: "0", completion: "0" } },
+        { id: "vendor/audio-only", name: "Audio model", architecture: { output_modalities: ["audio"] }, pricing: { prompt: "0", completion: "0" } },
+      ] },
     };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      const provider = url.includes("googleapis") ? "gemini" : url.includes("deepseek") ? "deepseek" : "openai";
+      const provider = url.includes("googleapis") ? "gemini"
+        : url.includes("deepseek") ? "deepseek"
+          : url.includes("groq") ? "groq"
+            : url.includes("openrouter") ? "openrouter"
+              : "openai";
       return new Response(JSON.stringify(payloadByProvider[provider]), { status: 200, headers: { "content-type": "application/json" } });
     }));
 
     await expect(listProviderModels("gemini", "fake-key")).resolves.toEqual([
-      { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", tier: "recommended" },
-      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", tier: "economical" },
+      { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", tier: "recommended", provider: "gemini" },
+      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", tier: "economical", provider: "gemini" },
     ]);
     await expect(listProviderModels("deepseek", "fake-key")).resolves.toMatchObject([
       { id: "deepseek-v4-flash", tier: "recommended" },
       { id: "deepseek-v4-pro", tier: "advanced" },
     ]);
     await expect(listProviderModels("openai", "fake-key")).resolves.toEqual([
-      { id: "gpt-5-mini", label: "gpt-5-mini", tier: "recommended" },
+      { id: "gpt-5-mini", label: "gpt-5-mini", tier: "recommended", provider: "openai" },
     ]);
+
+    const groqModels = await listProviderModels("groq", "fake-key");
+    expect(groqModels.map((item) => item.id)).toEqual(["openai/gpt-oss-20b", "qwen/qwen3-32b"]);
+    expect(groqModels[0]).toMatchObject({ id: "openai/gpt-oss-20b", provider: "groq", tier: "recommended" });
+    expect(fetch).toHaveBeenCalledWith("https://api.groq.com/openai/v1/models", expect.objectContaining({
+      headers: { Authorization: "Bearer fake-key" },
+    }));
+
+    const openRouterModels = await listProviderModels("openrouter", "fake-key");
+    expect(openRouterModels.map((item) => item.id)).toEqual([
+      "openrouter/free",
+      "qwen/model:free",
+      "provider/zero-priced",
+      "anthropic/paid-model",
+    ]);
+    expect(openRouterModels[0]).toMatchObject({ id: "openrouter/free", label: "OpenRouter Free · Recomendado", free: true, tier: "recommended" });
+    expect(openRouterModels[1].free).toBe(true);
+    expect(openRouterModels[2].free).toBe(true);
+    expect(fetch).toHaveBeenCalledWith("https://openrouter.ai/api/v1/models?output_modalities=text", expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer fake-key", "X-OpenRouter-Title": "Valurise" }),
+    }));
+  });
+
+  it("aceita IDs de modelos com barra e dois-pontos sem aceitar separadores perigosos", () => {
+    expect(AI_MODEL_ID_PATTERN.test("openai/gpt-oss-20b")).toBe(true);
+    expect(isSafeAIModelId("qwen/model:free")).toBe(true);
+    expect(isSafeAIModelId("openrouter/free")).toBe(true);
+    expect(isSafeAIModelId("model/name?key=bad")).toBe(false);
+    expect(isSafeAIModelId("../arbitrary-host")).toBe(false);
+    expect(isSafeAIModelId("vendor/../arbitrary-host")).toBe(false);
+    expect(isSafeAIModelId("vendor//model")).toBe(false);
+    expect(isSafeAIModelId("a".repeat(101))).toBe(false);
   });
 });
 

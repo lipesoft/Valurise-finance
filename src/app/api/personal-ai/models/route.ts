@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
-import { AIProviderError, classifyAIError, listProviderModels, type AIProvider } from "@/lib/personal-ai/providers";
+import { AIProviderError, classifyAIError, listProviderModels } from "@/lib/personal-ai/providers";
+import { AI_PROVIDERS } from "@/lib/personal-ai/provider-config";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
 
 export const maxDuration = 15;
 
-const schema = z.object({ provider: z.enum(["openai", "gemini", "deepseek"]), apiKey: z.string().trim().min(12).max(512).optional() }).strict();
+const schema = z.object({ provider: z.enum(AI_PROVIDERS), apiKey: z.string().trim().min(12).max(512).optional() }).strict();
 
 export async function POST(request: NextRequest) {
   const user = await getVerifiedActiveUser(request.headers.get("authorization"));
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
     const models = await listProviderModels(provider, apiKey, AbortSignal.timeout(12_000));
     return NextResponse.json({ provider, models, fetchedAt: new Date().toISOString() });
   } catch (error) {
-    const failure = classifyAIError(error, provider as AIProvider, "catalog");
+    const failure = classifyAIError(error, provider, "catalog");
     if (!(error instanceof AIProviderError)) console.error("Val AI catalog failure", JSON.stringify({ provider, category: failure.category, status: failure.httpStatus, requestId: failure.requestId }));
     return NextResponse.json({ error: failure.message, category: failure.category, providerMessage: failure.providerMessage, providerCode: failure.providerCode, providerHttpStatus: failure.httpStatus, requestId: failure.requestId, retryable: failure.retryable }, { status: failure.httpStatus === 429 ? 429 : 502 });
   }

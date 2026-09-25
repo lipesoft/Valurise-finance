@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { encryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
+import { AI_MODEL_ID_PATTERN, AI_PROVIDERS } from "@/lib/personal-ai/provider-config";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
 import { legalVersions } from "@/lib/legal-content";
 
 const connectionSchema = z.object({
-  provider: z.enum(["openai", "gemini", "deepseek"]),
+  provider: z.enum(AI_PROVIDERS),
   apiKey: z.string().trim().min(12).max(512).optional(),
-  model: z.string().trim().min(2).max(100).regex(/^[a-zA-Z0-9._:-]+$/),
+  model: z.string().trim().min(2).max(100).regex(AI_MODEL_ID_PATTERN),
   insightsEnabled: z.boolean().default(false),
   notificationsEnabled: z.boolean().default(false),
   actionsEnabled: z.boolean().optional(),

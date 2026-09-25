@@ -6,6 +6,7 @@ import { createPersonalFinanceTools } from "@/lib/personal-ai/tools";
 import { createPersonalAiTransactionProposalTool, type PersonalAiTransactionDraft } from "@/lib/personal-ai/actions";
 import { NO_FINANCIAL_CONTEXT_INSTRUCTION, requestsTransactionAction, requiresPersonalFinanceData, VAL_PERSONA } from "@/lib/personal-ai";
 import { AIProviderError, classifyAIError, createProviderModel, logAIError, type AIProvider } from "@/lib/personal-ai/providers";
+import { isAIProvider } from "@/lib/personal-ai/provider-config";
 import { isGemini25FlashModel, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
@@ -79,8 +80,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Sua configuração está salva, mas ainda não foi validada. Teste a conexão em Configurações antes de conversar." }, { status: 409, headers: { "Cache-Control": "no-store" } });
   }
 
-  const provider = connection.provider as AIProvider;
-  if (!["openai", "gemini", "deepseek"].includes(provider)) return NextResponse.json({ error: "O provedor de IA conectado não é suportado." }, { status: 422 });
+  if (!isAIProvider(connection.provider)) return NextResponse.json({ error: "O provedor de IA conectado não é suportado." }, { status: 422 });
+  const provider: AIProvider = connection.provider;
   if (provider === "gemini" && !isSupportedGeminiModel(connection.model)) {
     return NextResponse.json({ error: "O modelo Gemini salvo não está habilitado no Valurise. Em Configurações, selecione gemini-2.5-flash-lite ou gemini-2.5-flash e teste a conexão.", category: "INVALID_MODEL", providerCode: "MODEL_NOT_ALLOWED", model: connection.model }, { status: 409 });
   }

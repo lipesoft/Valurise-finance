@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { generateText } from "ai";
+import { generateText, tool } from "ai";
 import { z } from "zod";
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
-import { AIProviderError, classifyAIError, createProviderModel, logAIError, type AIProvider } from "@/lib/personal-ai/providers";
+import { AIProviderError, classifyAIError, createProviderModel, logAIError } from "@/lib/personal-ai/providers";
+import { AI_MODEL_ID_PATTERN, AI_PROVIDERS } from "@/lib/personal-ai/provider-config";
 import { isGemini25FlashModel, isSupportedGeminiModel } from "@/lib/personal-ai/model-options";
 import { getSupabaseAdminClient, getVerifiedActiveUser } from "@/lib/supabase/admin";
 import { recordPersonalAIUsage } from "@/lib/personal-ai/usage";
@@ -11,8 +12,8 @@ import { recordPersonalAIUsage } from "@/lib/personal-ai/usage";
 export const maxDuration = 15;
 
 const schema = z.object({
-  provider: z.enum(["openai", "gemini", "deepseek"]),
-  model: z.string().trim().min(2).max(100).regex(/^[A-Za-z0-9._:-]+$/),
+  provider: z.enum(AI_PROVIDERS),
+  model: z.string().trim().min(2).max(100).regex(AI_MODEL_ID_PATTERN),
   apiKey: z.string().trim().min(12).max(512).optional(),
 }).strict();
 
@@ -51,22 +52,57 @@ export async function POST(request: NextRequest) {
   }
 
   const startedAt = Date.now();
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  const addTokenCount = (current: number | undefined, next: number | undefined) =>
+    current === undefined && next === undefined ? undefined : (current || 0) + (next || 0);
   try {
     // This explicit user action sends only a tiny health-check prompt, never financial data.
     const gemini25Flash = provider === "gemini" && isGemini25FlashModel(model);
+    const deadline = AbortSignal.timeout(12_000);
     const result = await generateText({
-      model: createProviderModel(provider as AIProvider, apiKey, model),
+      model: createProviderModel(provider, apiKey, model),
       prompt: "Responda somente: OK",
       maxOutputTokens: gemini25Flash ? 32 : provider === "gemini" ? 128 : 6,
-      ...(provider !== "gemini" ? { temperature: 0 } : {}),
+      ...(provider === "groq" || provider === "openrouter" ? { temperature: 0.1 } : provider !== "gemini" ? { temperature: 0 } : {}),
       ...(gemini25Flash ? { providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } } } : {}),
       maxRetries: 0,
-      timeout: 12_000,
-      abortSignal: AbortSignal.timeout(12_000),
+      timeout: 10_000,
+      abortSignal: deadline,
     });
-    if (!result.text.trim()) throw new AIProviderError({ provider: provider as AIProvider, model, category: result.finishReason === "content-filter" ? "CONTENT_BLOCKED" : "MALFORMED_RESPONSE", providerCode: result.finishReason });
+    if (!result.text.trim()) throw new AIProviderError({ provider, model, category: result.finishReason === "content-filter" ? "CONTENT_BLOCKED" : "MALFORMED_RESPONSE", providerCode: result.finishReason });
+    inputTokens = result.usage.inputTokens ?? undefined;
+    outputTokens = result.usage.outputTokens ?? undefined;
+
+    let toolCallingValidated = false;
+    if (provider === "groq" || provider === "openrouter") {
+      // A harmless local-only tool proves the selected model can use the same function-call path as Val.
+      const toolResult = await generateText({
+        model: createProviderModel(provider, apiKey, model),
+        prompt: "Use obrigatoriamente getHealthCheckValue e, depois, responda somente OK.",
+        tools: {
+          getHealthCheckValue: tool({
+            description: "Retorna um sinal fictício de saúde da integração; não acessa dados nem altera sistemas.",
+            inputSchema: z.object({}).strict(),
+            execute: async () => ({ ok: true }),
+          }),
+        },
+        toolChoice: "required",
+        maxOutputTokens: 16,
+        temperature: 0.1,
+        maxRetries: 0,
+        timeout: 10_000,
+        abortSignal: deadline,
+      });
+      const healthCheckWasCalled = toolResult.steps.flatMap((step) => step.toolCalls)
+        .some((call) => call.toolName === "getHealthCheckValue");
+      inputTokens = addTokenCount(inputTokens, toolResult.usage.inputTokens ?? undefined);
+      outputTokens = addTokenCount(outputTokens, toolResult.usage.outputTokens ?? undefined);
+      if (!healthCheckWasCalled) throw new AIProviderError({ provider, model, category: "TOOL_CALL_UNSUPPORTED", providerCode: "TOOL_CALL_NOT_CONFIRMED" });
+      toolCallingValidated = true;
+    }
     const latencyMs = Date.now() - startedAt;
-    await recordPersonalAIUsage({ userId: user.id, provider: provider as AIProvider, model, inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens, latencyMs, kind: "connection_test" });
+    await recordPersonalAIUsage({ userId: user.id, provider, model, inputTokens, outputTokens, latencyMs, kind: "connection_test" });
     let validatedAt: string | null = null;
     if (matchesSavedConnection && saved) {
       const testedAt = new Date().toISOString();
@@ -80,12 +116,12 @@ export async function POST(request: NextRequest) {
       }
       if (updated) validatedAt = testedAt;
     }
-    return NextResponse.json({ ok: true, provider, model, latencyMs, validated: Boolean(validatedAt), validatedAt, usage: { inputTokens: result.usage.inputTokens ?? null, outputTokens: result.usage.outputTokens ?? null } });
+    return NextResponse.json({ ok: true, provider, model, latencyMs, validated: Boolean(validatedAt), validatedAt, toolCallingValidated, usage: { inputTokens: inputTokens ?? null, outputTokens: outputTokens ?? null } });
   } catch (error) {
-    const failure = classifyAIError(error, provider as AIProvider, model);
+    const failure = classifyAIError(error, provider, model);
     const latencyMs = Date.now() - startedAt;
     logAIError(failure, latencyMs);
-    await recordPersonalAIUsage({ userId: user.id, provider: provider as AIProvider, model, latencyMs, kind: "connection_test", error: failure });
+    await recordPersonalAIUsage({ userId: user.id, provider, model, inputTokens, outputTokens, latencyMs, kind: "connection_test", error: failure });
     return NextResponse.json({ error: failure.message, category: failure.category, providerMessage: failure.providerMessage, providerCode: failure.providerCode, providerHttpStatus: failure.httpStatus, requestId: failure.requestId, retryable: failure.retryable, model }, { status: failure.httpStatus === 429 ? 429 : 502 });
   }
 }

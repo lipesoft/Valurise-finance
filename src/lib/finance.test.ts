@@ -177,6 +177,23 @@ describe("finanças", () => {
     ).toBe(5000);
   });
 
+  it("considera compromissos uma vez e recorrentes a partir do início configurado", () => {
+    const items = [
+      { id: "internet", amountCents: 12000, dueDay: 31, frequency: "monthly" as const, active: true, startMonth: "2026-10" },
+      { id: "insurance", amountCents: 8000, dueDay: 15, frequency: "once" as const, active: true, startMonth: "2026-09" },
+      { id: "future-once", amountCents: 5000, dueDay: 12, frequency: "once" as const, active: true, startMonth: "2026-10" },
+    ];
+    const today = new Date("2026-09-10T12:00:00");
+    expect(committedMoneyCents(items, new Date("2026-09-01T12:00:00"), today)).toBe(8000);
+    expect(committedMoneyCents(items, new Date("2026-10-01T12:00:00"), today)).toBe(17000);
+  });
+
+  it("não conta como comprometido um mês já pago sem apagar histórico dos outros meses", () => {
+    const bill = { id: "internet", amountCents: 12000, dueDay: 10, frequency: "monthly" as const, active: true, paidMonths: ["2026-09"] };
+    expect(committedMoneyCents([bill], new Date("2026-09-01T12:00:00"), new Date("2026-09-01T12:00:00"))).toBe(0);
+    expect(committedMoneyCents([bill], new Date("2026-10-01T12:00:00"), new Date("2026-09-01T12:00:00"))).toBe(12000);
+  });
+
   it("calcula a contribuição mensal arredondando para cima e zera uma meta atingida", () => {
     const today = new Date("2026-09-01T12:00:00");
 

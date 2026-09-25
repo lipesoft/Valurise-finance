@@ -1,4 +1,5 @@
 import { addMonths } from "date-fns";
+import { isRecurringBillPaidInMonth, isRecurringBillScheduledInMonth, recurringBillDueDay } from "@/lib/recurring-bills";
 
 export type TransactionType = "income" | "expense" | "investment" | "transfer";
 export type FinanceTransaction = {
@@ -245,9 +246,11 @@ export type PlannedCommitment = {
   id: string;
   amountCents: number;
   dueDay: number;
-  frequency: "monthly" | "yearly";
+  frequency: "once" | "monthly" | "yearly";
   active: boolean;
   paidMonth?: string;
+  paidMonths?: string[];
+  startMonth?: string;
   /** Planned contributions are optional commitments, never past investments. */
   isPlannedContribution?: boolean;
 };
@@ -266,9 +269,10 @@ export function committedMoneyCents(
   const isCurrent = monthKey === currentMonthKey;
   return commitments
     .filter((item) => {
-      if (!item.active || item.paidMonth === monthKey) return false;
-      if (item.frequency === "yearly" && activeMonth.getMonth() !== today.getMonth()) return false;
-      return !isCurrent || item.dueDay >= today.getDate();
+      if (!isRecurringBillScheduledInMonth(item, monthKey)) return false;
+      if (isRecurringBillPaidInMonth(item, monthKey)) return false;
+      const dueDay = recurringBillDueDay(item, monthKey);
+      return !isCurrent || dueDay >= today.getDate();
     })
     .reduce((total, item) => total + item.amountCents, 0);
 }

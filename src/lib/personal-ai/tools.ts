@@ -4,6 +4,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { accountBalance } from "@/lib/finance";
 import { formatValData } from "@/lib/personal-ai";
+import { isRecurringBillPaidInMonth, isRecurringBillScheduledInMonth, recurringBillDueDay } from "@/lib/recurring-bills";
 
 type Row = Record<string, unknown>;
 type FinancialState = { data: Row; transactions: Row[] };
@@ -223,10 +224,20 @@ export function createPersonalFinanceTools(rawState: unknown) {
           const amountCents = safeCents(item.amountCents);
           const dueDay = Number(item.dueDay);
           if (amountCents === null || !Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) return [];
-          const status = item.paidMonth === month ? "pago" : dueDay < now.getDate() ? "atrasado" : "pendente";
-          return [{ name: safeText(item.name, "Conta recorrente", 80), amountCents, dueDay, status,
+          const schedule = {
+            active: item.active === true,
+            dueDay,
+            frequency: item.frequency === "once" || item.frequency === "yearly" ? item.frequency : "monthly",
+            startMonth: typeof item.startMonth === "string" ? item.startMonth : undefined,
+            paidMonth: typeof item.paidMonth === "string" ? item.paidMonth : undefined,
+            paidMonths: Array.isArray(item.paidMonths) ? item.paidMonths.filter((value): value is string => typeof value === "string") : [],
+          } as const;
+          if (!isRecurringBillScheduledInMonth(schedule, month)) return [];
+          const effectiveDueDay = recurringBillDueDay(schedule, month);
+          const status = isRecurringBillPaidInMonth(schedule, month) ? "pago" : effectiveDueDay < now.getDate() ? "atrasado" : "pendente";
+          return [{ name: safeText(item.name, "Conta recorrente", 80), amountCents, dueDay: effectiveDueDay, status,
             category: safeText(item.category, "Não informada", 60),
-            frequency: item.frequency === "yearly" ? "anual" : "mensal" }];
+            frequency: schedule.frequency === "yearly" ? "anual" : schedule.frequency === "once" ? "uma vez" : "mensal" }];
         });
         return formatValData({ month, count: bills.length, recurringBills: bills });
       },
