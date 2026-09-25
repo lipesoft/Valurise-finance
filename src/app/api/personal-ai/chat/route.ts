@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { ToolLoopAgent, isStepCount, type ToolSet } from "ai";
 import { z } from "zod";
 import { createPersonalFinanceTools } from "@/lib/personal-ai/tools";
+import { formatValResponse } from "@/lib/personal-ai/presentation";
 import { createPersonalAiTransactionProposalTool, type PersonalAiTransactionDraft } from "@/lib/personal-ai/actions";
 import { NO_FINANCIAL_CONTEXT_INSTRUCTION, requestsTransactionAction, requiresPersonalFinanceData, VAL_PERSONA } from "@/lib/personal-ai";
 import { AIProviderError, classifyAIError, createProviderModel, logAIError, type AIProvider } from "@/lib/personal-ai/providers";
@@ -172,9 +173,9 @@ export async function POST(request: NextRequest) {
       allowSystemInMessages: false,
     });
     const result = await agent.generate({ messages: conversation, timeout: 27_000, abortSignal: timeout });
-    const reply = createdProposals.length
+    const reply = formatValResponse(createdProposals.length
       ? `Preparei uma proposta de ${createdProposals[0].action_type === "expense" ? "despesa" : "receita"}. Confira os dados e confirme ou descarte; nada será registrado sem sua aprovação.`
-      : result.text.trim();
+      : result.text);
     if (!reply) {
       const failure = new AIProviderError({ provider, model: connection.model, category: result.finishReason === "content-filter" ? "CONTENT_BLOCKED" : "MALFORMED_RESPONSE", providerCode: result.finishReason });
       logAIError(failure, Date.now() - startedAt);

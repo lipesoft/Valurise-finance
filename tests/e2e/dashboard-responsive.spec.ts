@@ -171,6 +171,50 @@ test("chat financeiro ocupa a tela inteira e mantém os atalhos responsivos", as
   }
 });
 
+test("respostas da Val são organizadas, sem Markdown cru e com poucos emojis", async ({ page }) => {
+  await installMockSession(page);
+  await page.route("**/api/personal-ai/connection", (route) => route.fulfill({ status: 200, json: {
+    connection: { provider: "openrouter", model: "openrouter/free", insights_enabled: true, actions_enabled: false, validated: true, validated_model: "openrouter/free", validated_at: "2026-09-24T12:00:00.000Z" },
+  } }));
+  await page.route("**/api/personal-ai/chat", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { messages: [
+      { id: "legacy-question", role: "user", content: "O que a Val pode fazer?" },
+      { id: "legacy-answer", role: "assistant", content: "**O que posso fazer:** - 📊 Mostrar resumos - 💳 Listar contas - 🧾 Ver faturas\n\n**Como funciona:** Não há gravações automáticas." },
+    ] } });
+    return route.fulfill({ status: 200, json: {
+      reply: "Resposta objetiva.\n\n**Seu orçamento:** - Alimentação está em 68%. - Restam R$ 241,20.",
+      usage: { totalTokens: 20 },
+    } });
+  });
+  await page.route("**/api/personal-ai/actions", (route) => route.fulfill({ status: 200, json: { proposals: [] } }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Registrar movimentação" }).click();
+  const dialog = page.getByRole("dialog");
+  const messageArea = dialog.locator('[aria-live="polite"]');
+  const oldReply = messageArea.locator(":scope > div").filter({ hasText: "O que posso fazer:" });
+  await expect(oldReply).toContainText("• 📊 Mostrar resumos");
+  await expect(oldReply).toContainText("• Listar contas");
+  await expect(oldReply).not.toContainText("**");
+  await expect(oldReply).not.toContainText("💳");
+  await expect(oldReply).not.toContainText("🧾");
+  await expect.poll(() => oldReply.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("pre-wrap");
+  expect(await oldReply.innerText()).toContain("\n");
+
+  await dialog.getByRole("textbox", { name: "Mensagem para a assistente financeira" }).fill("Como está meu orçamento?");
+  await dialog.getByRole("button", { name: "Enviar mensagem" }).click();
+  const newReply = messageArea.locator(":scope > div").filter({ hasText: "Seu orçamento:" });
+  await expect(newReply).toContainText("• Alimentação está em 68%.");
+  await expect(newReply).toContainText("• Restam R$ 241,20.");
+  await expect(newReply).not.toContainText("**");
+  expect(await newReply.innerText()).toContain("\n");
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(dialog.getByRole("button", { name: "Enviar mensagem" })).toBeInViewport();
+  }
+});
+
 test("alertas podem ser dispensados e saem do sino", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
