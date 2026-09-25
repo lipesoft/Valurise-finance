@@ -29,6 +29,19 @@ const mockState = {
   ],
   profile: { publicId: "VAL-QA-1234" },
 };
+const mockBusinessState = {
+  data: {
+    categories: ["Vendas", "Custos"],
+    institutions: [{ id: "business-institution-qa", name: "Banco Empresa QA", color: "#4edea3", accounts: [{ id: "business-account-qa", name: "Conta da empresa", balance: 100000 }], cards: [] }],
+    recurringBills: [],
+    onboarded: false,
+  },
+  transactions: [
+    { id: "business-income-qa", type: "income", amountCents: 450000, category: "Vendas", account: "Banco Empresa QA • Conta da empresa", date: `${currentMonth}-05T12:00:00.000Z`, createdAt: `${currentMonth}-05T12:00:00.000Z` },
+    { id: "business-expense-qa", type: "expense", amountCents: 120000, category: "Custos", account: "Banco Empresa QA • Conta da empresa", date: `${currentMonth}-10T12:00:00.000Z`, createdAt: `${currentMonth}-10T12:00:00.000Z` },
+  ],
+  profile: { publicId: "VAL-QA-BUSINESS" },
+};
 
 async function installMockSession(page: import("@playwright/test").Page, financialStateDelayMs = 0, financialStateFails = false) {
   const authUser = {
@@ -62,6 +75,25 @@ async function installMockSession(page: import("@playwright/test").Page, financi
     ok: true,
     workspace: { id: businessWorkspaceId, type: "business", displayName: "Empresa QA", role: "owner" },
   } }));
+  let businessProfile = {
+    workspace_id: businessWorkspaceId, legal_name: "Empresa QA Serviços LTDA", trade_name: "Empresa QA", cnpj: "11222333000181",
+    email: null, phone: null, postal_code: null, street: null, number: null, address_complement: null, neighborhood: null,
+    city: null, state: null, activity_start_date: null, cnae: null, tax_regime: null, accountant_name: null,
+    management_close_day: null, default_currency: "BRL", timezone: "America/Sao_Paulo",
+  };
+  const businessAssumptions: Record<string, { metricKey: string; amountCents: number; nature: "reported" | "estimated"; source: "manual"; referenceMonth: string; createdAt: string } | null> = {};
+  await page.route("**/api/workspaces/business/profile**", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { profile: businessProfile, assumptions: businessAssumptions, referenceMonth: currentMonth } });
+    const body = route.request().postDataJSON() as { section: string; profile?: Record<string, unknown>; referenceMonth?: string; assumptions?: { metricKey: string; amountCents: number | null; nature: "reported" | "estimated" }[] };
+    if (body.section === "company" && body.profile) businessProfile = { ...businessProfile, ...body.profile } as typeof businessProfile;
+    if (body.section === "finance") for (const item of body.assumptions || []) {
+      businessAssumptions[item.metricKey] = item.amountCents === null ? null : {
+        metricKey: item.metricKey, amountCents: item.amountCents, nature: item.nature, source: "manual",
+        referenceMonth: `${body.referenceMonth}-01`, createdAt: new Date().toISOString(),
+      };
+    }
+    return route.fulfill({ status: 200, json: { ok: true, saved: body.assumptions?.length || 0 } });
+  });
   await page.route("**/rest/v1/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith("/profiles")) {
@@ -79,11 +111,7 @@ async function installMockSession(page: import("@playwright/test").Page, financi
         await new Promise((resolve) => setTimeout(resolve, financialStateDelayMs));
       }
       const requestedWorkspace = new URL(route.request().url()).searchParams.get("workspace_id")?.replace(/^eq\./, "");
-      const state = requestedWorkspace === businessWorkspaceId ? {
-        data: { categories: [], institutions: [], onboarded: false },
-        transactions: [],
-        profile: {},
-      } : mockState;
+      const state = requestedWorkspace === businessWorkspaceId ? mockBusinessState : mockState;
       return route.fulfill({ status: 200, json: { state, version: 1 } });
     }
     if (pathname.endsWith("/user_consents")) {
@@ -141,6 +169,43 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByText("Mercado QA")).toBeVisible();
   await page.getByLabel("Espaço financeiro ativo").selectOption(businessWorkspaceId);
   await expect(page.getByText("Mercado QA")).toHaveCount(0);
+});
+
+test("salva referências empresariais, distingue realizado de estimado e mantém o mobile utilizável", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Criar espaço empresarial" }).click();
+  const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
+  await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
+  await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
+  await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
+  await dialog.getByRole("button", { name: "Criar empresa" }).click();
+  await page.getByRole("button", { name: "Continuar depois" }).click();
+  await expect(page.getByRole("heading", { name: "Visão da empresa" })).toBeVisible();
+  await page.getByRole("button", { name: "Ajustes" }).click();
+  await expect(page.getByRole("heading", { name: "Perfil financeiro da empresa" })).toBeVisible();
+  await page.getByLabel("Faturamento médio mensal").fill("5000,00");
+  await page.getByLabel("Custos diretos médios").fill("1000,00");
+  await page.getByLabel("Despesas fixas médias").fill("500,00");
+  await page.getByLabel("Despesas variáveis médias").fill("300,00");
+  await page.getByLabel("Folha e pessoal médios").fill("500,00");
+  await page.getByLabel("Impostos provisionados médios").fill("200,00");
+  await page.getByLabel("Contas a receber estimadas").fill("1000,00");
+  await page.getByLabel("Contas a pagar estimadas").fill("800,00");
+  await page.getByLabel("Saldo inicial informado").fill("3000,00");
+  await page.getByRole("button", { name: "Salvar perfil financeiro" }).click();
+  await expect(page.getByText("Perfil financeiro salvo com histórico e origem dos valores.")).toBeVisible();
+  await page.getByRole("button", { name: "Dashboard" }).click();
+  await expect(page.getByRole("heading", { name: "Visão da empresa" })).toBeVisible();
+  await expect(page.getByText("Realizado", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Estimado", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Resultado gerencial", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("DRE gerencial simplificada")).toBeVisible();
+  await expect(page.getByText("Fluxo de caixa registrado")).toBeVisible();
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
 });
 
 test("splash acompanha a sincronização real e revela a interface pelo símbolo", async ({ page }) => {
@@ -212,6 +277,58 @@ test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px
 
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await expect.poll(() => page.locator("header").evaluate((header) => Math.abs(header.getBoundingClientRect().top))).toBeLessThanOrEqual(1);
+});
+
+test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible();
+
+  const workspaceSelect = page.getByLabel("Espaço financeiro ativo");
+  const header = workspaceSelect.locator("xpath=ancestor::header");
+  const searchButton = page.getByRole("button", { name: "Buscar em todo o Valurise" });
+
+  for (const width of [320, 360, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    const headerBounds = await header.boundingBox();
+    const selectBounds = await workspaceSelect.boundingBox();
+    expect(headerBounds).not.toBeNull();
+    expect(selectBounds).not.toBeNull();
+    expect(selectBounds!.width).toBeGreaterThanOrEqual(70);
+
+    const controls = await header.locator("select, button").evaluateAll((elements) => elements
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return { label: element.getAttribute("aria-label") || element.tagName, x: rect.x, right: rect.right, width: rect.width, height: rect.height, visible: style.display !== "none" && style.visibility !== "hidden" };
+      })
+      .filter((control) => control.visible && control.width > 0));
+
+    for (const control of controls) {
+      expect(control.x).toBeGreaterThanOrEqual(headerBounds!.x - 1);
+      expect(control.right).toBeLessThanOrEqual(headerBounds!.x + headerBounds!.width + 1);
+      if (control.label !== "Espaço financeiro ativo") expect(control.width).toBeGreaterThanOrEqual(44);
+      if (control.label !== "Espaço financeiro ativo") expect(control.height).toBeGreaterThanOrEqual(44);
+    }
+    for (let index = 1; index < controls.length; index += 1) {
+      expect(controls[index - 1].right).toBeLessThanOrEqual(controls[index].x + 1);
+    }
+
+    if (width <= 374) {
+      await expect(searchButton).toBeHidden();
+    } else {
+      await expect(searchButton).toBeVisible();
+      await expect(searchButton).toBeInViewport();
+    }
+  }
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.getByRole("button", { name: "Abrir menu" }).click();
+  const menu = page.getByRole("dialog", { name: "Menu principal" });
+  await menu.getByRole("button", { name: "Buscar em todo o Valurise" }).click();
+  await expect(page.getByPlaceholder("Ex.: gasolina, reserva, Nubank")).toBeVisible();
 });
 
 test("chat financeiro ocupa a tela inteira e mantém os atalhos responsivos", async ({ page }) => {

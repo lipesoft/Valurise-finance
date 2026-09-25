@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { ToolLoopAgent, isStepCount, type ToolSet } from "ai";
 import { z } from "zod";
-import { createPersonalFinanceTools } from "@/lib/personal-ai/tools";
+import { createBusinessFinanceTools, createPersonalFinanceTools } from "@/lib/personal-ai/tools";
 import { formatValResponse } from "@/lib/personal-ai/presentation";
 import { createPersonalAiTransactionProposalTool, type PersonalAiTransactionDraft } from "@/lib/personal-ai/actions";
 import { NO_FINANCIAL_CONTEXT_INSTRUCTION, requestsTransactionAction, requiresPersonalFinanceData, VAL_PERSONA } from "@/lib/personal-ai";
@@ -15,6 +15,7 @@ import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
 import { createUserScopedSupabaseClient } from "@/lib/supabase/user-scoped";
 import { legalVersions } from "@/lib/legal-content";
 import { recordPersonalAIUsage } from "@/lib/personal-ai/usage";
+import { BUSINESS_ASSUMPTION_KEYS, type BusinessAssumption } from "@/lib/business-finance";
 
 export const maxDuration = 30;
 
@@ -97,7 +98,7 @@ export async function POST(request: NextRequest) {
   const timeout = AbortSignal.timeout(28_000);
   const workspaceInstructions = canUseFinancialContext
     ? workspace.type === "business"
-      ? `CONTEXTO ATIVO: workspace empresarial “${workspace.displayName}”. Responda apenas sobre os dados deste workspace empresarial e use linguagem de caixa, receitas, despesas, contas a pagar/receber e gestão empresarial quando os dados permitirem. Nunca misture ou suponha dados pessoais do titular.`
+      ? `CONTEXTO ATIVO: workspace empresarial “${workspace.displayName}”. Responda apenas sobre os dados deste workspace empresarial. Diferencie receitas e despesas registradas (realizadas) de valores informados, estimados e projetados; preserve a natureza e a origem devolvidas pelas ferramentas. Diga “dados insuficientes” quando algum componente estiver ausente; ausência não significa R$ 0. Use “resultado gerencial estimado/misto”, nunca “lucro” contábil ou fiscal se a base incluir estimativas. As contas a receber/pagar e as projeções são referências gerenciais, não títulos ou compromissos itemizados. Nunca misture ou suponha dados pessoais do titular.`
       : `CONTEXTO ATIVO: workspace pessoal “${workspace.displayName}”. Responda somente sobre as finanças pessoais presentes neste workspace.`
     : `MODO ATIVO: ${workspace.type === "business" ? "empresarial" : "pessoal"}. Não há consentimento para consultar dados financeiros deste workspace.`;
   let createdProposals: Array<{
@@ -120,6 +121,33 @@ export async function POST(request: NextRequest) {
       if (financialError) return NextResponse.json({ error: "Não foi possível consultar os dados financeiros com segurança." }, { status: 503 });
       const state = financial?.state || {};
       const readTools = createPersonalFinanceTools(state);
+      const businessTools = workspace.type === "business" ? createBusinessFinanceTools(state, async (period) => {
+        const referenceMonth = `${period}-01`;
+        const results = await Promise.all(BUSINESS_ASSUMPTION_KEYS.map((metricKey) => scoped
+          .from("business_financial_assumptions")
+          .select("metric_key, amount_cents, nature, source, reference_month, is_cleared, created_at")
+          .eq("workspace_id", workspace.id)
+          .eq("metric_key", metricKey)
+          .lte("reference_month", referenceMonth)
+          .order("reference_month", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()));
+        const failed = results.find((result) => result.error);
+        if (failed) throw new Error("Business financial context is unavailable.");
+        return results.flatMap((result) => {
+          const row = result.data;
+          if (!row || row.is_cleared || !Number.isSafeInteger(Number(row.amount_cents))) return [];
+          return [{
+            metricKey: row.metric_key,
+            amountCents: Number(row.amount_cents),
+            nature: row.nature,
+            source: row.source,
+            referenceMonth: row.reference_month,
+            createdAt: row.created_at,
+          } as BusinessAssumption];
+        });
+      }) : {};
       if (connection.actions_enabled && financial && Number.isInteger(financial.version)) {
         let proposalCreated = false;
         const proposalTool = createPersonalAiTransactionProposalTool(state, async (draft: PersonalAiTransactionDraft) => {
@@ -148,9 +176,9 @@ export async function POST(request: NextRequest) {
           createdProposals = [{ ...proposal, amount_cents: Number(proposal.amount_cents) }];
           return { id: proposal.id, expiresAt: proposal.expires_at };
         });
-        financialTools = { ...readTools, createTransactionProposal: proposalTool };
+        financialTools = { ...readTools, ...businessTools, createTransactionProposal: proposalTool };
       } else {
-        financialTools = readTools;
+        financialTools = { ...readTools, ...businessTools };
       }
     }
 

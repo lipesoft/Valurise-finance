@@ -2,9 +2,10 @@ import "server-only";
 
 import { tool } from "ai";
 import { z } from "zod";
-import { accountBalance } from "@/lib/finance";
+import { accountBalance, type FinanceTransaction } from "@/lib/finance";
 import { formatValData } from "@/lib/personal-ai";
 import { isRecurringBillPaidInMonth, isRecurringBillScheduledInMonth, recurringBillDueDay } from "@/lib/recurring-bills";
+import { BUSINESS_ASSUMPTION_KEYS, calculateBusinessFinanceSnapshot, type BusinessAssumption } from "@/lib/business-finance";
 
 type Row = Record<string, unknown>;
 type FinancialState = { data: Row; transactions: Row[] };
@@ -240,6 +241,76 @@ export function createPersonalFinanceTools(rawState: unknown) {
             frequency: schedule.frequency === "yearly" ? "anual" : schedule.frequency === "once" ? "uma vez" : "mensal" }];
         });
         return formatValData({ month, count: bills.length, recurringBills: bills });
+      },
+    }),
+  };
+}
+
+/** Business-only, read-only metrics keep reported estimates distinct from the workspace ledger. */
+export function createBusinessFinanceTools(
+  rawState: unknown,
+  getAssumptions: (period: string) => Promise<BusinessAssumption[]>,
+) {
+  const root = asRow(rawState);
+  const data = asRow(root.data);
+  const transactions = rows(root.transactions).filter(validTransaction).flatMap((item) => {
+    if (!["income", "expense", "investment", "transfer"].includes(String(item.type))) return [];
+    return [{
+      id: safeText(item.id, "transaction", 80),
+      type: item.type as FinanceTransaction["type"],
+      amountCents: Number(item.amountCents),
+      category: safeText(item.category, "Outros", 60),
+      account: safeText(item.account, "Não informada", 80),
+      description: safeText(item.description, "", 90),
+      date: String(item.date),
+      createdAt: safeText(item.createdAt, String(item.date), 40),
+      destinationAccount: safeText(item.destinationAccount, "", 80) || undefined,
+    } satisfies FinanceTransaction];
+  });
+  const accounts = rows(data.institutions).flatMap((institution) => rows(institution.accounts).map((account) => ({
+    label: `${safeText(institution.name, "Instituição", 80)} • ${safeText(account.name, "Conta", 80)}`,
+    balanceCents: safeCents(account.balance),
+  }))).filter((account): account is { label: string; balanceCents: number } => account.balanceCents !== null);
+  const cashAvailableCents = accounts.length
+    ? accounts.reduce((total, account) => total + accountBalance(account.balanceCents, account.label, transactions), 0)
+    : null;
+
+  return {
+    getBusinessFinanceOverview: tool({
+      description: "Consulta somente os indicadores gerenciais e o caixa do workspace empresarial ativo. Diferencia receitas/despesas registradas de valores informados/estimados e projeções. Não representa contabilidade oficial.",
+      inputSchema: z.object({ period: z.enum(["current_month", "last_month"]).default("current_month") }).strict(),
+      execute: async ({ period }) => {
+        const current = defaultMonth();
+        const month = period === "current_month" ? current : (() => {
+          const [year, monthNumber] = current.split("-").map(Number);
+          const last = new Date(year, monthNumber - 2, 1);
+          return `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, "0")}`;
+        })();
+        const assumptions = await getAssumptions(month);
+        const snapshot = calculateBusinessFinanceSnapshot({ period: month, transactions, assumptions, cashAvailableCents });
+        return formatValData({
+          workspaceType: "business",
+          period: month,
+          accountingBasis: "caixa",
+          disclaimer: "Gestão gerencial baseada nos lançamentos do Valurise e valores informados pela empresa; não é apuração contábil ou fiscal oficial.",
+          indicators: {
+            grossRevenue: snapshot.grossRevenue,
+            registeredExpenses: snapshot.registeredExpenses,
+            cashOperatingResult: snapshot.cashOperatingResult,
+            cashAvailable: snapshot.cashAvailable,
+            receivables: snapshot.receivables,
+            payables: snapshot.payables,
+            workingCapital: snapshot.workingCapital,
+            projectedCash30Days: period === "current_month" ? snapshot.projectedCash30Days : null,
+            managerialResult: snapshot.managerialResult,
+            grossMarginPercent: snapshot.grossMarginPercent,
+            netMarginPercent: snapshot.netMarginPercent,
+            cashflow: snapshot.cashflow,
+            monthlyReference: snapshot.monthlyReference,
+            actualVsReferencePercent: snapshot.actualVsReferencePercent,
+          },
+          provenance: "Cada valor contém natureza, origem e explicação. Ausência de dados é null, não zero.",
+        });
       },
     }),
   };

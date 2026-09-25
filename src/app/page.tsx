@@ -81,6 +81,7 @@ import { formatValResponse } from "@/lib/personal-ai/presentation";
 import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise-splash";
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
+import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -925,6 +926,16 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
                 <X size={18} />
               </button>
             </div>
+            <button
+              onClick={() => {
+                setMobileMenu(false);
+                setSearchOpen(true);
+              }}
+              className="muted mt-4 flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-[var(--panel2)]"
+            >
+              <Search size={18} />
+              <span>Buscar em todo o Valurise</span>
+            </button>
             <p className="muted mt-6 px-2 text-[11px] tracking-widest">
               NAVEGAÇÃO
             </p>
@@ -958,22 +969,22 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
       )}
       </AnimatePresence>
       <section className="min-w-0 pb-[calc(11rem+env(safe-area-inset-bottom))] lg:ml-60 lg:pb-40">
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--bg)]/95 px-3 backdrop-blur-xl sm:px-4 lg:px-10">
-          <div className="lg:hidden">
-            <Brand />
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-0 border-b border-[var(--border)] bg-[var(--bg)]/95 px-3 backdrop-blur-xl sm:gap-2 sm:px-4 lg:px-10">
+          <div className="shrink-0 lg:hidden">
+            <Brand compactOnMobile className="shrink-0" />
           </div>
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1">
             <label className="sr-only" htmlFor="active-workspace">Espaço financeiro ativo</label>
-            <select id="active-workspace" aria-label="Espaço financeiro ativo" value={workspace.id} onChange={(event) => onSwitchWorkspace(event.target.value)} className="field h-10 min-h-10 min-w-0 max-w-[min(40vw,190px)] px-2 text-xs font-medium sm:max-w-[260px] sm:px-3">
+            <select id="active-workspace" aria-label="Espaço financeiro ativo" title={`${workspace.type === "personal" ? "Pessoal" : "Empresa"} · ${workspace.displayName}`} value={workspace.id} onChange={(event) => onSwitchWorkspace(event.target.value)} className="field workspace-selector h-10 min-h-10 min-w-0 px-2 text-xs font-medium sm:px-3">
               {workspaces.map((item) => <option key={item.id} value={item.id}>{item.type === "personal" ? "Pessoal" : "Empresa"} · {item.displayName}</option>)}
             </select>
             <button type="button" onClick={onCreateWorkspace} aria-label="Criar espaço empresarial" title="Criar espaço empresarial" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]"><Plus size={18}/></button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-0.5 sm:gap-2">
             <button
               aria-label="Buscar em todo o Valurise"
               onClick={() => setSearchOpen(true)}
-              className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)]"
+              className="header-search-trigger grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)]"
             >
               <Search size={18} />
             </button>
@@ -1070,6 +1081,8 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
         {view === "dashboard" && (
           <Dashboard
             user={user}
+            workspace={workspace}
+            workspaceId={workspace.id}
             sum={sum}
             total={total}
             tx={current}
@@ -1120,6 +1133,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
             logout={logout}
             localStoragePrefix={key}
             workspaceId={workspace.id}
+            businessWorkspace={workspace.type === "business"}
           />
         )}
         </AnimatedPage>
@@ -1445,11 +1459,11 @@ function GlobalSearch({ data, tx, close, go }: any) {
     </Sheet>
   );
 }
-function Brand({ className = "" }: { className?: string }) {
+function Brand({ className = "", compactOnMobile = false }: { className?: string; compactOnMobile?: boolean }) {
   return (
     <span className={`inline-flex items-center gap-2 font-semibold tracking-[-0.04em] ${className}`}>
       <Image src="/valurise-icon.webp" alt="Logo Valurise" width={1254} height={1254} className="h-7 w-7 rounded-lg" priority />
-      <span className="text-lg">VALURISE</span>
+      <span className={`${compactOnMobile ? "hidden md:inline" : ""} text-lg`}>VALURISE</span>
     </span>
   );
 }
@@ -1748,6 +1762,8 @@ function MasterUsers({ toast }: { toast: (text: string) => void }) {
 }
 function Dashboard({
   user,
+  workspace,
+  workspaceId,
   sum,
   total,
   tx,
@@ -1805,6 +1821,7 @@ function Dashboard({
         </button>
       </div>
       </StaggerItem>
+      {workspace?.type === "business" && <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} go={go} />}
       <StaggerItem>
       <AnimatedCard className="panel mt-5 rounded-3xl p-6">
         <p className="muted text-sm">Patrimônio total</p>
@@ -5759,7 +5776,7 @@ function Statement({ tx, month, save, toast }: any) {
     </section>
   );
 }
-function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancialBackup, toast, logout, localStoragePrefix, workspaceId }: any) {
+function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancialBackup, toast, logout, localStoragePrefix, workspaceId, businessWorkspace }: any) {
   const syncEnabled = Boolean(getSupabaseBrowserClient());
   const [restoreCandidate, setRestoreCandidate] = useState<any | null>(null);
   const [backupError, setBackupError] = useState("");
@@ -5841,6 +5858,7 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
         title="Configurações"
         help="Ajuste a aparência da aplicação e, nas próximas versões, suas preferências financeiras e dados de conta."
       />
+      {businessWorkspace && <BusinessFinanceSettings workspaceId={workspaceId} toast={toast} />}
       <Theme value={theme} change={setTheme} />
       <section className="panel mt-6 rounded-2xl p-5">
         <b>Seus dados</b>
