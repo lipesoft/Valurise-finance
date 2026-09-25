@@ -1,4 +1,4 @@
--- Expand provider validation without changing existing encrypted connections or telemetry rows.
+-- Expand provider validation; keep existing encrypted connections and telemetry rows intact.
 alter table public.personal_ai_connections
   drop constraint if exists personal_ai_connections_provider_check;
 
