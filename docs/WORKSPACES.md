@@ -12,11 +12,19 @@ O workspace separa os dados financeiros da identidade de autenticação. Cada co
 
 ## Migração e verificação
 
-Migration: `supabase/migrations/20260925191239_multi_workspace_foundation.sql`.
+Migrations locais relacionadas:
 
-Ela é transacional, preserva as linhas e o conteúdo JSON atuais, cria memberships pessoais, associa as tabelas financeiras e de IA ao workspace pessoal, instala chaves estrangeiras compostas para referências entre dados e substitui as policies antigas. Backfills usam `ON CONFLICT` e atualizam somente associações nulas; a migration pode ser reaplicada sem duplicar workspaces.
+- `supabase/migrations/20260925204359_multi_workspace_foundation.sql`
+- `supabase/migrations/20260925204514_harden_workspace_policies_and_indexes.sql`
+- `supabase/migrations/20260925223520_business_financial_profile.sql`
 
-Após aplicar em um ambiente de teste, confira pelo menos:
+Em 26/09/2026, a tabela de migrations do Supabase conectado registrava como aplicadas as versões `20260925204359` (`multi_workspace_foundation`), `20260925204514` (`harden_workspace_policies_and_indexes`) e `20260925225602` (`business_financial_profile`). As seis tabelas centrais (`workspaces`, `workspace_memberships`, `user_active_workspaces`, `business_profiles`, `business_financial_assumptions` e `user_financial_state`) foram verificadas com RLS habilitado.
+
+Há uma divergência de histórico que precisa ser reconciliada antes de novos pushes de banco: a migration empresarial local está versionada como `20260925223520`, enquanto o Supabase registra `20260925225602`; também existem diferenças antigas entre versões locais e remotas. Não execute `supabase db push` nem marque migrations como aplicadas até comparar os SQLs e confirmar o estado completo do banco. A divergência não significa que a migration empresarial esteja ausente — a versão remota consta como aplicada — e não foi alterada nesta rodada.
+
+A fundação multi-workspace preserva as linhas e o conteúdo JSON atuais, cria memberships pessoais, associa tabelas financeiras e de IA ao workspace pessoal, instala chaves estrangeiras compostas para referências entre dados e substitui policies antigas. Backfills usam `ON CONFLICT` e atualizam somente associações nulas; ainda assim, valide contagens e integridade antes de qualquer reaplicação.
+
+Para conferir a integridade após mudanças futuras, confira pelo menos:
 
 ```sql
 select type, count(*) from public.workspaces group by type;
@@ -26,7 +34,7 @@ select count(*) from public.transactions where workspace_id is null;
 select count(*) from public.workspace_memberships where status = 'active';
 ```
 
-As contagens das tabelas financeiras antes/depois devem permanecer iguais; todo estado antigo deve apontar para exatamente um workspace pessoal. Ainda é necessário validar no Supabase real antes de produção. Esta tarefa não aplicou a migration ao banco nem publicou o código.
+As contagens das tabelas financeiras antes/depois devem permanecer iguais; todo estado antigo deve apontar para exatamente um workspace pessoal. A validação de isolamento entre duas contas reais continua pendente e não foi substituída pela checagem de RLS habilitado nem pelos testes mockados.
 
 ## Rollback e limites
 

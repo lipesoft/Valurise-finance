@@ -117,16 +117,18 @@ export async function PATCH(request: NextRequest) {
           return NextResponse.json({ error: "Informe uma data de início válida." }, { status: 400 });
         }
       }
-      const { error } = await client.from("business_profiles").update({
+      const { data: updatedProfile, error } = await client.from("business_profiles").update({
         ...profile,
         email: profile.email || null,
         activity_start_date: profile.activity_start_date || null,
         cnae: profile.cnae || null,
         updated_at: new Date().toISOString(),
-      }).eq("workspace_id", active.workspace.id);
-      if (error) {
-        console.error("Business company profile update failed", JSON.stringify({ code: error.code || "UNKNOWN" }));
-        return NextResponse.json({ error: "Não foi possível salvar os dados cadastrais da empresa." }, { status: 503 });
+      }).eq("workspace_id", active.workspace.id).select("workspace_id").maybeSingle();
+      if (error || !updatedProfile) {
+        console.error("Business company profile update failed", JSON.stringify({ code: error?.code || (updatedProfile ? "UNKNOWN" : "NO_MATCHING_PROFILE") }));
+        return NextResponse.json({
+          error: "Não foi possível confirmar a atualização dos dados cadastrais da empresa.",
+        }, { status: error ? 503 : 404 });
       }
       return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
     }

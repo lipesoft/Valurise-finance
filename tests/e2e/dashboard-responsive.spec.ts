@@ -274,11 +274,14 @@ test("splash respeita movimento reduzido e libera o dashboard", async ({ page })
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("splash libera o login quando a restauração da sessão falha", async ({ page }) => {
+test("falha temporária ao restaurar sessão libera a recuperação e o retorno ao login", async ({ page }) => {
   await installMockSession(page);
   await page.route("**/auth/v1/user", (route) => route.fulfill({ status: 503, json: { message: "Indisponível no teste" } }));
   await page.goto("/");
 
+  await expect(page.getByRole("heading", { name: "Não foi possível validar seu acesso" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
+  await page.getByRole("button", { name: "Voltar ao login" }).click();
   await expect(page.getByRole("heading", { name: "Acesse sua conta" })).toBeVisible();
   await expect(page.getByText("Abrindo sua conta…", { exact: true })).toHaveCount(0);
 });
