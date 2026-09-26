@@ -125,46 +125,9 @@ select:focus-visible {
   z-index: 0;
   overflow: hidden;
   pointer-events: none;
-}
-.login-blob {
-  position: absolute;
-  border-radius: 48% 52% 45% 55% / 55% 42% 58% 45%;
-  filter: blur(110px);
-  will-change: transform;
-}
-.login-blob-one {
-  top: -18rem;
-  left: -15rem;
-  width: 38rem;
-  height: 38rem;
-  background: rgba(0, 139, 92, 0.28);
-}
-.login-blob-two {
-  right: -14rem;
-  bottom: -19rem;
-  width: 34rem;
-  height: 34rem;
-  background: rgba(78, 222, 163, 0.19);
-}
-.login-blob-three {
-  top: 16%;
-  right: 6%;
-  width: 22rem;
-  height: 22rem;
-  background: rgba(0, 93, 62, 0.18);
-  filter: blur(130px);
-}
-.login-particles {
-  position: absolute;
-  inset: 0;
-}
-.login-particle {
-  position: absolute;
-  display: block;
-  border-radius: 999px;
-  background: #a8ffd5;
-  box-shadow: 0 0 10px rgba(78, 222, 163, 0.12);
-  will-change: transform;
+  background:
+    radial-gradient(ellipse 30rem 22rem at 12% 5%, rgba(0, 139, 92, 0.15), transparent 72%),
+    radial-gradient(ellipse 28rem 24rem at 100% 98%, rgba(78, 222, 163, 0.09), transparent 74%);
 }
 .login-overlay {
   z-index: 1;
@@ -177,9 +140,8 @@ select:focus-visible {
   padding: 20px;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 22px;
-  background: rgba(28, 29, 36, 0.84);
-  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.035);
-  backdrop-filter: blur(22px);
+  background: rgba(28, 29, 36, 0.94);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 .login-layout {
   min-height: calc(100dvh - 2.5rem);
@@ -258,6 +220,9 @@ select:focus-visible {
   background: rgba(255, 255, 255, 0.065);
   border-color: color-mix(in srgb, var(--accent) 76%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.login-card .field[aria-invalid="true"] {
+  border-color: color-mix(in srgb, var(--danger) 72%, transparent);
 }
 .login-password-wrap { position: relative; }
 .login-field-icon {
@@ -401,6 +366,8 @@ input[type="radio"] {
 }
 @media (max-width: 640px) {
   .field { font-size: 16px; }
+  .login-card .field { font-size: 16px; }
+  .login-card { backdrop-filter: none; }
 }
 .skeleton {
   background: linear-gradient(
@@ -424,28 +391,5 @@ input[type="radio"] {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
-  }
-}
-@media (max-width: 640px) {
-  .login-blob-one {
-    top: -14rem;
-    left: -16rem;
-    width: 31rem;
-    height: 31rem;
-  }
-  .login-blob-two {
-    right: -16rem;
-    bottom: -15rem;
-    width: 28rem;
-    height: 28rem;
-  }
-  .login-blob-three {
-    top: 23%;
-    right: -11rem;
-    width: 19rem;
-    height: 19rem;
-  }
-  .login-particle-desktop {
-    display: none;
   }
 }

@@ -85,6 +85,7 @@ import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
 import { WorkspaceDashboardHeader } from "@/components/dashboard/workspace-dashboard-header";
 import { MasterAdminPanel } from "@/components/master-admin-panel";
+import { MasterNotifications } from "@/components/master-notifications";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -373,8 +374,10 @@ function BusinessWorkspaceWelcome({ displayName, openAccounts, openFinancialProf
 function Login({ done }: { done: (u: User) => void }) {
   const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">("login");
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
   const [inviteToken, setInviteToken] = useState("");
   const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState(""), [requestSent, setRequestSent] = useState(false), [showPassword, setShowPassword] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const supabase = getSupabaseBrowserClient();
@@ -398,7 +401,33 @@ function Login({ done }: { done: (u: User) => void }) {
   }
   async function submit(x: React.FormEvent) {
     x.preventDefault();
-    if (busy) return;
+    if (busy || submitting.current) return;
+    const nextFieldErrors: Record<string, string> = {};
+    const email = u.trim();
+    const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    if (mode === "signup") {
+      if (name.trim().length < 2) nextFieldErrors.name = "Informe seu nome (mínimo de 2 caracteres).";
+      if (suggestedUsername.length < 3) nextFieldErrors.username = "O usuário precisa ter pelo menos 3 caracteres.";
+      else if (!/^[a-z0-9][a-z0-9._-]{1,30}[a-z0-9]$/.test(suggestedUsername)) nextFieldErrors.username = "Use letras, números, ponto, hífen ou sublinhado; sem espaço no início ou no fim.";
+      if (!validEmail) nextFieldErrors.identifier = "Informe um e-mail válido para confirmar seu cadastro.";
+      if (p.length < 8) nextFieldErrors.password = "A senha precisa ter pelo menos 8 caracteres.";
+    } else if (mode === "forgot") {
+      if (!validEmail) nextFieldErrors.identifier = "Informe o e-mail cadastrado para receber o link seguro.";
+    } else if (mode === "login") {
+      if (!u.trim()) nextFieldErrors.identifier = "Informe seu usuário ou e-mail.";
+      if (!p) nextFieldErrors.password = "Informe sua senha.";
+    } else if (p.length < 8) {
+      nextFieldErrors.password = "A nova senha precisa ter pelo menos 8 caracteres.";
+    }
+    setFieldErrors(nextFieldErrors);
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setE("Confira os campos destacados.");
+      const firstKey = Object.keys(nextFieldErrors)[0];
+      const firstInvalidId = ({ name: "signup-name", username: "signup-username", identifier: "login-identifier", password: "login-password" } as Record<string, string>)[firstKey];
+      window.requestAnimationFrame(() => document.getElementById(firstInvalidId)?.focus());
+      return;
+    }
+    submitting.current = true;
     setE(""); setNotice(""); setBusy(true);
     try {
       if (supabase && mode === "login") {
@@ -451,6 +480,7 @@ function Login({ done }: { done: (u: User) => void }) {
     } catch {
       setE("Não foi possível concluir agora. Confira sua conexão e tente novamente.");
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   }
@@ -464,18 +494,18 @@ function Login({ done }: { done: (u: User) => void }) {
             <h1>VALURISE</h1>
             <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
           </motion.section>
-          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, enviaremos um link para confirmar o e-mail. Depois da confirmação, o pedido seguirá para análise do Master. Se você já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
-            <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Confirme seu e-mail; depois o Master analisará o pedido." : "Confirme seu e-mail para enviar o pedido à análise do Master.") : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
+          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, enviaremos um link para confirmar o e-mail. Depois da confirmação, o pedido seguirá para análise do Master. Se você já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); setFieldErrors({}); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form noValidate aria-busy={busy} onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+            <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Confirme seu e-mail; depois o Master analisará o pedido." : "Confirme seu e-mail para enviar o pedido à análise do Master.") : mode === "forgot" ? "Use o e-mail cadastrado para receber o link seguro." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
             <div className="login-fields">
-              {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => setName(x.target.value)} className="field" placeholder="Como podemos te chamar?" autoComplete="name" required maxLength={120} /><label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => setUsername(x.target.value)} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" required maxLength={32} />{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
-              {mode !== "reset" && <><label className="login-field-label" htmlFor="login-identifier">{mode === "login" ? "Usuário ou e-mail" : "E-mail"}</label><input id="login-identifier" value={u} onChange={(x) => setU(x.target.value)} className="field" type={mode === "login" ? "text" : "email"} placeholder={mode === "login" ? "Seu usuário ou e-mail" : "voce@exemplo.com"} autoComplete={mode === "login" ? "username" : "email"} required maxLength={254} /></>}
-              {mode !== "forgot" && <><label className="login-field-label" htmlFor="login-password">{mode === "reset" ? "Nova senha" : "Senha"}</label><div className="login-password-wrap"><LockKeyhole className="login-field-icon" size={18} aria-hidden="true" /><input id="login-password" value={p} onChange={(x) => setP(x.target.value)} className="field login-password" type={showPassword ? "text" : "password"} placeholder={mode === "reset" ? "Crie uma nova senha" : "Digite sua senha"} autoComplete={mode === "reset" || mode === "signup" ? "new-password" : "current-password"} required minLength={mode === "signup" || mode === "reset" ? 8 : 1} maxLength={200} /><button className="login-password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div>{(mode === "signup" || mode === "reset") && <small className="muted -mt-1 text-xs">Use pelo menos 8 caracteres.</small>}</>}
+              {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => { setName(x.target.value); setFieldErrors((current) => ({ ...current, name: "" })); }} className="field" placeholder="Como podemos te chamar?" autoComplete="name" required maxLength={120} aria-invalid={Boolean(fieldErrors.name)} aria-describedby={fieldErrors.name ? "signup-name-error" : undefined} />{fieldErrors.name && <small id="signup-name-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.name}</small>}<label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => { setUsername(x.target.value); setFieldErrors((current) => ({ ...current, username: "" })); }} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" required maxLength={32} aria-invalid={Boolean(fieldErrors.username)} aria-describedby={fieldErrors.username ? "signup-username-error" : undefined} />{fieldErrors.username && <small id="signup-username-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.username}</small>}{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
+              {mode !== "reset" && <><label className="login-field-label" htmlFor="login-identifier">{mode === "login" ? "Usuário ou e-mail" : "E-mail"}</label><input id="login-identifier" value={u} onChange={(x) => { setU(x.target.value); setFieldErrors((current) => ({ ...current, identifier: "" })); }} className="field" type={mode === "login" ? "text" : "email"} placeholder={mode === "login" ? "Seu usuário ou e-mail" : "voce@exemplo.com"} autoComplete={mode === "login" ? "username" : "email"} required maxLength={254} aria-invalid={Boolean(fieldErrors.identifier)} aria-describedby={fieldErrors.identifier ? "login-identifier-error" : undefined} />{fieldErrors.identifier && <small id="login-identifier-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.identifier}</small>}</>}
+              {mode !== "forgot" && <><label className="login-field-label" htmlFor="login-password">{mode === "reset" ? "Nova senha" : "Senha"}</label><div className="login-password-wrap"><LockKeyhole className="login-field-icon" size={18} aria-hidden="true" /><input id="login-password" value={p} onChange={(x) => { setP(x.target.value); setFieldErrors((current) => ({ ...current, password: "" })); }} className="field login-password" type={showPassword ? "text" : "password"} placeholder={mode === "reset" ? "Crie uma nova senha" : "Digite sua senha"} autoComplete={mode === "reset" || mode === "signup" ? "new-password" : "current-password"} required minLength={mode === "signup" || mode === "reset" ? 8 : 1} maxLength={200} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? "login-password-error" : undefined} /><button className="login-password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div>{fieldErrors.password && <small id="login-password-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.password}</small>}{(mode === "signup" || mode === "reset") && <small className="muted -mt-1 text-xs">Use pelo menos 8 caracteres; uma frase longa é mais segura.</small>}</>}
             </div>
             {mode === "signup" && <div className="consent-options"><label className="consent-option"><input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} /><span>Li e aceito a <a href="/privacidade" target="_blank" rel="noreferrer">Política de Privacidade</a>.</span></label><label className="consent-option"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} /><span>Li e aceito os <a href="/termos" target="_blank" rel="noreferrer">Termos de Uso</a>.</span></label></div>}
-            <AnimatePresence>{e && <motion.p className="login-feedback login-feedback-error" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: motionTokens.duration.fast }}>{e}</motion.p>}</AnimatePresence>
-            {notice && <p className="login-feedback login-feedback-success">{notice}</p>}
+            <AnimatePresence>{e && <motion.p role="alert" aria-live="assertive" className="login-feedback login-feedback-error" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: motionTokens.duration.fast }}>{e}</motion.p>}</AnimatePresence>
+            {notice && <p role="status" aria-live="polite" className="login-feedback login-feedback-success">{notice}</p>}
             <button disabled={busy} className="login-submit primary disabled:cursor-wait disabled:opacity-60" type="submit"><span>{busy ? "Aguarde…" : mode === "signup" ? "Solicitar acesso" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span>{busy ? <RefreshCw className="animate-spin" size={17} aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>
-            {supabase && <div className="login-actions">{mode !== "login" && <button disabled={busy} type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}{mode === "login" && <><button disabled={busy} type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button disabled={busy} type="button" onClick={() => { setMode("signup"); setE(""); setPrivacyAccepted(false); setTermsAccepted(false); }}>Solicitar acesso</button></>}</div>}
+            {supabase && <div className="login-actions">{mode !== "login" && <button disabled={busy} type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); setFieldErrors({}); }}>Já tenho acesso</button>}{mode === "login" && <><button disabled={busy} type="button" onClick={() => { setMode("forgot"); setE(""); setFieldErrors({}); }}>Esqueci minha senha</button><button disabled={busy} type="button" onClick={() => { setMode("signup"); setE(""); setFieldErrors({}); setPrivacyAccepted(false); setTermsAccepted(false); }}>Solicitar acesso</button></>}</div>}
           </motion.form>}
           <motion.footer className="login-trust" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.28, delay: 0.28 }}><ShieldCheck size={15} aria-hidden="true" /> Dados protegidos com autenticação segura</motion.footer>
         </div>
@@ -489,6 +519,14 @@ function AccountWaiting({ user, logout }: { user: User; logout: () => void }) {
 }
 function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
   const [message, setMessage] = useState("");
+  const [requestRevision, setRequestRevision] = useState(0);
+  const [requestTarget, setRequestTarget] = useState<{ search: string; userId?: string; nonce: number } | null>(null);
+  const requestTargetNonce = useRef(0);
+  const onRequestsChanged = useCallback(() => setRequestRevision((value) => value + 1), []);
+  const onSelectRequest = useCallback((search: string, userId?: string) => {
+    setRequestTarget({ search, userId, nonce: ++requestTargetNonce.current });
+    document.getElementById("master-admin-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
   return (
     <MotionConfig reducedMotion="user">
       <main className="min-h-dvh bg-[var(--bg)]">
@@ -499,14 +537,14 @@ function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
               <span className="min-w-0"><b className="block text-sm tracking-tight">VALURISE</b><small className="muted">Gestão de acessos</small></span>
               <span className="hidden rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px] font-semibold tracking-wide text-[var(--accent)] sm:inline-flex">MASTER ADMIN</span>
             </div>
-            <div className="flex shrink-0 items-center gap-3"><span className="hidden max-w-48 truncate text-xs text-[var(--muted)] sm:inline">{user.name}</span><button onClick={logout} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium">Sair</button></div>
+            <div className="flex shrink-0 items-center gap-2 sm:gap-3"><MasterNotifications onSelectRequest={onSelectRequest} onRequestsChanged={onRequestsChanged} /><span className="hidden max-w-48 truncate text-xs text-[var(--muted)] sm:inline">{user.name}</span><button onClick={logout} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium">Sair</button></div>
           </div>
         </header>
         <motion.section className="mx-auto max-w-6xl px-4 py-7 sm:px-6 sm:py-10" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: motionTokens.duration.normal, ease: motionTokens.ease.enter }}>
           <span className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)]"><ShieldCheck size={14} /> PAINEL RESTRITO · SOMENTE ACESSOS</span>
           <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Central do Master</h1><p className="muted mt-2 max-w-2xl text-sm leading-6">Aprove solicitações, gerencie contas, convites e histórico administrativo. Nenhum dado financeiro dos usuários é exibido aqui.</p></div><span className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs text-[var(--muted)]">Master: {user.name}</span></div>
           {message && <div role="status" aria-live="polite" className="mt-5 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/10 px-4 py-3 text-sm text-[var(--accent)]">{message}</div>}
-          <section className="panel mt-6 rounded-3xl p-4 sm:p-6"><MasterAdminPanel toast={setMessage} /></section>
+          <section id="master-admin-panel" className="panel mt-6 scroll-mt-20 rounded-3xl p-4 sm:p-6"><MasterAdminPanel toast={setMessage} requestRevision={requestRevision} requestTarget={requestTarget} /></section>
           <p className="muted mt-4 text-xs leading-5">Toda decisão administrativa é registrada. A exclusão definitiva só pode ser feita após mover a conta para a lixeira.</p>
         </motion.section>
       </main>

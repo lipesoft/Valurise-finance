@@ -46,7 +46,28 @@ test("não cria rolagem horizontal nos tamanhos mobile prioritários", async ({ 
     expect(card, `login card exists at ${width}px`).not.toBeNull();
     expect(card!.x, `login card starts within ${width}px`).toBeGreaterThanOrEqual(0);
     expect(card!.x + card!.width, `login card fits within ${width}px`).toBeLessThanOrEqual(width + 1);
+    await expect.poll(() => page.getByLabel("Usuário ou e-mail").evaluate((input) => getComputedStyle(input).fontSize)).toBe("16px");
   }
+});
+
+test("valida campos no próprio formulário e anuncia erros acessivelmente", async ({ page }) => {
+  let loginRequestSeen = false;
+  await page.route("**/api/auth/login", (route) => {
+    loginRequestSeen = true;
+    return route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ error: "Login ou senha inválidos." }) });
+  });
+  await page.goto("/");
+  await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
+  await page.getByRole("button", { name: "Entrar na conta" }).click();
+  await expect(page.getByText("Confira os campos destacados.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Usuário ou e-mail")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByLabel("Senha", { exact: true })).toHaveAttribute("aria-invalid", "true");
+  expect(loginRequestSeen).toBe(false);
+  await page.getByLabel("Usuário ou e-mail").fill("usuario-invalido");
+  await page.getByLabel("Senha", { exact: true }).fill("senha-ficticia");
+  await page.getByRole("button", { name: "Entrar na conta" }).click();
+  await expect.poll(() => loginRequestSeen).toBe(true);
 });
 
 test("orienta o próximo passo sem afirmar que toda tentativa virou pedido pendente", async ({ page }) => {
@@ -109,5 +130,26 @@ test("apresenta erro genérico quando o login falha", async ({ page }) => {
   await page.getByRole("button", { name: "Entrar na conta" }).click();
 
   await expect.poll(() => loginRequestSeen).toBe(true);
+  await expect(page.getByText("Login ou senha inválidos.")).toBeVisible();
+});
+
+test("impede envio duplicado enquanto o login está em andamento", async ({ page }) => {
+  let requests = 0;
+  await page.route("**/api/auth/login", async (route) => {
+    requests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await route.fulfill({ status: 401, contentType: "application/json", body: JSON.stringify({ error: "Login ou senha inválidos." }) });
+  });
+  await page.goto("/");
+  await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
+  await page.getByLabel("Usuário ou e-mail").fill("usuario-teste");
+  await page.getByLabel("Senha", { exact: true }).fill("senha-ficticia");
+  await page.locator("form.login-card").evaluate((form: HTMLFormElement) => {
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+  await expect.poll(() => requests).toBe(1);
+  await expect(page.getByRole("button", { name: "Aguarde…" })).toBeVisible();
   await expect(page.getByText("Login ou senha inválidos.")).toBeVisible();
 });

@@ -3,12 +3,13 @@ import { test, expect } from "./fixtures";
 const masterId = "00000000-0000-4000-8000-000000000001";
 const pendingId = "00000000-0000-4000-8000-000000000002";
 const emailPendingId = "00000000-0000-4000-8000-000000000003";
+const trashedId = "00000000-0000-4000-8000-000000000004";
 
 function encode(value: unknown) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
-async function signInAsMaster(page: import("@playwright/test").Page) {
+async function signInAsMaster(page: import("@playwright/test").Page, options: { manyRequests?: boolean; failedAudit?: boolean } = {}) {
   const now = Math.floor(Date.now() / 1000);
   const accessToken = encode({ alg: "none", typ: "JWT" }) + "." + encode({
     sub: masterId,
@@ -53,7 +54,11 @@ async function signInAsMaster(page: import("@playwright/test").Page) {
     const method = route.request().method();
     if (method === "POST") {
       const body = route.request().postDataJSON() as { userId: string; action: string; reasonCode?: string };
-      if (body.action === "approve" && body.userId === pendingId) {
+      if ((body.action === "approve" || body.action === "reject") && body.userId === pendingId) {
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+        return;
+      }
+      if ((body.action === "trash" || body.action === "restore" || body.action === "delete_permanently") && body.userId === trashedId) {
         route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
         return;
       }
@@ -61,7 +66,27 @@ async function signInAsMaster(page: import("@playwright/test").Page) {
       return;
     }
     const status = new URL(route.request().url()).searchParams.get("status");
-    const pending = status === "pending" ? [{
+    const requestedPage = Number(new URL(route.request().url()).searchParams.get("page") || 1);
+    const pending = status === "pending" ? options.manyRequests
+      ? Array.from({ length: requestedPage === 1 ? 25 : requestedPage === 2 ? 1 : 0 }, (_, index) => {
+        const number = (requestedPage - 1) * 25 + index + 1;
+        return {
+          id: number === 1 ? pendingId : `00000000-0000-4000-8000-${String(number + 100).padStart(12, "0")}`,
+          email: `pedido${number}@valurise.invalid`,
+          email_confirmed_at: new Date().toISOString(),
+          last_sign_in_at: null,
+          created_at: new Date().toISOString(),
+          full_name: number === 26 ? "Pedido Confirmado 26" : `Pedido Confirmado ${number}`,
+          username: `pedido.confirmado${number}`,
+          role: "user",
+          stored_status: "pending",
+          request_status: "pending_review",
+          requested_at: new Date().toISOString(),
+          invite_id: null,
+          invite_state: "none",
+          status: "pending",
+        };
+      }) : [{
       id: pendingId,
       email: "pedido@valurise.invalid",
       email_confirmed_at: new Date().toISOString(),
@@ -91,11 +116,27 @@ async function signInAsMaster(page: import("@playwright/test").Page) {
       invite_id: null,
       invite_state: "none",
       status: "pending_email",
+    }] : status === "trashed" ? [{
+      id: trashedId,
+      email: "lixeira@valurise.invalid",
+      email_confirmed_at: new Date().toISOString(),
+      last_sign_in_at: null,
+      created_at: new Date().toISOString(),
+      full_name: "Conta de Teste na Lixeira",
+      username: "conta.lixeira",
+      role: "user",
+      stored_status: "trashed",
+      request_status: null,
+      requested_at: new Date().toISOString(),
+      invite_id: null,
+      invite_state: "none",
+      status: "trashed",
     }] : [];
+    const pendingTotal = options.manyRequests && status === "pending" ? 26 : pending.length;
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ items: pending, total: pending.length, page: 1, pageSize: 25, stats: { pending: 1, email_pending: 1, total: 2, active: 1, disabled: 0, trashed: 0, rejected: 0 } }),
+      body: JSON.stringify({ items: pending, total: status === "trashed" ? 1 : pendingTotal, page: requestedPage, pageSize: 25, stats: { pending: options.manyRequests ? 26 : 1, email_pending: 1, total: options.manyRequests ? 27 : 2, active: 1, disabled: 0, trashed: status === "trashed" ? 1 : 0, rejected: 0 } }),
     });
   });
   await page.route("**/api/admin/invites**", async (route) => {
@@ -108,7 +149,9 @@ async function signInAsMaster(page: import("@playwright/test").Page) {
   await page.route("**/api/admin/audit**", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ items: [{ id: "audit-e2e", action: "approved", outcome: "completed", reason_code: null, reason_note: null, detail_code: null, created_at: new Date().toISOString(), actor_name: "Master E2E", actor_email: "master@valurise.invalid", target_name: "Pedido Confirmado", target_email: "pedido@valurise.invalid" }], total: 1, page: 1, pageSize: 25 }),
+    body: JSON.stringify({ items: [options.failedAudit
+      ? { id: "audit-failed-e2e", action: "trashed", outcome: "failed", reason_code: "user_requested", reason_note: null, detail_code: "auth_ban_failed", target_ref: trashedId, created_at: new Date().toISOString(), actor_name: "Master E2E", actor_email: "master@valurise.invalid", target_name: "Conta de Teste na Lixeira", target_email: "lixeira@valurise.invalid" }
+      : { id: "audit-e2e", action: "approved", outcome: "completed", reason_code: null, reason_note: null, detail_code: null, target_ref: null, created_at: new Date().toISOString(), actor_name: "Master E2E", actor_email: "master@valurise.invalid", target_name: "Pedido Confirmado", target_email: "pedido@valurise.invalid" }], total: 1, page: 1, pageSize: 25 }),
   }));
 
   await page.goto("/");
@@ -146,4 +189,65 @@ test("painel Master mostra pedidos confirmados, mantém os outros em espera e of
   await page.getByRole("button", { name: "Auditoria" }).click();
   await expect(page.getByRole("article").getByText("Acesso aprovado", { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("notificação do Master abre a fila e leva ao pedido correto", async ({ page }) => {
+  await signInAsMaster(page);
+  const notifications = page.getByRole("button", { name: /Solicitações aguardando análise: 1/ });
+  await notifications.click();
+  const dialog = page.getByRole("dialog", { name: "Notificações de acesso do Master" });
+  await expect(dialog.getByText("Pedido Confirmado")).toBeVisible();
+  await dialog.getByRole("button", { name: /Pedido Confirmado/ }).click();
+  await expect(page.getByLabel("Buscar solicitações por nome, usuário ou e-mail")).toHaveValue("pedido@valurise.invalid");
+  await expect(page.locator(`#master-request-${pendingId}`)).toBeFocused();
+});
+
+test("fila de solicitações pagina sem saltar resultados", async ({ page }) => {
+  await signInAsMaster(page, { manyRequests: true });
+  await expect(page.getByText("Pedido Confirmado 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Página 1 de 2 · 27 registros")).toBeVisible();
+  await page.getByRole("button", { name: "Próxima página" }).click();
+  await expect(page.getByText("Pedido Confirmado 26", { exact: true })).toBeVisible();
+  await expect(page.getByText("Página 2 de 2 · 27 registros")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Próxima página" })).toBeDisabled();
+});
+
+test("recusa exige motivo e exclusão definitiva exige confirmação digitada", async ({ page }) => {
+  await signInAsMaster(page);
+  await page.getByRole("button", { name: "Recusar" }).click();
+  const rejectionDialog = page.getByRole("dialog", { name: "Recusar solicitação" });
+  await rejectionDialog.getByRole("button", { name: "Recusar solicitação" }).click();
+  await expect(page.getByText("Solicitação recusada.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Usuários" }).click();
+  await page.getByLabel("Filtrar contas").selectOption("trashed");
+  await expect(page.getByText("Conta de Teste na Lixeira")).toBeVisible();
+  await page.getByRole("button", { name: /Excluir definitivamente/ }).click();
+  const deleteDialog = page.getByRole("dialog", { name: "Excluir definitivamente?" });
+  const confirmDelete = deleteDialog.getByRole("button", { name: "Excluir definitivamente" });
+  await expect(confirmDelete).toBeDisabled();
+  await deleteDialog.getByLabel("Digite EXCLUIR para confirmar").fill("EXCLUIR");
+  await expect(confirmDelete).toBeEnabled();
+  await confirmDelete.click();
+  await expect(page.getByText("Conta excluída definitivamente.")).toBeVisible();
+});
+
+test("permite tentar novamente uma etapa de acesso que falhou", async ({ page }) => {
+  await signInAsMaster(page, { failedAudit: true });
+  await page.getByRole("button", { name: "Auditoria" }).click();
+  const failedEvent = page.getByRole("article").filter({ hasText: "Conta de Teste na Lixeira" });
+  await expect(failedEvent.getByText("Falhou — pode ser tentada novamente")).toBeVisible();
+  await failedEvent.getByRole("button", { name: "Tentar novamente" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Mover para lixeira" }).click();
+  await expect(page.getByText("Conta movida para a lixeira.")).toBeVisible();
+});
+
+test("painel Master cabe nas larguras mobile e desktop", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signInAsMaster(page);
+  for (const width of [375, 390, 430, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(page.getByRole("heading", { name: "Central do Master" })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
 });
