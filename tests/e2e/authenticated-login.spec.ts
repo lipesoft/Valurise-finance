@@ -15,7 +15,7 @@ test.use({ trace: "off", screenshot: "off", video: "off" });
 test("entra com conta de teste e consegue sair", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await page.getByLabel("Identificação").fill(process.env.E2E_TEST_IDENTIFIER!);
+  await page.getByLabel("Usuário ou e-mail").fill(process.env.E2E_TEST_IDENTIFIER!);
   await page.getByLabel("Senha").fill(process.env.E2E_TEST_PASSWORD!);
   await page.getByRole("button", { name: "Entrar na conta" }).click();
 

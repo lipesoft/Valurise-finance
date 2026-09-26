@@ -94,6 +94,34 @@ test("orienta o próximo passo sem afirmar que toda tentativa virou pedido pende
   await expect(page.getByText(/Por segurança, não informamos qual situação se aplica/)).toBeVisible();
 });
 
+test("permite solicitar novamente a confirmação do e-mail sem revelar o estado da conta", async ({ page }) => {
+  let resentEmail = "";
+  await page.route("**/api/auth/request-access", (route) => route.fulfill({
+    status: 202,
+    contentType: "application/json",
+    body: JSON.stringify({ ok: true }),
+  }));
+  await page.route("**/api/auth/resend-confirmation", async (route) => {
+    resentEmail = (route.request().postDataJSON() as { email: string }).email;
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.goto("/");
+  await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
+  await page.getByRole("button", { name: "Solicitar acesso" }).click();
+  await page.getByLabel("Seu nome").fill("Pessoa de Teste");
+  await page.getByLabel("Usuário").fill("teste.valurise");
+  await page.getByLabel("E-mail").fill("teste@exemplo.invalid");
+  await page.getByLabel("Senha", { exact: true }).fill("senha-e2e-ficticia");
+  await page.getByLabel(/Política de Privacidade/).check();
+  await page.getByLabel(/Termos de Uso/).check();
+  await page.getByRole("button", { name: "Solicitar acesso", exact: true }).click();
+  await page.getByRole("button", { name: "Reenviar confirmação de e-mail" }).click();
+
+  await expect.poll(() => resentEmail).toBe("teste@exemplo.invalid");
+  await expect(page.getByRole("status").filter({ hasText: "Se este endereço puder receber uma confirmação" })).toBeVisible();
+});
+
 test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }) => {
   await page.route("**/api/auth/password-reset", (route) => route.fulfill({
     status: 200,

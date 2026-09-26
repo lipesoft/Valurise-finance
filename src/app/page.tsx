@@ -471,6 +471,29 @@ function Login({ done }: { done: (u: User) => void }) {
       setTermsAccepted(false);
     }
   }
+  async function resendSignupConfirmation() {
+    if (busy) return;
+    setE("");
+    setNotice("");
+    setBusy(true);
+    try {
+      const response = await fetch("/api/auth/resend-confirmation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: u.trim() }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setE(payload.error || "Não foi possível solicitar outro link agora.");
+        return;
+      }
+      setNotice("Se este endereço puder receber uma confirmação, enviaremos um novo link. Após confirmar o e-mail, o pedido seguirá para análise do Master.");
+    } catch {
+      setE("Não foi possível solicitar outro link agora. Confira sua conexão e tente novamente.");
+    } finally {
+      setBusy(false);
+    }
+  }
   async function submit(x: React.FormEvent) {
     x.preventDefault();
     if (busy || submitting.current) return;
@@ -568,7 +591,7 @@ function Login({ done }: { done: (u: User) => void }) {
             <h1>VALURISE</h1>
             <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
           </motion.section>
-          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, enviaremos um link para confirmar o e-mail. Depois da confirmação, o pedido seguirá para análise do Master. Se você já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setU(u.includes("@") ? u : ""); switchMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form noValidate aria-busy={busy} onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+          {requestSent ? <motion.section className="login-card panel text-center" aria-busy={busy} initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, enviaremos um link para confirmar o e-mail. Depois da confirmação, o pedido seguirá para análise do Master. Se você já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p>{e && <p role="alert" aria-live="assertive" className="login-feedback login-feedback-error">{e}</p>}{notice && <p role="status" aria-live="polite" className="login-feedback login-feedback-success">{notice}</p>}<button type="button" disabled={busy} onClick={() => void resendSignupConfirmation()} className="login-submit mt-5 disabled:cursor-wait disabled:opacity-60">{busy ? "Solicitando…" : "Reenviar confirmação de e-mail"}</button><button type="button" disabled={busy} onClick={() => { setRequestSent(false); setU(u.includes("@") ? u : ""); switchMode("login"); }} className="login-submit primary mt-3 disabled:opacity-60">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form noValidate aria-busy={busy} onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
             <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Confirme seu e-mail; depois o Master analisará o pedido." : "Confirme seu e-mail para enviar o pedido à análise do Master.") : mode === "forgot" ? "Use o e-mail cadastrado para receber o link seguro." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
             <div className="login-fields">
               {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => { setName(x.target.value); setFieldErrors((current) => ({ ...current, name: "" })); }} className="field" placeholder="Como podemos te chamar?" autoComplete="name" required maxLength={120} aria-invalid={Boolean(fieldErrors.name)} aria-describedby={fieldErrors.name ? "signup-name-error" : undefined} />{fieldErrors.name && <small id="signup-name-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.name}</small>}<label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => { setUsername(x.target.value); setFieldErrors((current) => ({ ...current, username: "" })); }} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" required maxLength={32} aria-invalid={Boolean(fieldErrors.username)} aria-describedby={fieldErrors.username ? "signup-username-error" : undefined} />{fieldErrors.username && <small id="signup-username-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.username}</small>}{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
