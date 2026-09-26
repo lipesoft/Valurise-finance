@@ -110,6 +110,65 @@ test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }
   await expect(page.getByText("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.")).toBeVisible();
 });
 
+test("limpa usuário e senha ao trocar do login para recuperação ou solicitação de acesso", async ({ page }) => {
+  await page.goto("/");
+  await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
+  await page.getByLabel("Usuário ou e-mail").fill("filiperodrigues");
+  await page.getByLabel("Senha", { exact: true }).fill("senha-ficticia-nao-real");
+
+  await page.getByRole("button", { name: "Esqueci minha senha" }).click();
+  await expect(page.getByLabel("E-mail")).toHaveValue("");
+  await expect(page.getByLabel("Senha", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Já tenho acesso" }).click();
+  await page.getByLabel("Usuário ou e-mail").fill("filiperodrigues");
+  await page.getByLabel("Senha", { exact: true }).fill("senha-ficticia-nao-real");
+  await page.getByRole("button", { name: "Solicitar acesso" }).click();
+  await expect(page.getByLabel("E-mail")).toHaveValue("");
+  await expect(page.getByLabel("Senha", { exact: true })).toHaveValue("");
+});
+
+test("não interpreta falha ao carregar o perfil como aprovação pendente", async ({ page }) => {
+  const masterId = "00000000-0000-4000-8000-000000000001";
+  const now = Math.floor(Date.now() / 1000);
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const accessToken = `${encode({ alg: "none", typ: "JWT" })}.${encode({ sub: masterId, aud: "authenticated", role: "authenticated", iat: now, exp: now + 3600 })}.${Buffer.from("e2e-signature").toString("base64url")}`;
+  const user = {
+    id: masterId,
+    aud: "authenticated",
+    role: "authenticated",
+    email: "master@valurise.invalid",
+    app_metadata: { provider: "email", providers: ["email"] },
+    email_confirmed_at: new Date().toISOString(),
+    user_metadata: { full_name: "Master E2E" },
+    identities: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  await page.route("**/api/auth/login", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ session: { access_token: accessToken, refresh_token: "e2e-refresh", token_type: "bearer", expires_in: 3600, expires_at: now + 3600, user }, user }),
+  }));
+  await page.route("**/auth/v1/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    return path.endsWith("/logout")
+      ? route.fulfill({ status: 204, body: "" })
+      : route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(user) });
+  });
+  await page.route("**/rest/v1/profiles**", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ message: "profile unavailable" }) }));
+
+  await page.goto("/");
+  await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
+  await page.getByLabel("Usuário ou e-mail").fill("master@valurise.invalid");
+  await page.getByLabel("Senha", { exact: true }).fill("senha-ficticia-nao-real");
+  await page.getByRole("button", { name: "Entrar na conta" }).click();
+  await expect(page.getByText(/Não foi possível validar seu perfil agora/)).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Acesso em análise" })).toHaveCount(0);
+});
+
 test("apresenta erro genérico quando o login falha", async ({ page }) => {
   let loginRequestSeen = false;
   await page.route("**/api/auth/login", (route) => {

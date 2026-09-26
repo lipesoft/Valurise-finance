@@ -67,16 +67,16 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
     }
     const status = new URL(route.request().url()).searchParams.get("status");
     const requestedPage = Number(new URL(route.request().url()).searchParams.get("page") || 1);
-    const pending = status === "pending" ? options.manyRequests
-      ? Array.from({ length: requestedPage === 1 ? 25 : requestedPage === 2 ? 1 : 0 }, (_, index) => {
-        const number = (requestedPage - 1) * 25 + index + 1;
+    const confirmedRequests = options.manyRequests
+      ? Array.from({ length: 26 }, (_, index) => {
+        const number = index + 1;
         return {
           id: number === 1 ? pendingId : `00000000-0000-4000-8000-${String(number + 100).padStart(12, "0")}`,
           email: `pedido${number}@valurise.invalid`,
           email_confirmed_at: new Date().toISOString(),
           last_sign_in_at: null,
-          created_at: new Date().toISOString(),
-          full_name: number === 26 ? "Pedido Confirmado 26" : `Pedido Confirmado ${number}`,
+          created_at: new Date(Date.now() - number * 60_000).toISOString(),
+          full_name: `Pedido Confirmado ${number}`,
           username: `pedido.confirmado${number}`,
           role: "user",
           stored_status: "pending",
@@ -87,26 +87,27 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
           status: "pending",
         };
       }) : [{
-      id: pendingId,
-      email: "pedido@valurise.invalid",
-      email_confirmed_at: new Date().toISOString(),
-      last_sign_in_at: null,
-      created_at: new Date().toISOString(),
-      full_name: "Pedido Confirmado",
-      username: "pedido.confirmado",
-      role: "user",
-      stored_status: "pending",
-      request_status: "pending_review",
-      requested_at: new Date().toISOString(),
-      invite_id: null,
-      invite_state: "none",
-      status: "pending",
-    }] : status === "pending_email" ? [{
+        id: pendingId,
+        email: "pedido@valurise.invalid",
+        email_confirmed_at: new Date().toISOString(),
+        last_sign_in_at: null,
+        created_at: new Date().toISOString(),
+        full_name: "Pedido Confirmado",
+        username: "pedido.confirmado",
+        role: "user",
+        stored_status: "pending",
+        request_status: "pending_review",
+        requested_at: new Date().toISOString(),
+        invite_id: null,
+        invite_state: "none",
+        status: "pending",
+      }];
+    const awaitingEmail = {
       id: emailPendingId,
       email: "confirmar@valurise.invalid",
       email_confirmed_at: null,
       last_sign_in_at: null,
-      created_at: new Date().toISOString(),
+      created_at: new Date(Date.now() - 27 * 60_000).toISOString(),
       full_name: "Aguardando E-mail",
       username: "aguardando.email",
       role: "user",
@@ -116,23 +117,30 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
       invite_id: null,
       invite_state: "none",
       status: "pending_email",
-    }] : status === "trashed" ? [{
-      id: trashedId,
-      email: "lixeira@valurise.invalid",
-      email_confirmed_at: new Date().toISOString(),
-      last_sign_in_at: null,
-      created_at: new Date().toISOString(),
-      full_name: "Conta de Teste na Lixeira",
-      username: "conta.lixeira",
-      role: "user",
-      stored_status: "trashed",
-      request_status: null,
-      requested_at: new Date().toISOString(),
-      invite_id: null,
-      invite_state: "none",
-      status: "trashed",
-    }] : [];
-    const pendingTotal = options.manyRequests && status === "pending" ? 26 : pending.length;
+    };
+    const allRequests = [...confirmedRequests, awaitingEmail].sort((first, second) => second.created_at.localeCompare(first.created_at));
+    const requestSearch = new URL(route.request().url()).searchParams.get("search")?.toLowerCase() || "";
+    const filteredRequests = allRequests.filter((account) => !requestSearch || `${account.email} ${account.full_name} ${account.username}`.toLowerCase().includes(requestSearch));
+    const requestPage = filteredRequests.slice((requestedPage - 1) * 25, requestedPage * 25);
+    const pending = status === "requests" ? requestPage : status === "pending" ? options.manyRequests
+      ? confirmedRequests.slice((requestedPage - 1) * 25, requestedPage * 25)
+      : confirmedRequests : status === "pending_email" ? [awaitingEmail] : status === "trashed" ? [{
+        id: trashedId,
+        email: "lixeira@valurise.invalid",
+        email_confirmed_at: new Date().toISOString(),
+        last_sign_in_at: null,
+        created_at: new Date().toISOString(),
+        full_name: "Conta de Teste na Lixeira",
+        username: "conta.lixeira",
+        role: "user",
+        stored_status: "trashed",
+        request_status: "rejected",
+        requested_at: new Date().toISOString(),
+        invite_id: null,
+        invite_state: "none",
+        status: "trashed",
+      }] : [];
+    const pendingTotal = status === "requests" ? filteredRequests.length : options.manyRequests && status === "pending" ? 26 : pending.length;
     route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -156,6 +164,7 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
 
   await page.goto("/");
   const necessary = page.getByRole("button", { name: "Apenas necessários" });
+  await necessary.waitFor({ state: "visible", timeout: 5000 }).catch(() => undefined);
   if (await necessary.isVisible().catch(() => false)) await necessary.click();
   await expect(page.locator('div[aria-hidden="false"] .login-shell')).toBeVisible();
   await page.getByLabel("Usuário ou e-mail").fill("master@valurise.invalid");
@@ -188,14 +197,23 @@ test("painel Master mostra pedidos confirmados, mantém os outros em espera e of
 
   await page.getByRole("button", { name: "Auditoria" }).click();
   await expect(page.getByRole("article").getByText("Acesso aprovado", { exact: true })).toBeVisible();
+  await expect(page.locator("#master-audit-filter")).toBeVisible();
+  await expect(page.getByLabel("Resultado")).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("notificação do Master abre a fila e leva ao pedido correto", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await signInAsMaster(page);
   const notifications = page.getByRole("button", { name: /Solicitações aguardando análise: 1/ });
   await notifications.click();
   const dialog = page.getByRole("dialog", { name: "Notificações de acesso do Master" });
+  const sheet = await dialog.boundingBox();
+  expect(sheet).not.toBeNull();
+  expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(844);
+  await dialog.getByRole("button", { name: "Fechar notificações" }).click();
+  await expect(notifications).toHaveAttribute("aria-expanded", "false");
+  await notifications.click();
   await expect(dialog.getByText("Pedido Confirmado")).toBeVisible();
   await dialog.getByRole("button", { name: /Pedido Confirmado/ }).click();
   await expect(page.getByLabel("Buscar solicitações por nome, usuário ou e-mail")).toHaveValue("pedido@valurise.invalid");
@@ -212,9 +230,37 @@ test("fila de solicitações pagina sem saltar resultados", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Próxima página" })).toBeDisabled();
 });
 
-test("recusa exige motivo e exclusão definitiva exige confirmação digitada", async ({ page }) => {
+test("filtra auditoria por ação, resultado e período", async ({ page }) => {
   await signInAsMaster(page);
-  await page.getByRole("button", { name: "Recusar" }).click();
+  await page.getByRole("button", { name: "Auditoria" }).click();
+  await page.locator("#master-audit-filter").selectOption("disabled");
+  await page.locator("#master-audit-outcome").selectOption("failed");
+
+  const filteredRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === "/api/admin/audit"
+      && url.searchParams.get("action") === "disabled"
+      && url.searchParams.get("outcome") === "failed"
+      && Boolean(url.searchParams.get("since"))
+      && Boolean(url.searchParams.get("until"));
+  });
+  await page.locator("#master-audit-since").fill("2026-09-01");
+  await page.locator("#master-audit-until").fill("2026-09-30");
+  const request = await filteredRequest;
+  const query = new URL(request.url()).searchParams;
+  expect(query.get("action")).toBe("disabled");
+  expect(query.get("outcome")).toBe("failed");
+  expect(query.get("since")).toBeTruthy();
+  expect(query.get("until")).toBeTruthy();
+
+  await page.getByRole("button", { name: "Limpar filtros" }).click();
+  await expect(page.locator("#master-audit-outcome")).toHaveValue("");
+  await expect(page.locator("#master-audit-since")).toHaveValue("");
+});
+
+test("recusa exige motivo e exclusão definitiva exige reautenticação e confirmação digitada", async ({ page }) => {
+  await signInAsMaster(page);
+  await page.getByRole("button", { name: "Recusar", exact: true }).click();
   const rejectionDialog = page.getByRole("dialog", { name: "Recusar solicitação" });
   await rejectionDialog.getByRole("button", { name: "Recusar solicitação" }).click();
   await expect(page.getByText("Solicitação recusada.")).toBeVisible();
@@ -222,10 +268,12 @@ test("recusa exige motivo e exclusão definitiva exige confirmação digitada", 
   await page.getByRole("button", { name: "Usuários" }).click();
   await page.getByLabel("Filtrar contas").selectOption("trashed");
   await expect(page.getByText("Conta de Teste na Lixeira")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restaurar" })).toHaveCount(0);
   await page.getByRole("button", { name: /Excluir definitivamente/ }).click();
   const deleteDialog = page.getByRole("dialog", { name: "Excluir definitivamente?" });
   const confirmDelete = deleteDialog.getByRole("button", { name: "Excluir definitivamente" });
   await expect(confirmDelete).toBeDisabled();
+  await deleteDialog.getByLabel("Confirme sua senha Master").fill("senha-ficticia-de-teste");
   await deleteDialog.getByLabel("Digite EXCLUIR para confirmar").fill("EXCLUIR");
   await expect(confirmDelete).toBeEnabled();
   await confirmDelete.click();

@@ -95,6 +95,20 @@ function accountName(account: Account) {
   return account.full_name || account.email || "Usuário";
 }
 
+function dateInputStart(value: string): string | undefined {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return undefined;
+  const date = new Date(year, month - 1, day);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function dateInputEndExclusive(value: string): string | undefined {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return undefined;
+  const date = new Date(year, month - 1, day + 1);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 export function MasterAdminPanel({
   toast,
   requestRevision,
@@ -115,6 +129,9 @@ export function MasterAdminPanel({
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [auditFilter, setAuditFilter] = useState("");
+  const [auditOutcome, setAuditOutcome] = useState("");
+  const [auditSince, setAuditSince] = useState("");
+  const [auditUntil, setAuditUntil] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [newInviteLink, setNewInviteLink] = useState("");
@@ -122,12 +139,19 @@ export function MasterAdminPanel({
   const [reasonCode, setReasonCode] = useState("other");
   const [reasonNote, setReasonNote] = useState("");
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deletePassword, setDeletePassword] = useState("");
   const [focusRequestId, setFocusRequestId] = useState<string | null>(null);
   const requestSequence = useRef(0);
   const loadRef = useRef<() => Promise<void>>(async () => undefined);
   const dialogRef = useRef<HTMLElement | null>(null);
   const modalOpener = useRef<HTMLButtonElement | null>(null);
   const busyRef = useRef<string | null>(null);
+
+  const closeActionDialog = useCallback(() => {
+    setPendingAction(null);
+    setDeletePassword("");
+    setDeleteConfirmation("");
+  }, []);
 
   useEffect(() => {
     busyRef.current = busy;
@@ -143,25 +167,25 @@ export function MasterAdminPanel({
     const currentRequest = ++requestSequence.current;
     setLoading(true);
     try {
+      if (section === "audit" && auditSince && auditUntil && auditSince > auditUntil) {
+        setAudit([]);
+        setTotal(0);
+        return;
+      }
       const token = await getToken();
       if (!token) throw new Error("Sua sessão expirou. Entre novamente no painel Master.");
       const headers = { Authorization: "Bearer " + token };
       const query = new URLSearchParams({ search: search.trim(), page: String(page) });
       if (section === "requests") {
-        const paths = ["pending", "pending_email", "verification_required"];
-        const responses = await Promise.all(paths.map(async (value) => {
-          const params = new URLSearchParams(query);
-          params.set("status", value);
-          const response = await fetch("/api/admin/users?" + params.toString(), { headers, cache: "no-store" });
-          const body = await response.json();
-          if (!response.ok) throw new Error(body.error || "Não foi possível carregar as solicitações.");
-          return body as PageData;
-        }));
+        query.set("status", "requests");
+        const response = await fetch("/api/admin/users?" + query.toString(), { headers, cache: "no-store" });
+        const body = await response.json() as PageData;
+        if (!response.ok) throw new Error((body as PageData & { error?: string }).error || "Não foi possível carregar as solicitações.");
         if (currentRequest !== requestSequence.current) return;
-        setAccounts(responses.flatMap((result) => result.items));
-        setTotal(responses.reduce((sum, result) => sum + result.total, 0));
-        setRequestTotalPages(Math.max(1, ...responses.map((result) => Math.ceil(result.total / pageSize))));
-        setStats(responses[0]?.stats ?? {});
+        setAccounts(body.items ?? []);
+        setTotal(body.total ?? 0);
+        setRequestTotalPages(Math.max(1, Math.ceil((body.total ?? 0) / pageSize)));
+        setStats(body.stats ?? {});
       } else if (section === "users") {
         query.set("status", status);
         const response = await fetch("/api/admin/users?" + query.toString(), { headers, cache: "no-store" });
@@ -178,24 +202,27 @@ export function MasterAdminPanel({
         if (currentRequest !== requestSequence.current) return;
         setInvites(body.items ?? []);
         setTotal(body.total ?? 0);
-        setStats({});
       } else {
         const params = new URLSearchParams({ page: String(page) });
         if (auditFilter) params.set("action", auditFilter);
+        if (auditOutcome) params.set("outcome", auditOutcome);
+        const since = dateInputStart(auditSince);
+        const until = dateInputEndExclusive(auditUntil);
+        if (since) params.set("since", since);
+        if (until) params.set("until", until);
         const response = await fetch("/api/admin/audit?" + params.toString(), { headers, cache: "no-store" });
         const body = await response.json();
         if (!response.ok) throw new Error(body.error || "Não foi possível carregar a auditoria.");
         if (currentRequest !== requestSequence.current) return;
         setAudit(body.items ?? []);
         setTotal(body.total ?? 0);
-        setStats({});
       }
     } catch (error) {
       if (currentRequest === requestSequence.current) toast(error instanceof Error ? error.message : "Não foi possível atualizar o painel.");
     } finally {
       if (currentRequest === requestSequence.current) setLoading(false);
     }
-  }, [auditFilter, getToken, page, search, section, status, toast]);
+  }, [auditFilter, auditOutcome, auditSince, auditUntil, getToken, page, search, section, status, toast]);
 
   useEffect(() => {
     loadRef.current = load;
@@ -241,7 +268,7 @@ export function MasterAdminPanel({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !busyRef.current) {
         event.preventDefault();
-        setPendingAction(null);
+        closeActionDialog();
         return;
       }
       if (event.key !== "Tab") return;
@@ -263,7 +290,7 @@ export function MasterAdminPanel({
       if (opener?.isConnected) opener.focus();
       modalOpener.current = null;
     };
-  }, [pendingAction]);
+  }, [closeActionDialog, pendingAction]);
 
   const actionableRequests = useMemo(() => accounts.filter((account) => account.status === "pending"), [accounts]);
   const waitingForEmail = useMemo(() => accounts.filter((account) => account.status === "pending_email" || account.status === "verification_required"), [accounts]);
@@ -274,6 +301,7 @@ export function MasterAdminPanel({
       setReasonCode(action === "delete_permanently" ? "user_requested" : "other");
       setReasonNote("");
       setDeleteConfirmation("");
+      setDeletePassword("");
       modalOpener.current = trigger ?? null;
       setPendingAction({ user, action });
       return;
@@ -281,7 +309,7 @@ export function MasterAdminPanel({
     void executeAction({ user, action });
   };
 
-  const executeAction = async (action: PendingAction, reason?: { code: string; note: string }) => {
+  const executeAction = async (action: PendingAction, reason?: { code: string; note: string }, reauthPassword?: string) => {
     const token = await getToken();
     if (!token) return toast("Sua sessão expirou. Entre novamente no painel Master.");
     setBusy(action.user.id + ":" + action.action);
@@ -293,6 +321,7 @@ export function MasterAdminPanel({
           userId: action.user.id,
           action: action.action,
           ...(reason ? { reasonCode: reason.code, reasonNote: reason.note || undefined } : {}),
+          ...(action.action === "delete_permanently" && reauthPassword ? { reauthPassword } : {}),
         }),
       });
       const body = await response.json();
@@ -307,12 +336,15 @@ export function MasterAdminPanel({
       };
       toast(messages[action.action]);
       setPendingAction(null);
+      setDeletePassword("");
+      setDeleteConfirmation("");
       setPage(1);
       await load();
     } catch (error) {
       toast(error instanceof Error ? error.message : "Não foi possível concluir a ação.");
     } finally {
       setBusy(null);
+      if (action.action === "delete_permanently") setDeletePassword("");
     }
   };
 
@@ -394,7 +426,7 @@ export function MasterAdminPanel({
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "trash", event.currentTarget)} className="min-h-10 rounded-xl border border-[var(--danger)]/25 px-3 text-xs text-[var(--danger)] disabled:opacity-50">Mover para lixeira</button>
           </>}
           {!request && account.role !== "master" && account.status === "trashed" && <>
-            <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "restore", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3 text-xs disabled:opacity-50">Restaurar</button>
+            {account.request_status !== "rejected" && <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "restore", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3 text-xs disabled:opacity-50">Restaurar</button>}
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "delete_permanently", event.currentTarget)} className="min-h-10 rounded-xl border border-[var(--danger)]/35 px-3 text-xs text-[var(--danger)] disabled:opacity-50"><Trash2 className="mr-1 inline" size={14}/>Excluir definitivamente</button>
           </>}
         </div>
@@ -404,7 +436,7 @@ export function MasterAdminPanel({
 
   const pageControls = <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] pt-4">
     <span className="muted text-xs">{total === 0 ? "Nenhum registro" : "Página " + page + " de " + totalPages + " · " + total + " registros"}</span>
-    <div className="flex gap-2"><button type="button" aria-label="Página anterior" disabled={page <= 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-40"><ChevronLeft size={16}/></button><button type="button" aria-label="Próxima página" disabled={page >= totalPages || loading} onClick={() => setPage((value) => Math.min(totalPages, value + 1))} className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-40"><ChevronRight size={16}/></button></div>
+    <div className="flex gap-2"><button type="button" aria-label="Página anterior" disabled={page <= 1 || loading} onClick={() => setPage((value) => Math.max(1, value - 1))} className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-40"><ChevronLeft size={16}/></button><button type="button" aria-label="Próxima página" disabled={page >= totalPages || loading} onClick={() => setPage((value) => Math.min(totalPages, value + 1))} className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-40"><ChevronRight size={16}/></button></div>
   </div>;
 
   return <section>
@@ -418,14 +450,17 @@ export function MasterAdminPanel({
     </nav>
 
     {section === "requests" && <div className="mt-5 space-y-6">
+      <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {[["Para analisar", stats.pending], ["Confirmar e-mail", stats.email_pending], ["Contas ativas", stats.active], ["Na lixeira", stats.trashed]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-[var(--panel2)]/70 px-3 py-3"><dt className="muted text-[11px]">{label}</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{Number(value ?? 0).toLocaleString("pt-BR")}</dd></div>)}
+      </dl>
       <label className="relative block"><span className="sr-only">Buscar solicitações por nome, usuário ou e-mail</span><Search aria-hidden="true" size={16} className="muted absolute left-3 top-1/2 -translate-y-1/2"/><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="field min-h-11 w-full pl-10" placeholder="Buscar solicitações por nome, usuário ou e-mail" /></label>
       <section className="rounded-2xl border border-[var(--accent)]/25 bg-[var(--accent)]/5 p-4 sm:p-5">
         <div className="flex items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Bell size={16} className="text-[var(--accent)]"/>Prontas para análise</h2><p className="muted mt-1 text-xs">Só entram aqui cadastros que confirmaram o e-mail.</p></div><span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-xs font-bold text-[var(--accentfg)]">{stats.pending ?? 0}</span></div>
-        <div className="mt-4 space-y-2">{actionableRequests.map((account) => accountCard(account, true))}{!loading && actionableRequests.length === 0 && <p className="muted rounded-xl bg-[var(--panel)]/60 p-4 text-xs">Nenhuma solicitação confirmada aguardando decisão.</p>}</div>
+        <div className="mt-4 space-y-2">{actionableRequests.map((account) => accountCard(account, true))}{!loading && actionableRequests.length === 0 && <p className="muted rounded-xl bg-[var(--panel)]/60 p-4 text-xs">{Number(stats.pending) > 0 ? "Há outros pedidos em páginas diferentes da fila." : "Nenhuma solicitação confirmada aguardando decisão."}</p>}</div>
       </section>
       <section className="rounded-2xl border border-[var(--border)] p-4 sm:p-5">
         <div className="flex items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Clock3 size={16} className="muted"/>Ainda não podem ser decididas</h2><p className="muted mt-1 text-xs">A pessoa precisa confirmar o e-mail ou validar novamente um cadastro antigo.</p></div><span className="rounded-full bg-[var(--panel2)] px-2.5 py-1 text-xs">{stats.email_pending ?? 0}</span></div>
-        <div className="mt-4 space-y-2">{waitingForEmail.map((account) => accountCard(account, true))}{!loading && waitingForEmail.length === 0 && <p className="muted rounded-xl bg-[var(--panel2)]/50 p-4 text-xs">Todos os pedidos visíveis já foram confirmados.</p>}</div>
+        <div className="mt-4 space-y-2">{waitingForEmail.map((account) => accountCard(account, true))}{!loading && waitingForEmail.length === 0 && <p className="muted rounded-xl bg-[var(--panel2)]/50 p-4 text-xs">{Number(stats.email_pending) > 0 ? "Há cadastros aguardando confirmação em outras páginas." : "Não há cadastros aguardando confirmação de e-mail."}</p>}</div>
       </section>
       {pageControls}
     </div>}
@@ -447,7 +482,15 @@ export function MasterAdminPanel({
     </div>}
 
     {section === "audit" && <div className="mt-5 space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-sm font-semibold">Histórico administrativo</h2><p className="muted mt-1 text-xs">As decisões do Master ficam registradas com resultado e motivo.</p></div><label className="sr-only" htmlFor="master-audit-filter">Filtrar ações</label><select id="master-audit-filter" value={auditFilter} onChange={(event) => { setAuditFilter(event.target.value); setPage(1); }} className="field min-h-11 sm:max-w-64"><option value="">Todas as ações</option>{Object.entries(actionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+      <div><h2 className="text-sm font-semibold">Histórico administrativo</h2><p className="muted mt-1 text-xs">As decisões do Master ficam registradas com resultado e motivo.</p></div>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <label className="block text-xs">Ação<select id="master-audit-filter" value={auditFilter} onChange={(event) => { setAuditFilter(event.target.value); setPage(1); }} className="field mt-1 min-h-11 w-full"><option value="">Todas as ações</option>{Object.entries(actionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="block text-xs">Resultado<select id="master-audit-outcome" value={auditOutcome} onChange={(event) => { setAuditOutcome(event.target.value); setPage(1); }} className="field mt-1 min-h-11 w-full"><option value="">Todos os resultados</option>{Object.entries(outcomeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="block text-xs">A partir de<input id="master-audit-since" type="date" value={auditSince} onChange={(event) => { setAuditSince(event.target.value); setPage(1); }} className="field mt-1 min-h-11 w-full" /></label>
+        <label className="block text-xs">Até<input id="master-audit-until" type="date" value={auditUntil} onChange={(event) => { setAuditUntil(event.target.value); setPage(1); }} className="field mt-1 min-h-11 w-full" /></label>
+      </div>
+      {auditSince && auditUntil && auditSince > auditUntil && <p role="alert" className="text-xs text-[var(--danger)]">A data inicial deve ser anterior ou igual à data final.</p>}
+      {(auditFilter || auditOutcome || auditSince || auditUntil) && <button type="button" onClick={() => { setAuditFilter(""); setAuditOutcome(""); setAuditSince(""); setAuditUntil(""); setPage(1); }} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Limpar filtros</button>}
       <div className="space-y-2">{audit.map((entry) => {
         const retryActions: Partial<Record<string, PendingAction["action"]>> = {
           approved: "approve", rejected: "reject", disabled: "disable", restored: "restore", trashed: "trash", permanently_deleted: "delete_permanently",
@@ -481,13 +524,13 @@ export function MasterAdminPanel({
 
     {loading && <p role="status" className="muted mt-4 text-center text-xs">Atualizando painel…</p>}
 
-    {pendingAction && <div className="fixed inset-0 z-[100] grid place-items-end bg-black/55 p-0 backdrop-blur-sm sm:place-items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setPendingAction(null); }}>
+    {pendingAction && <div className="fixed inset-0 z-[100] grid place-items-end bg-black/55 p-0 backdrop-blur-sm sm:place-items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) closeActionDialog(); }}>
       <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="master-action-title" aria-describedby={pendingAction.action === "delete_permanently" ? "master-delete-warning" : undefined} className="panel w-full max-w-md rounded-t-3xl p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl sm:p-6">
-        <div className="flex items-start justify-between gap-4"><div><h2 id="master-action-title" className="text-lg font-semibold">{pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "disable" ? "Desativar conta" : pendingAction.action === "trash" ? "Mover para a lixeira" : "Excluir definitivamente?"}</h2><p className="muted mt-2 text-sm">{accountName(pendingAction.user)} · {pendingAction.user.email}</p></div><button type="button" aria-label="Fechar" disabled={Boolean(busy)} onClick={() => setPendingAction(null)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-50"><X size={18}/></button></div>
-        {pendingAction.action === "delete_permanently" && <><p id="master-delete-warning" className="mt-4 rounded-xl border border-[var(--danger)]/25 bg-[var(--danger)]/5 p-3 text-xs leading-5 text-[var(--danger)]">A conta já está na lixeira. Esta ação remove a conta de autenticação e seus dados vinculados; não pode ser desfeita.</p><label className="mt-4 block text-xs font-medium" htmlFor="master-delete-confirmation">Digite EXCLUIR para confirmar</label><input id="master-delete-confirmation" autoComplete="off" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} className="field mt-2 min-h-11 w-full" />{deleteConfirmation && deleteConfirmation !== "EXCLUIR" && <small className="mt-1 block text-xs text-[var(--danger)]">Digite exatamente EXCLUIR.</small>}</>}
+        <div className="flex items-start justify-between gap-4"><div><h2 id="master-action-title" className="text-lg font-semibold">{pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "disable" ? "Desativar conta" : pendingAction.action === "trash" ? "Mover para a lixeira" : "Excluir definitivamente?"}</h2><p className="muted mt-2 text-sm">{accountName(pendingAction.user)} · {pendingAction.user.email}</p></div><button type="button" aria-label="Fechar" disabled={Boolean(busy)} onClick={closeActionDialog} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-50"><X size={18}/></button></div>
+        {pendingAction.action === "delete_permanently" && <><p id="master-delete-warning" className="mt-4 rounded-xl border border-[var(--danger)]/25 bg-[var(--danger)]/5 p-3 text-xs leading-5 text-[var(--danger)]">A conta já está na lixeira. Esta ação remove a conta de autenticação e seus dados vinculados; não pode ser desfeita.</p><label className="mt-4 block text-xs font-medium" htmlFor="master-delete-password">Confirme sua senha Master</label><input id="master-delete-password" type="password" autoComplete="current-password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} className="field mt-2 min-h-11 w-full" />{deletePassword && <small className="muted mt-1 block text-xs">A senha é verificada pelo servidor e não fica salva no navegador.</small>}<label className="mt-4 block text-xs font-medium" htmlFor="master-delete-confirmation">Digite EXCLUIR para confirmar</label><input id="master-delete-confirmation" autoComplete="off" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} className="field mt-2 min-h-11 w-full" />{deleteConfirmation && deleteConfirmation !== "EXCLUIR" && <small className="mt-1 block text-xs text-[var(--danger)]">Digite exatamente EXCLUIR.</small>}</>}
         <label className="mt-4 block text-xs font-medium" htmlFor="master-action-reason">Motivo para auditoria</label><select id="master-action-reason" value={reasonCode} onChange={(event) => setReasonCode(event.target.value)} className="field mt-2 min-h-11 w-full"><option value="duplicate_request">Solicitação duplicada</option><option value="incomplete_request">Informações incompletas</option><option value="policy_violation">Violação de política</option><option value="security_concern">Preocupação de segurança</option><option value="user_requested">Pedido do usuário</option><option value="other">Outro motivo</option></select>
         <label className="mt-4 block text-xs font-medium" htmlFor="master-action-note">Observação (opcional)</label><textarea id="master-action-note" value={reasonNote} onChange={(event) => setReasonNote(event.target.value)} maxLength={280} rows={3} className="field mt-2 min-h-24 w-full resize-y py-3" placeholder="Até 280 caracteres" />
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" disabled={Boolean(busy)} onClick={() => setPendingAction(null)} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Cancelar</button><button type="button" disabled={Boolean(busy) || (pendingAction.action === "delete_permanently" && deleteConfirmation !== "EXCLUIR")} onClick={() => void executeAction(pendingAction, { code: reasonCode, note: reasonNote.trim() })} className={"min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-50 " + (pendingAction.action === "delete_permanently" || pendingAction.action === "reject" ? "bg-[var(--danger)] text-white" : "bg-[var(--accent)] text-[var(--accentfg)]")}>{busy ? "Processando…" : pendingAction.action === "delete_permanently" ? "Excluir definitivamente" : pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "trash" ? "Mover para lixeira" : "Confirmar"}</button></div>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" disabled={Boolean(busy)} onClick={closeActionDialog} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Cancelar</button><button type="button" disabled={Boolean(busy) || (pendingAction.action === "delete_permanently" && (deleteConfirmation !== "EXCLUIR" || deletePassword.length === 0))} onClick={() => void executeAction(pendingAction, { code: reasonCode, note: reasonNote.trim() }, deletePassword)} className={"min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-50 " + (pendingAction.action === "delete_permanently" || pendingAction.action === "reject" ? "bg-[var(--danger)] text-white" : "bg-[var(--accent)] text-[var(--accentfg)]")}>{busy ? "Processando…" : pendingAction.action === "delete_permanently" ? "Excluir definitivamente" : pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "trash" ? "Mover para lixeira" : "Confirmar"}</button></div>
       </section>
     </div>}
   </section>;

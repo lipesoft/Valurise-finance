@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, ChevronRight, Clock3 } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Bell, ChevronRight, Clock3, RefreshCw, X } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type RequestNotification = {
@@ -153,6 +154,13 @@ export function MasterNotifications({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open || window.matchMedia("(min-width: 640px)").matches) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [open]);
+
   return (
     <div className="relative">
       <button
@@ -163,34 +171,38 @@ export function MasterNotifications({
         aria-expanded={open}
         aria-controls="master-notifications-panel"
         onClick={() => setOpen((value) => !value)}
-        className="relative grid h-10 w-10 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--fg)] transition-colors hover:text-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+        className="relative grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--fg)] transition-colors hover:text-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
       >
         <Bell size={18} aria-hidden="true" />
         {count > 0 && <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-[var(--accent)] px-1 text-center text-[10px] font-bold leading-5 text-[var(--accentfg)]">{count > 99 ? "99+" : count}</span>}
       </button>
       <span className="sr-only" role="status" aria-live="polite">{count > 0 ? `${count} solicitações aguardam análise.` : "Nenhuma solicitação aguarda análise."}{waitingForEmail > 0 ? ` ${waitingForEmail} aguardam confirmação de e-mail.` : ""}</span>
 
-      {open && <section
-        ref={panelRef}
-        id="master-notifications-panel"
-        role="dialog"
-        aria-label="Notificações de acesso do Master"
-        tabIndex={-1}
-        className="panel absolute right-0 top-12 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-2xl p-3 shadow-2xl"
-      >
-        <div className="flex items-start justify-between gap-3 px-2 py-1">
+      {open && createPortal(<div className="fixed inset-0 z-50 bg-black/55 sm:bg-transparent" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+        <section
+          ref={panelRef}
+          id="master-notifications-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Notificações de acesso do Master"
+          tabIndex={-1}
+          className="panel fixed inset-x-0 bottom-0 flex max-h-[min(82dvh,42rem)] flex-col rounded-t-3xl p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl sm:absolute sm:inset-x-auto sm:bottom-auto sm:right-6 sm:top-16 sm:w-[min(22rem,calc(100vw-3rem))] sm:rounded-2xl sm:p-3"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+        <div className="flex items-start justify-between gap-3 px-1 py-1">
           <div>
             <h2 className="text-sm font-semibold">Solicitações de acesso</h2>
             <p className="muted mt-1 text-[11px]">{realtimeConnected ? "Atualizações ao vivo" : "Atualização automática periódica"}</p>
           </div>
-          <span className="rounded-full bg-[var(--accent)] px-2 py-1 text-xs font-bold text-[var(--accentfg)]">{count}</span>
+          <div className="flex items-center gap-1"><span className="rounded-full bg-[var(--accent)] px-2 py-1 text-xs font-bold text-[var(--accentfg)]">{count}</span><button type="button" onClick={() => setOpen(false)} aria-label="Fechar notificações" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] sm:h-9 sm:w-9"><X size={17} aria-hidden="true" /></button></div>
         </div>
 
         {error && <p role="status" className="mx-2 mt-3 rounded-xl bg-[var(--danger)]/10 p-3 text-xs text-[var(--danger)]">{error}</p>}
+        {error && <button type="button" onClick={() => void refresh()} className="mx-2 mt-2 inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium"><RefreshCw size={14} aria-hidden="true"/>Tentar novamente</button>}
         {initialLoading && <p role="status" className="muted px-2 py-4 text-xs">Carregando solicitações…</p>}
         {!initialLoading && items.length === 0 && <p className="muted px-2 py-4 text-xs">Nenhuma solicitação confirmada aguardando análise.{waitingForEmail > 0 ? ` ${waitingForEmail} ainda aguardam confirmação do e-mail.` : ""}</p>}
 
-        <div className="mt-2 max-h-72 space-y-1 overflow-y-auto">
+        <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain">
           {items.slice(0, 5).map((item) => <button
             type="button"
             key={item.id}
@@ -222,7 +234,8 @@ export function MasterNotifications({
           </button>
           {waitingForEmail > 0 && <p className="muted flex items-center gap-1.5 px-2.5 pb-1 text-[10px]"><Clock3 size={12} aria-hidden="true" />{waitingForEmail} aguardando confirmação do e-mail</p>}
         </div>
-      </section>}
+        </section>
+      </div>, document.body)}
     </div>
   );
 }

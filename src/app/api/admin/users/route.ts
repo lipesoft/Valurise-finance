@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSupabaseAdminClient, getVerifiedMaster } from "@/lib/supabase/admin";
+import { verifyMasterPassword } from "@/lib/supabase/reauth";
 
 export const dynamic = "force-dynamic";
 
 const accountStatus = z.enum([
   "all",
+  "requests",
   "pending",
   "pending_email",
   "verification_required",
@@ -26,6 +28,7 @@ const actionSchema = z.object({
     "other",
   ]).optional(),
   reasonNote: z.string().trim().max(280).optional(),
+  reauthPassword: z.string().min(1).max(200).optional(),
 });
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, {
@@ -83,10 +86,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const parsed = actionSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return json({ error: "Ação inválida." }, 400);
-  const { userId, action, reasonCode, reasonNote } = parsed.data;
+  const { userId, action, reasonCode, reasonNote, reauthPassword } = parsed.data;
   if (userId === master.id) return json({ error: "Você não pode alterar a própria conta Master." }, 400);
   if (["reject", "disable", "trash", "delete_permanently"].includes(action) && !reasonCode) {
     return json({ error: "Selecione um motivo para esta ação." }, 400);
+  }
+  if (action === "delete_permanently") {
+    if (!reauthPassword) return json({ error: "Confirme sua senha Master para excluir definitivamente." }, 400);
+    if (!master.email) return json({ error: "Não foi possível validar a reautenticação desta conta." }, 503);
+    const verification = await verifyMasterPassword(master.id, master.email, reauthPassword);
+    if (verification.unavailable) return json({ error: "Não foi possível confirmar sua senha agora. Tente novamente." }, 503);
+    if (!verification.valid) return json({ error: "A senha de confirmação está incorreta." }, 401);
   }
 
   const admin = getSupabaseAdminClient();
@@ -98,19 +108,33 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     p_reason_note: reasonNote || null,
   });
   if (transitionError || !transition?.auditId || !transition?.authAction) {
+    if (!transitionError && transition?.alreadyCompleted && transition.auditId) {
+      return json({ ok: true, action, replayed: true, auditId: transition.auditId });
+    }
     return publicActionError(transitionError?.message ?? "invalid transition", action);
   }
 
-  let authError: { message: string } | null = null;
-  if (transition.authAction === "delete") {
-    if (!transition.alreadyDeleted) {
-      const removed = await admin.auth.admin.deleteUser(userId);
-      authError = removed.error;
+  let authError: { message: string; code?: string; status?: number } | null = null;
+  try {
+    if (transition.authAction === "delete") {
+      let userAlreadyMissing = false;
+      if (transition.alreadyDeleted) {
+        const existing = await admin.auth.admin.getUserById(userId);
+        userAlreadyMissing = !existing.data?.user || Boolean(existing.error?.status === 404 && existing.error.code === "user_not_found");
+        if (existing.error && !userAlreadyMissing) authError = existing.error;
+      }
+      if (!userAlreadyMissing && !authError) {
+        const removed = await admin.auth.admin.deleteUser(userId);
+        const deletionWasAlreadyComplete = removed.error?.status === 404 && removed.error.code === "user_not_found";
+        authError = deletionWasAlreadyComplete ? null : removed.error;
+      }
+    } else {
+      const banDuration = transition.authAction === "unban" ? "none" : "876000h";
+      const updated = await admin.auth.admin.updateUserById(userId, { ban_duration: banDuration });
+      authError = updated.error;
     }
-  } else {
-    const banDuration = transition.authAction === "unban" ? "none" : "876000h";
-    const updated = await admin.auth.admin.updateUserById(userId, { ban_duration: banDuration });
-    authError = updated.error;
+  } catch {
+    authError = { message: "auth operation failed" };
   }
 
   if (authError) {
@@ -123,20 +147,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (authError.message.includes("workspace owner must transfer ownership before deletion")) {
       return json({ error: "Esta conta ainda administra uma empresa com outros integrantes. Transfira a titularidade antes de excluir definitivamente." }, 409);
     }
-    return json({
-      error: audit.error
-        ? "A ação foi iniciada, mas o registro de auditoria precisa de atenção. Atualize o painel antes de repetir."
-        : "A atualização não foi concluída no serviço de autenticação. O resultado foi registrado; tente novamente.",
-    }, 503);
+    if (audit.error || audit.data !== true) {
+      return json({ error: "A ação precisa de reconciliação: não foi possível confirmar o resultado no histórico administrativo. Atualize a auditoria antes de repetir." }, 503);
+    }
+    return json({ error: "A atualização não foi concluída no serviço de autenticação. O resultado foi registrado; tente novamente." }, 503);
   }
 
-  const { error: auditError } = await admin.rpc("master_finish_admin_audit", {
+  const { data: auditCompleted, error: auditError } = await admin.rpc("master_finish_admin_audit", {
     p_actor_id: master.id,
     p_audit_id: transition.auditId,
     p_outcome: "completed",
     p_detail_code: null,
   });
-  if (auditError) return json({ error: "A alteração foi feita, mas a confirmação de auditoria precisa de atenção. Atualize o painel." }, 503);
+  if (auditError || auditCompleted !== true) return json({ error: "A alteração foi feita, mas a confirmação de auditoria precisa de atenção. Atualize o painel antes de repetir." }, 503);
 
   return json({ ok: true, action, auditId: transition.auditId });
 }

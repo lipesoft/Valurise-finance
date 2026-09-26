@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const { admin, getVerifiedMaster } = vi.hoisted(() => {
+const { admin, getVerifiedMaster, verifyMasterPassword } = vi.hoisted(() => {
   const rpc = vi.fn();
   const deleteUser = vi.fn();
+  const getUserById = vi.fn();
   const updateUserById = vi.fn();
   return {
-    admin: { rpc, auth: { admin: { deleteUser, updateUserById } } },
+    admin: { rpc, auth: { admin: { deleteUser, getUserById, updateUserById } } },
     getVerifiedMaster: vi.fn(),
+    verifyMasterPassword: vi.fn(),
   };
 });
 
@@ -15,6 +17,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   getSupabaseAdminClient: () => admin,
   getVerifiedMaster,
 }));
+vi.mock("@/lib/supabase/reauth", () => ({ verifyMasterPassword }));
 
 import { POST } from "./route";
 
@@ -32,7 +35,8 @@ function post(body: unknown) {
 describe("POST /api/admin/users", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getVerifiedMaster.mockResolvedValue({ id: actorId });
+    getVerifiedMaster.mockResolvedValue({ id: actorId, email: "master@example.invalid" });
+    verifyMasterPassword.mockResolvedValue({ valid: true, unavailable: false });
   });
 
   it("exige motivo antes de iniciar ações sensíveis", async () => {
@@ -46,7 +50,7 @@ describe("POST /api/admin/users", () => {
   it("não executa exclusão Auth se o banco disser que a conta não está na lixeira", async () => {
     admin.rpc.mockResolvedValueOnce({ data: null, error: { message: "account must be in trash before permanent deletion" } });
 
-    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested" }));
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested", reauthPassword: "fake-master-password" }));
     const body = await response.json();
 
     expect(response.status).toBe(409);
@@ -60,12 +64,13 @@ describe("POST /api/admin/users", () => {
       .mockResolvedValueOnce({ data: true, error: null });
     admin.auth.admin.deleteUser.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
 
-    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested" }));
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested", reauthPassword: "fake-master-password" }));
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body.ok).toBe(true);
     expect(admin.auth.admin.deleteUser).toHaveBeenCalledWith(accountId);
+    expect(verifyMasterPassword).toHaveBeenCalledWith(actorId, "master@example.invalid", "fake-master-password");
     expect(admin.rpc).toHaveBeenNthCalledWith(1, "master_transition_account", expect.objectContaining({
       p_actor_id: actorId,
       p_target_user_id: accountId,
@@ -85,7 +90,7 @@ describe("POST /api/admin/users", () => {
       .mockResolvedValueOnce({ data: true, error: null });
     admin.auth.admin.deleteUser.mockResolvedValue({ data: null, error: { message: "temporary auth error" } });
 
-    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "other" }));
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "other", reauthPassword: "fake-master-password" }));
 
     expect(response.status).toBe(503);
     expect(admin.rpc).toHaveBeenNthCalledWith(2, "master_finish_admin_audit", expect.objectContaining({
@@ -93,5 +98,50 @@ describe("POST /api/admin/users", () => {
       p_outcome: "failed",
       p_detail_code: "auth_delete_failed",
     }));
+  });
+
+  it("rejeita exclusão definitiva sem reautenticação", async () => {
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested" }));
+
+    expect(response.status).toBe(400);
+    expect(verifyMasterPassword).not.toHaveBeenCalled();
+    expect(admin.rpc).not.toHaveBeenCalled();
+  });
+
+  it("não inicia exclusão quando a senha Master está incorreta", async () => {
+    verifyMasterPassword.mockResolvedValueOnce({ valid: false, unavailable: false });
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested", reauthPassword: "incorrect-fake-password" }));
+
+    expect(response.status).toBe(401);
+    expect(admin.rpc).not.toHaveBeenCalled();
+    expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("não declara a exclusão como concluída se o banco não confirmar a auditoria", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-3", authAction: "delete", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: false, error: null });
+    admin.auth.admin.deleteUser.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
+
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested", reauthPassword: "fake-master-password" }));
+
+    expect(response.status).toBe(503);
+    expect((await response.json()).error).toMatch(/auditoria/);
+  });
+
+  it("finaliza com segurança uma repetição quando o usuário Auth já foi removido", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-retry", authAction: "delete", retry: true, alreadyDeleted: true }, error: null })
+      .mockResolvedValueOnce({ data: true, error: null });
+    admin.auth.admin.getUserById.mockResolvedValue({
+      data: { user: null },
+      error: { message: "User not found", status: 404, code: "user_not_found" },
+    });
+
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested", reauthPassword: "fake-master-password" }));
+
+    expect(response.status).toBe(200);
+    expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
+    expect(admin.rpc).toHaveBeenNthCalledWith(2, "master_finish_admin_audit", expect.objectContaining({ p_outcome: "completed" }));
   });
 });

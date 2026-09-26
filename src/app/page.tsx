@@ -189,6 +189,8 @@ const choices = [
 export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [authProfileIssue, setAuthProfileIssue] = useState(false);
+  const [authRetryRevision, setAuthRetryRevision] = useState(0);
   const [splashStatus, setSplashStatus] = useState<ValuriseSplashStatus>("opening");
   const [splashVisible, setSplashVisible] = useState(true);
   const updateSplashStatus = useCallback((status: ValuriseSplashStatus) => {
@@ -198,45 +200,98 @@ export default function Page() {
   const completeLogin = useCallback((nextUser: User) => {
     setSplashStatus(nextUser.role === "user" && nextUser.status === "active" ? "syncing" : "ready");
     setSplashVisible(true);
+    setAuthProfileIssue(false);
     setUser(nextUser);
   }, []);
   useEffect(() => {
+    let cancelled = false;
+    setCheckingAuth(true);
     const supabase = getSupabaseBrowserClient();
     if (!supabase) {
       setSplashStatus("ready");
       setCheckingAuth(false);
-      return;
+      return () => { cancelled = true; };
     }
-    void supabase.auth.getUser().then(async ({ data }) => {
-      if (!data.user) {
+    void (async () => {
+      try {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) {
+          if (!cancelled) setAuthProfileIssue(true);
+          setSplashStatus("ready");
+          return;
+        }
+        if (!sessionData.session) {
+          if (!cancelled) {
+            setUser(null);
+            setAuthProfileIssue(false);
+          }
+          setSplashStatus("ready");
+          return;
+        }
+        const { data: authData, error: authError } = await supabase.auth.getUser();
+        if (authError) {
+          if (authError.status === 401) {
+            await supabase.auth.signOut();
+            if (!cancelled) setUser(null);
+          } else if (!cancelled) {
+            setAuthProfileIssue(true);
+          }
+          setSplashStatus("ready");
+          return;
+        }
+        if (!authData.user) {
+          if (!cancelled) {
+            setUser(null);
+            setAuthProfileIssue(false);
+          }
+          setSplashStatus("ready");
+          return;
+        }
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name, account_status, account_role")
+          .eq("id", authData.user.id)
+          .maybeSingle();
+        if (profileError || !profile) {
+          if (!cancelled) {
+            setUser(null);
+            setAuthProfileIssue(true);
+          }
+          setSplashStatus("ready");
+          return;
+        }
+        const authenticatedUser: User = {
+          username: authData.user.id,
+          name: profile.full_name || String(authData.user.user_metadata?.full_name || "").trim() || authData.user.email?.split("@")[0] || "Você",
+          status: profile.account_status as AccountStatus,
+          role: profile.account_role === "master" ? "master" : "user",
+        };
+        if (!cancelled) {
+          setAuthProfileIssue(false);
+          setUser(authenticatedUser);
+        }
+        setSplashStatus(authenticatedUser.role === "user" && authenticatedUser.status === "active" ? "syncing" : "ready");
+      } catch {
+        if (!cancelled) {
+          setUser(null);
+          setAuthProfileIssue(true);
+        }
         setSplashStatus("ready");
-        return;
+      } finally {
+        if (!cancelled) setCheckingAuth(false);
       }
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("full_name, account_status, account_role")
-        .eq("id", data.user.id)
-        .maybeSingle();
-      const authenticatedUser: User = {
-        username: data.user.id,
-        name: profile?.full_name || String(data.user.user_metadata?.full_name || "").trim() || data.user.email?.split("@")[0] || "Você",
-        status: (profile?.account_status as AccountStatus | undefined) || "pending",
-        role: profile?.account_role === "master" ? "master" : "user",
-      };
-      setSplashStatus(authenticatedUser.role === "user" && authenticatedUser.status === "active" ? "syncing" : "ready");
-      setUser(authenticatedUser);
-    }).catch(() => {
-      // Uma falha ao restaurar a sessão deve liberar o login em vez de prender o splash.
-      setSplashStatus("ready");
-    }).finally(() => setCheckingAuth(false));
-  }, []);
+    })();
+    return () => { cancelled = true; };
+  }, [authRetryRevision]);
   const logout = () => {
     void getSupabaseBrowserClient()?.auth.signOut();
     setUser(null);
+    setAuthProfileIssue(false);
   };
   let content: ReactNode = null;
   if (!checkingAuth) {
-    if (user?.role === "master") content = <MasterConsole user={user} logout={logout} />;
+    if (authProfileIssue) content = <AuthProfileRecovery retry={() => { setCheckingAuth(true); setAuthProfileIssue(false); setAuthRetryRevision((value) => value + 1); }} logout={logout} />;
+    else if (user?.role === "master") content = <MasterConsole user={user} logout={logout} />;
     else if (user && user.status && user.status !== "active") content = <AccountWaiting user={user} logout={logout} />;
     else if (user) content = <WorkspaceGate user={user} logout={logout} onLoadingStatusChange={updateSplashStatus} />;
     else content = <Login done={completeLogin} />;
@@ -391,13 +446,30 @@ function Login({ done }: { done: (u: User) => void }) {
   }, []);
   async function finishSupabaseUser(authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
     if (!supabase) return;
-    const { data: profile } = await supabase.from("profiles").select("full_name, account_status, account_role").eq("id", authUser.id).maybeSingle();
+    const { data: profile, error } = await supabase.from("profiles").select("full_name, account_status, account_role").eq("id", authUser.id).maybeSingle();
+    if (error || !profile) {
+      await supabase.auth.signOut();
+      throw new Error("PROFILE_UNAVAILABLE");
+    }
     done({
       username: authUser.id,
-      name: profile?.full_name || String(authUser.user_metadata?.full_name || "").trim() || authUser.email?.split("@")[0] || "Você",
-      status: (profile?.account_status as AccountStatus | undefined) || "pending",
-      role: profile?.account_role === "master" ? "master" : "user",
+      name: profile.full_name || String(authUser.user_metadata?.full_name || "").trim() || authUser.email?.split("@")[0] || "Você",
+      status: profile.account_status as AccountStatus,
+      role: profile.account_role === "master" ? "master" : "user",
     });
+  }
+  function switchMode(nextMode: typeof mode) {
+    setMode(nextMode);
+    setE("");
+    setNotice("");
+    setFieldErrors({});
+    setP("");
+    setShowPassword(false);
+    if ((nextMode === "forgot" || nextMode === "signup") && !u.includes("@")) setU("");
+    if (nextMode === "signup") {
+      setPrivacyAccepted(false);
+      setTermsAccepted(false);
+    }
   }
   async function submit(x: React.FormEvent) {
     x.preventDefault();
@@ -471,14 +543,16 @@ function Login({ done }: { done: (u: User) => void }) {
       if (supabase && mode === "reset") {
         const { error } = await supabase.auth.updateUser({ password: p });
         if (error) return setE("Não foi possível atualizar a senha. Verifique os requisitos e tente novamente.");
+        switchMode("login");
         setNotice("Senha atualizada. Você já pode entrar.");
-        setMode("login");
         window.history.replaceState({}, "", "/");
         return;
       }
       setE("A autenticação segura não está configurada.");
-    } catch {
-      setE("Não foi possível concluir agora. Confira sua conexão e tente novamente.");
+    } catch (error) {
+      setE(error instanceof Error && error.message === "PROFILE_UNAVAILABLE"
+        ? "Não foi possível validar seu perfil agora. Sua sessão foi encerrada por segurança; tente entrar novamente em instantes."
+        : "Não foi possível concluir agora. Confira sua conexão e tente novamente.");
     } finally {
       submitting.current = false;
       setBusy(false);
@@ -494,7 +568,7 @@ function Login({ done }: { done: (u: User) => void }) {
             <h1>VALURISE</h1>
             <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
           </motion.section>
-          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, enviaremos um link para confirmar o e-mail. Depois da confirmação, o pedido seguirá para análise do Master. Se você já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); setFieldErrors({}); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form noValidate aria-busy={busy} onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, enviaremos um link para confirmar o e-mail. Depois da confirmação, o pedido seguirá para análise do Master. Se você já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setU(u.includes("@") ? u : ""); switchMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form noValidate aria-busy={busy} onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
             <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Confirme seu e-mail; depois o Master analisará o pedido." : "Confirme seu e-mail para enviar o pedido à análise do Master.") : mode === "forgot" ? "Use o e-mail cadastrado para receber o link seguro." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
             <div className="login-fields">
               {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => { setName(x.target.value); setFieldErrors((current) => ({ ...current, name: "" })); }} className="field" placeholder="Como podemos te chamar?" autoComplete="name" required maxLength={120} aria-invalid={Boolean(fieldErrors.name)} aria-describedby={fieldErrors.name ? "signup-name-error" : undefined} />{fieldErrors.name && <small id="signup-name-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.name}</small>}<label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => { setUsername(x.target.value); setFieldErrors((current) => ({ ...current, username: "" })); }} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" required maxLength={32} aria-invalid={Boolean(fieldErrors.username)} aria-describedby={fieldErrors.username ? "signup-username-error" : undefined} />{fieldErrors.username && <small id="signup-username-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.username}</small>}{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
@@ -505,13 +579,27 @@ function Login({ done }: { done: (u: User) => void }) {
             <AnimatePresence>{e && <motion.p role="alert" aria-live="assertive" className="login-feedback login-feedback-error" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: motionTokens.duration.fast }}>{e}</motion.p>}</AnimatePresence>
             {notice && <p role="status" aria-live="polite" className="login-feedback login-feedback-success">{notice}</p>}
             <button disabled={busy} className="login-submit primary disabled:cursor-wait disabled:opacity-60" type="submit"><span>{busy ? "Aguarde…" : mode === "signup" ? "Solicitar acesso" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span>{busy ? <RefreshCw className="animate-spin" size={17} aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>
-            {supabase && <div className="login-actions">{mode !== "login" && <button disabled={busy} type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); setFieldErrors({}); }}>Já tenho acesso</button>}{mode === "login" && <><button disabled={busy} type="button" onClick={() => { setMode("forgot"); setE(""); setFieldErrors({}); }}>Esqueci minha senha</button><button disabled={busy} type="button" onClick={() => { setMode("signup"); setE(""); setFieldErrors({}); setPrivacyAccepted(false); setTermsAccepted(false); }}>Solicitar acesso</button></>}</div>}
+            {supabase && <div className="login-actions">{mode !== "login" && <button disabled={busy} type="button" onClick={() => switchMode("login")}>Já tenho acesso</button>}{mode === "login" && <><button disabled={busy} type="button" onClick={() => switchMode("forgot")}>Esqueci minha senha</button><button disabled={busy} type="button" onClick={() => switchMode("signup")}>Solicitar acesso</button></>}</div>}
           </motion.form>}
           <motion.footer className="login-trust" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.28, delay: 0.28 }}><ShieldCheck size={15} aria-hidden="true" /> Dados protegidos com autenticação segura</motion.footer>
         </div>
       </main>
     </MotionConfig>
   );
+}
+function AuthProfileRecovery({ retry, logout }: { retry: () => void; logout: () => void }) {
+  return <main className="login-shell grid min-h-dvh place-items-center overflow-hidden p-5">
+    <LoginAmbient />
+    <section className="login-card panel relative z-10 w-full max-w-sm rounded-3xl p-6 text-center sm:p-7">
+      <Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14" priority />
+      <h1 className="mt-5 text-xl font-semibold">Não foi possível validar seu acesso</h1>
+      <p className="muted mt-3 text-sm leading-6">Não conseguimos confirmar o perfil da conta agora. Seu acesso não foi liberado nem alterado. Tente novamente ou volte ao login.</p>
+      <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
+        <button type="button" onClick={retry} className="login-submit primary">Tentar novamente</button>
+        <button type="button" onClick={logout} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Voltar ao login</button>
+      </div>
+    </section>
+  </main>;
 }
 function AccountWaiting({ user, logout }: { user: User; logout: () => void }) {
   const copy = user.status === "pending" ? { title: "Acesso em análise", text: "Pedidos recentes entram na fila do Master após a confirmação do e-mail. Se você já usava uma conta antiga e seu pedido não aparece, saia e entre novamente com sua senha para revalidá-lo. O acesso financeiro só será liberado após aprovação." } : user.status === "trashed" ? { title: "Conta na lixeira", text: "Esta conta foi removida temporariamente. Fale com o Master para restaurá-la." } : { title: "Conta desativada", text: "Seu acesso está desativado. Fale com o Master se precisar de ajuda." };
