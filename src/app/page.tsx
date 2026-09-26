@@ -1805,7 +1805,9 @@ function Dashboard({
     <StaggerContainer className="mx-auto max-w-5xl px-4 pt-5 lg:px-10">
       <StaggerItem>
       <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-        {greeting}, {user.name}.
+        {workspace?.type === "business"
+          ? workspace.displayName
+          : `${greeting}, ${user.name}.`}
       </h1>
       </StaggerItem>
       <StaggerItem>

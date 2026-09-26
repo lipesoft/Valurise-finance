@@ -6,29 +6,27 @@
   place-items: center;
   overflow: hidden;
   padding: max(1.25rem, env(safe-area-inset-top)) 1.25rem max(1.25rem, env(safe-area-inset-bottom));
-  background: #12131a;
   color: #f4f5f6;
   isolation: isolate;
   opacity: 1;
-  transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .splash::before {
   position: absolute;
   inset: 0;
-  z-index: -1;
-  background: radial-gradient(ellipse at 50% 46%, rgb(25 76 62 / 12%), transparent 46%);
+  z-index: 0;
+  background:
+    radial-gradient(ellipse at 50% 46%, rgb(25 76 62 / 12%), transparent 46%),
+    #12131a;
   content: "";
   pointer-events: none;
-  transition: opacity 180ms ease-out;
-}
-
-.revealing {
-  background: transparent;
+  transition: opacity 640ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .revealing::before {
   opacity: 0;
+  will-change: opacity;
 }
 
 .exiting {
@@ -38,31 +36,37 @@
 
 .brandContent {
   position: relative;
-  z-index: 2;
+  z-index: 1;
   display: flex;
   width: min(100%, 19rem);
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  transform: translateZ(0);
+  transform: translate3d(0, 0, 0);
   transition:
-    opacity 210ms ease-out,
-    transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
+    opacity 480ms ease-out,
+    transform 640ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.brandLeaving {
+.revealing .brandContent {
   opacity: 0;
-  transform: scale(0.97);
-  pointer-events: none;
+  transform: translate3d(0, -0.5rem, 0);
+  will-change: opacity, transform;
 }
 
 .mark {
   position: relative;
-  width: clamp(4.75rem, 20vw, 7rem);
+  width: clamp(9rem, 40vw, 12rem);
   aspect-ratio: 1;
   transform: scale(1);
+  transform-origin: center;
+  transition:
+    transform 640ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.revealing .mark {
+  transform: translate3d(0, -0.5rem, 0) scale(1.08);
 }
 
 .waiting {
@@ -138,10 +142,10 @@
 }
 
 .wordmark {
-  margin: 0.62rem 0 0;
+  margin: 0.78rem 0 0;
   padding-left: 0.27em;
   color: #f1f2f3;
-  font-size: clamp(0.84rem, 3.6vw, 1rem);
+  font-size: clamp(1rem, 4vw, 1.125rem);
   font-weight: 500;
   letter-spacing: 0.27em;
   line-height: 1.4;
@@ -157,25 +161,6 @@
   font-size: 0.72rem;
   letter-spacing: 0.025em;
   line-height: 1.5;
-}
-
-.revealCurtain {
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  transform: scale(1);
-  transform-origin: 50% 50%;
-  transition: transform 760ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  pointer-events: none;
-}
-
-.revealing .revealCurtain {
-  transform: scale(var(--reveal-scale));
-  will-change: transform;
 }
 
 @keyframes assemble-left {
@@ -252,7 +237,9 @@
   .splash,
   .splash::before,
   .brandContent,
-  .revealCurtain {
+  .mark,
+  .wordmark,
+  .status {
     transition-duration: 100ms;
   }
 

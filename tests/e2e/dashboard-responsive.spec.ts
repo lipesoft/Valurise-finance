@@ -152,6 +152,8 @@ async function installMockSession(page: import("@playwright/test").Page, financi
 test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
+  const personalGreeting = page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ });
+  await expect(personalGreeting).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
   await page.getByRole("button", { name: "Criar espaço empresarial" }).click();
   const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
@@ -166,8 +168,11 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByRole("button", { name: "Registrar movimentação" })).toBeVisible();
 
   await page.getByLabel("Espaço financeiro ativo").selectOption(personalWorkspaceId);
+  await expect(personalGreeting).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
   await page.getByLabel("Espaço financeiro ativo").selectOption(businessWorkspaceId);
+  await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
+  await expect(personalGreeting).toHaveCount(0);
   await expect(page.getByText("Mercado QA")).toHaveCount(0);
 });
 
@@ -207,7 +212,7 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   }
 });
 
-test("splash acompanha a sincronização real e revela a interface pelo símbolo", async ({ page }) => {
+test("splash acompanha a sincronização real e expande a marca suavemente na entrada", async ({ page }) => {
   await installMockSession(page, 4000);
   await page.setViewportSize({ width: 375, height: 844 });
   await page.goto("/");
@@ -217,19 +222,38 @@ test("splash acompanha a sincronização real e revela a interface pelo símbolo
   await expect(page.getByText("Evolução financeira")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toMatch(/rgb\(18, 19, 26\)/);
 
+  const mark = page.getByTestId("splash-mark");
   for (const width of [375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect.poll(() => mark.evaluate((element) => Math.round(element.getBoundingClientRect().width))).toBeGreaterThanOrEqual(144);
   }
 
-  const revealMask = page.getByTestId("splash-reveal-mask");
-  await expect(revealMask).toHaveAttribute("data-intro-complete", "true", { timeout: 2_000 });
+  await expect(mark).toHaveAttribute("data-intro-complete", "true", { timeout: 2_000 });
   await expect.poll(() => page.getByTestId("splash-mark").locator("div").first().evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
-  await expect(revealMask).toHaveAttribute("data-state", "revealing", { timeout: 10_000 });
-  await expect(revealMask).toHaveCSS("transition-property", "transform");
-  await expect(revealMask).toHaveCSS("will-change", "transform");
-  await expect(revealMask.locator("mask")).toHaveCount(1);
-  await expect(revealMask.locator("image")).toHaveAttribute("href", "/valurise-icon.webp");
+  await expect(mark).toHaveAttribute("data-state", "revealing", { timeout: 10_000 });
+  const revealStyles = await mark.evaluate((element) => {
+    const root = element.parentElement?.parentElement;
+    if (!root) throw new Error("Contêiner do splash não encontrado");
+    const brandStyle = getComputedStyle(element.parentElement!);
+    const overlayStyle = getComputedStyle(root, "::before");
+    const markStyle = getComputedStyle(element);
+    return {
+      brandTransitionProperty: brandStyle.transitionProperty,
+      brandTransitionDuration: brandStyle.transitionDuration,
+      brandWillChange: brandStyle.willChange,
+      overlayTransitionProperty: overlayStyle.transitionProperty,
+      markTransitionProperty: markStyle.transitionProperty,
+      markTransitionDuration: markStyle.transitionDuration,
+    };
+  });
+  expect(revealStyles.brandTransitionProperty).toContain("opacity");
+  expect(revealStyles.brandTransitionProperty).toContain("transform");
+  expect(revealStyles.brandTransitionDuration).toContain("0.64s");
+  expect(revealStyles.brandWillChange).toContain("opacity");
+  expect(revealStyles.overlayTransitionProperty).toBe("opacity");
+  expect(revealStyles.markTransitionProperty).toContain("transform");
+  expect(revealStyles.markTransitionDuration).toContain("0.64s");
   await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 8_000 });
   await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Mercado QA")).toBeVisible();
