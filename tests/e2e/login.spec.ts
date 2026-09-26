@@ -6,6 +6,10 @@ async function dismissCookieNotice(page: import("@playwright/test").Page) {
   if (await necessary.isVisible()) await necessary.click();
 }
 
+async function waitForApplicationReady(page: import("@playwright/test").Page) {
+  await expect(page.locator('div[aria-hidden="false"] .login-shell')).toBeVisible();
+}
+
 test("aplica cabeçalhos básicos de segurança", async ({ page }) => {
   const response = await page.goto("/");
   expect(response?.headers()["x-content-type-options"]).toBe("nosniff");
@@ -21,7 +25,7 @@ test("exibe acesso seguro e revela a senha sem sair da tela", async ({ page }) =
 
   await expect(page.getByRole("heading", { name: "VALURISE" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Acesse sua conta" })).toBeVisible();
-  await expect(page.getByLabel("Identificação")).toBeVisible();
+  await expect(page.getByLabel("Usuário ou e-mail")).toBeVisible();
   await expect(page.getByLabel("Senha", { exact: true })).toHaveAttribute("type", "password");
 
   await page.getByLabel("Senha", { exact: true }).fill("senha-de-teste-nao-real");
@@ -53,7 +57,8 @@ test("orienta o próximo passo sem afirmar que toda tentativa virou pedido pende
   }));
   await page.goto("/");
   await dismissCookieNotice(page);
-  await page.getByRole("button", { name: "Criar conta" }).click();
+  await waitForApplicationReady(page);
+  await page.getByRole("button", { name: "Solicitar acesso" }).click();
 
   await page.getByLabel("Seu nome").fill("Pessoa de Teste");
   await page.getByLabel("Usuário").fill("teste.valurise");
@@ -61,11 +66,11 @@ test("orienta o próximo passo sem afirmar que toda tentativa virou pedido pende
   await page.getByLabel("Senha", { exact: true }).fill("senha-e2e-ficticia");
   await page.getByLabel(/Política de Privacidade/).check();
   await page.getByLabel(/Termos de Uso/).check();
-  await page.getByRole("button", { name: "Solicitar cadastro" }).click();
+  await page.getByRole("button", { name: "Solicitar acesso", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "Verifique o próximo passo do seu acesso" })).toBeVisible();
-  await expect(page.getByText(/Se este for um cadastro novo, sua solicitação está aguardando aprovação do Master/)).toBeVisible();
-  await expect(page.getByText(/nenhum pedido novo foi criado/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Próximo passo do seu acesso" })).toBeVisible();
+  await expect(page.getByText(/Depois da confirmação, o pedido seguirá para análise do Master/)).toBeVisible();
+  await expect(page.getByText(/Por segurança, não informamos qual situação se aplica/)).toBeVisible();
 });
 
 test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }) => {
@@ -76,6 +81,7 @@ test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }
   }));
   await page.goto("/");
   await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
   await page.getByRole("button", { name: "Esqueci minha senha" }).click();
   await page.getByLabel("E-mail").fill("teste@exemplo.invalid");
   await page.getByRole("button", { name: "Enviar link seguro" }).click();
@@ -84,16 +90,24 @@ test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }
 });
 
 test("apresenta erro genérico quando o login falha", async ({ page }) => {
-  await page.route("**/api/auth/login", (route) => route.fulfill({
-    status: 401,
-    contentType: "application/json",
-    body: JSON.stringify({ error: "Login ou senha inválidos." }),
-  }));
+  let loginRequestSeen = false;
+  await page.route("**/api/auth/login", (route) => {
+    loginRequestSeen = true;
+    return route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Login ou senha inválidos." }),
+    });
+  });
   await page.goto("/");
   await dismissCookieNotice(page);
-  await page.getByLabel("Identificação").fill("usuario-invalido");
+  await waitForApplicationReady(page);
+  await page.getByLabel("Usuário ou e-mail").fill("usuario-invalido");
   await page.getByLabel("Senha", { exact: true }).fill("senha-invalida-nao-real");
+  await expect(page.getByLabel("Usuário ou e-mail")).toHaveValue("usuario-invalido");
+  await expect(page.getByLabel("Senha", { exact: true })).toHaveValue("senha-invalida-nao-real");
   await page.getByRole("button", { name: "Entrar na conta" }).click();
 
+  await expect.poll(() => loginRequestSeen).toBe(true);
   await expect(page.getByText("Login ou senha inválidos.")).toBeVisible();
 });

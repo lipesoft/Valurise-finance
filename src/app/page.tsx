@@ -29,6 +29,7 @@ import {
   Pencil,
   Plus,
   ReceiptText,
+  RefreshCw,
   Search,
   SendHorizontal,
   ShieldCheck,
@@ -83,6 +84,7 @@ import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
 import { WorkspaceDashboardHeader } from "@/components/dashboard/workspace-dashboard-header";
+import { MasterAdminPanel } from "@/components/master-admin-panel";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -370,6 +372,7 @@ function BusinessWorkspaceWelcome({ displayName, openAccounts, openFinancialProf
 
 function Login({ done }: { done: (u: User) => void }) {
   const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">("login");
+  const [busy, setBusy] = useState(false);
   const [inviteToken, setInviteToken] = useState("");
   const [u, setU] = useState(""), [p, setP] = useState(""), [name, setName] = useState(""), [username, setUsername] = useState(""), [e, setE] = useState(""), [notice, setNotice] = useState(""), [requestSent, setRequestSent] = useState(false), [showPassword, setShowPassword] = useState(false);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
@@ -395,50 +398,61 @@ function Login({ done }: { done: (u: User) => void }) {
   }
   async function submit(x: React.FormEvent) {
     x.preventDefault();
-    setE(""); setNotice("");
-    if (supabase && mode === "login") {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier: u.trim(), password: p }),
-      });
-      const payload = await response.json();
-      if (!response.ok || !payload.session)
-        return setE(payload.error || "Não foi possível entrar.");
-      const { error } = await supabase.auth.setSession({
-        access_token: payload.session.access_token,
-        refresh_token: payload.session.refresh_token,
-      });
-      if (error || !payload.user) return setE("Não foi possível iniciar a sessão.");
-      await finishSupabaseUser(payload.user);
-      return;
+    if (busy) return;
+    setE(""); setNotice(""); setBusy(true);
+    try {
+      if (supabase && mode === "login") {
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ identifier: u.trim(), password: p }),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.session) return setE(payload.error || "Não foi possível entrar.");
+        const { error } = await supabase.auth.setSession({
+          access_token: payload.session.access_token,
+          refresh_token: payload.session.refresh_token,
+        });
+        if (error || !payload.user) return setE("Não foi possível iniciar a sessão.");
+        await finishSupabaseUser(payload.user);
+        return;
+      }
+      if (supabase && mode === "signup") {
+        if (!name.trim() || !username.trim()) return setE("Informe seu nome e um usuário.");
+        if (p.length < 8) return setE("A senha precisa ter pelo menos 8 caracteres.");
+        if (!privacyAccepted || !termsAccepted) return setE("Leia e aceite a Política de Privacidade e os Termos de Uso.");
+        const response = await fetch("/api/auth/request-access", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fullName: name.trim(), username: suggestedUsername, email: u.trim(), password: p, privacyAccepted, termsAccepted, ...(inviteToken ? { inviteToken } : {}) }),
+        });
+        const payload = await response.json();
+        if (!response.ok) return setE(payload.error || "Não foi possível solicitar o acesso.");
+        setRequestSent(true);
+        if (inviteToken) window.history.replaceState({}, "", "/");
+        return;
+      }
+      if (supabase && mode === "forgot") {
+        const response = await fetch("/api/auth/password-reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: u.trim() }) });
+        const payload = await response.json();
+        if (!response.ok) return setE(payload.error || "Não foi possível solicitar a recuperação.");
+        setNotice("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.");
+        return;
+      }
+      if (supabase && mode === "reset") {
+        const { error } = await supabase.auth.updateUser({ password: p });
+        if (error) return setE("Não foi possível atualizar a senha. Verifique os requisitos e tente novamente.");
+        setNotice("Senha atualizada. Você já pode entrar.");
+        setMode("login");
+        window.history.replaceState({}, "", "/");
+        return;
+      }
+      setE("A autenticação segura não está configurada.");
+    } catch {
+      setE("Não foi possível concluir agora. Confira sua conexão e tente novamente.");
+    } finally {
+      setBusy(false);
     }
-    if (supabase && mode === "signup") {
-      if (!name.trim() || !username.trim()) return setE("Informe seu nome e um usuário.");
-      if (!privacyAccepted || !termsAccepted) return setE("Leia e aceite a Política de Privacidade e os Termos de Uso.");
-      const response = await fetch("/api/auth/request-access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fullName: name.trim(), username: suggestedUsername, email: u.trim(), password: p, privacyAccepted, termsAccepted, ...(inviteToken ? { inviteToken } : {}) }) });
-      const payload = await response.json();
-      if (!response.ok) return setE(payload.error || "Não foi possível solicitar o cadastro.");
-      setRequestSent(true);
-      if (inviteToken) window.history.replaceState({}, "", "/");
-      return;
-    }
-    if (supabase && mode === "forgot") {
-      const response = await fetch("/api/auth/password-reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: u.trim() }) });
-      const payload = await response.json();
-      if (!response.ok) return setE(payload.error || "Não foi possível solicitar a recuperação.");
-      setNotice("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.");
-      return;
-    }
-    if (supabase && mode === "reset") {
-      const { error } = await supabase.auth.updateUser({ password: p });
-      if (error) return setE(error.message);
-      setNotice("Senha atualizada. Você já pode entrar.");
-      setMode("login");
-      window.history.replaceState({}, "", "/");
-      return;
-    }
-    return setE("A autenticação segura não está configurada.");
   }
   return (
     <MotionConfig reducedMotion="user">
@@ -450,18 +464,18 @@ function Login({ done }: { done: (u: User) => void }) {
             <h1>VALURISE</h1>
             <p>{mode === "signup" ? "Seu acesso começa por aqui." : mode === "forgot" ? "Vamos recuperar seu acesso com segurança." : mode === "reset" ? "Defina uma nova chave de acesso." : "Clareza para cuidar do seu patrimônio."}</p>
           </motion.section>
-          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Verifique o próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se este for um cadastro novo, sua solicitação está aguardando aprovação do Master. Se o e-mail ou usuário já estiver associado a uma conta, nenhum pedido novo foi criado: entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
-            <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Seu cadastro será vinculado ao convite e enviado para aprovação." : "Seu cadastro será enviado para aprovação.") : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
+          {requestSent ? <motion.section className="login-card panel text-center" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Próximo passo do seu acesso</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, enviaremos um link para confirmar o e-mail. Depois da confirmação, o pedido seguirá para análise do Master. Se você já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" onClick={() => { setRequestSent(false); setMode("login"); }} className="login-submit primary mt-6">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
+            <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? (inviteToken ? "Confirme seu e-mail; depois o Master analisará o pedido." : "Confirme seu e-mail para enviar o pedido à análise do Master.") : mode === "forgot" ? "Enviaremos um link para o seu e-mail." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
             <div className="login-fields">
-              {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => setName(x.target.value)} className="field" placeholder="Como podemos te chamar?" autoComplete="name" /><label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => setUsername(x.target.value)} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" />{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
-              {mode !== "reset" && <><label className="login-field-label" htmlFor="login-identifier">{mode === "login" ? "Identificação" : "E-mail"}</label><input id="login-identifier" value={u} onChange={(x) => setU(x.target.value)} className="field" type={mode === "login" ? "text" : "email"} placeholder={mode === "login" ? "Seu usuário ou e-mail" : "voce@exemplo.com"} autoComplete={mode === "login" ? "username" : "email"} /></>}
-              {mode !== "forgot" && <><label className="login-field-label" htmlFor="login-password">{mode === "reset" ? "Nova senha" : "Senha"}</label><div className="login-password-wrap"><LockKeyhole className="login-field-icon" size={18} aria-hidden="true" /><input id="login-password" value={p} onChange={(x) => setP(x.target.value)} className="field login-password" type={showPassword ? "text" : "password"} placeholder={mode === "reset" ? "Crie uma nova senha" : "Digite sua senha"} autoComplete={mode === "reset" ? "new-password" : "current-password"} /><button className="login-password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div></>}
+              {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => setName(x.target.value)} className="field" placeholder="Como podemos te chamar?" autoComplete="name" required maxLength={120} /><label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => setUsername(x.target.value)} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" required maxLength={32} />{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
+              {mode !== "reset" && <><label className="login-field-label" htmlFor="login-identifier">{mode === "login" ? "Usuário ou e-mail" : "E-mail"}</label><input id="login-identifier" value={u} onChange={(x) => setU(x.target.value)} className="field" type={mode === "login" ? "text" : "email"} placeholder={mode === "login" ? "Seu usuário ou e-mail" : "voce@exemplo.com"} autoComplete={mode === "login" ? "username" : "email"} required maxLength={254} /></>}
+              {mode !== "forgot" && <><label className="login-field-label" htmlFor="login-password">{mode === "reset" ? "Nova senha" : "Senha"}</label><div className="login-password-wrap"><LockKeyhole className="login-field-icon" size={18} aria-hidden="true" /><input id="login-password" value={p} onChange={(x) => setP(x.target.value)} className="field login-password" type={showPassword ? "text" : "password"} placeholder={mode === "reset" ? "Crie uma nova senha" : "Digite sua senha"} autoComplete={mode === "reset" || mode === "signup" ? "new-password" : "current-password"} required minLength={mode === "signup" || mode === "reset" ? 8 : 1} maxLength={200} /><button className="login-password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div>{(mode === "signup" || mode === "reset") && <small className="muted -mt-1 text-xs">Use pelo menos 8 caracteres.</small>}</>}
             </div>
             {mode === "signup" && <div className="consent-options"><label className="consent-option"><input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} /><span>Li e aceito a <a href="/privacidade" target="_blank" rel="noreferrer">Política de Privacidade</a>.</span></label><label className="consent-option"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} /><span>Li e aceito os <a href="/termos" target="_blank" rel="noreferrer">Termos de Uso</a>.</span></label></div>}
             <AnimatePresence>{e && <motion.p className="login-feedback login-feedback-error" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: motionTokens.duration.fast }}>{e}</motion.p>}</AnimatePresence>
             {notice && <p className="login-feedback login-feedback-success">{notice}</p>}
-            <button className="login-submit primary" type="submit"><span>{mode === "signup" ? "Solicitar cadastro" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span><ArrowRight size={18} aria-hidden="true" /></button>
-            {supabase && <div className="login-actions">{mode !== "login" && <button type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}{mode === "login" && <><button type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button type="button" onClick={() => { setMode("signup"); setE(""); setPrivacyAccepted(false); setTermsAccepted(false); }}>Criar conta</button></>}</div>}
+            <button disabled={busy} className="login-submit primary disabled:cursor-wait disabled:opacity-60" type="submit"><span>{busy ? "Aguarde…" : mode === "signup" ? "Solicitar acesso" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span>{busy ? <RefreshCw className="animate-spin" size={17} aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>
+            {supabase && <div className="login-actions">{mode !== "login" && <button disabled={busy} type="button" onClick={() => { setMode("login"); setE(""); setNotice(""); }}>Já tenho acesso</button>}{mode === "login" && <><button disabled={busy} type="button" onClick={() => { setMode("forgot"); setE(""); }}>Esqueci minha senha</button><button disabled={busy} type="button" onClick={() => { setMode("signup"); setE(""); setPrivacyAccepted(false); setTermsAccepted(false); }}>Solicitar acesso</button></>}</div>}
           </motion.form>}
           <motion.footer className="login-trust" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.28, delay: 0.28 }}><ShieldCheck size={15} aria-hidden="true" /> Dados protegidos com autenticação segura</motion.footer>
         </div>
@@ -470,25 +484,31 @@ function Login({ done }: { done: (u: User) => void }) {
   );
 }
 function AccountWaiting({ user, logout }: { user: User; logout: () => void }) {
-  const copy = user.status === "pending" ? { title: "Esperando aprovação do Master", text: "Seu cadastro foi recebido. Você será avisado assim que seu acesso for aprovado." } : user.status === "trashed" ? { title: "Conta na lixeira", text: "Esta conta foi removida temporariamente. Fale com o Master para restaurá-la." } : { title: "Conta desativada", text: "Seu acesso está desativado. Fale com o Master se precisar de ajuda." };
+  const copy = user.status === "pending" ? { title: "Acesso em análise", text: "Pedidos recentes entram na fila do Master após a confirmação do e-mail. Se você já usava uma conta antiga e seu pedido não aparece, saia e entre novamente com sua senha para revalidá-lo. O acesso financeiro só será liberado após aprovação." } : user.status === "trashed" ? { title: "Conta na lixeira", text: "Esta conta foi removida temporariamente. Fale com o Master para restaurá-la." } : { title: "Conta desativada", text: "Seu acesso está desativado. Fale com o Master se precisar de ajuda." };
   return <main className="login-shell grid min-h-dvh place-items-center overflow-hidden p-5"><LoginAmbient /><section className="login-card panel relative z-10 w-full max-w-sm rounded-3xl p-7 text-center"><Image src="/valurise-icon.webp" alt="Valurise" width={512} height={512} className="mx-auto h-16 w-16" priority /><h1 className="mt-7 text-xl font-semibold">{copy.title}</h1><p className="muted mt-3 text-sm leading-6">{copy.text}</p><button onClick={logout} className="mt-7 rounded-xl bg-[var(--panel2)] px-4 py-3 text-sm">Sair desta conta</button></section></main>;
 }
 function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
   const [message, setMessage] = useState("");
   return (
     <MotionConfig reducedMotion="user">
-      <main className="min-h-dvh bg-[var(--bg)] lg:flex">
-        <aside className="hidden w-64 shrink-0 flex-col border-r border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_94%,black)] px-4 py-6 lg:fixed lg:inset-y-0 lg:flex">
-          <div className="flex items-center gap-2 px-2"><Image src="/valurise-icon.webp" alt="Valurise" width={56} height={56} className="h-7 w-7 object-contain" priority /><b className="text-sm tracking-tight">VALURISE</b></div>
-          <span className="mt-7 inline-flex w-fit items-center gap-1.5 rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px] font-semibold text-[#e0c298]"><span className="h-1.5 w-1.5 rounded-full bg-[#e0c298]" />MASTER ADMIN</span>
-          <p className="muted mt-7 px-2 text-[10px] font-semibold tracking-widest">GOVERNANÇA</p>
-          <nav className="mt-3 space-y-1 text-sm"><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><ShieldCheck size={17}/>Painel de governança</span><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><ReceiptText size={17}/>Usuários e clientes</span><span className="flex items-center gap-3 rounded-xl bg-[var(--panel2)] px-3 py-2.5 font-medium text-[var(--accent)]"><Bell size={17}/>Solicitações e convites</span><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><Search size={17}/>Auditoria e logs</span><span className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[var(--muted)]"><SlidersHorizontal size={17}/>Configurações globais</span></nav>
-          <div className="mt-auto rounded-2xl bg-[var(--panel)] p-3"><small className="muted block text-[10px] font-semibold tracking-wider">SEGURANÇA</small><span className="mt-1 flex items-center gap-1.5 text-xs text-[var(--accent)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />Acesso protegido</span></div>
-        </aside>
-        <div className="min-w-0 flex-1 lg:pl-64">
-          <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] backdrop-blur-xl"><div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4 sm:px-6"><div className="flex items-center gap-3 lg:hidden"><Image src="/valurise-icon.webp" alt="Valurise" width={72} height={72} className="h-9 w-9 object-contain" priority /><b className="text-sm tracking-tight">VALURISE</b></div><span className="hidden items-center gap-2 rounded-full bg-[var(--panel)] px-3 py-2 text-xs lg:inline-flex"><span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />Painel de governança</span><div className="ml-auto flex items-center gap-3"><span aria-label="Notificações do Master" className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]"><Bell size={18}/></span><button onClick={logout} className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs font-medium">Sair</button></div></div></header>
-          <motion.section className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-12" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: motionTokens.duration.normal, ease: motionTokens.ease.enter }}><span className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)]"><ShieldCheck size={14} /> PAINEL MASTER · ACESSO RESTRITO</span><div className="mt-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Gestão de titulares<br className="hidden sm:block" /> e solicitações</h1><p className="muted mt-3 max-w-xl text-sm leading-6">Controle de acessos da Valurise. Esta área não exibe dados financeiros dos usuários.</p></div><span className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs text-[var(--muted)]">Master: {user.name}</span></div>{message && <div role="status" className="mt-5 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/10 px-4 py-3 text-sm text-[var(--accent)]">{message}</div>}<section className="panel mt-7 rounded-3xl p-5 sm:p-6"><MasterUsers toast={setMessage} /></section><p className="muted mt-5 text-xs leading-5">Aprovar libera o acesso. Desativar bloqueia temporariamente. Lixeira mantém a conta recuperável; a exclusão definitiva só é possível a partir da lixeira.</p></motion.section>
-        </div>
+      <main className="min-h-dvh bg-[var(--bg)]">
+        <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] backdrop-blur-xl">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3.5 sm:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <Image src="/valurise-icon.webp" alt="Valurise" width={72} height={72} className="h-9 w-9 shrink-0 object-contain" priority />
+              <span className="min-w-0"><b className="block text-sm tracking-tight">VALURISE</b><small className="muted">Gestão de acessos</small></span>
+              <span className="hidden rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px] font-semibold tracking-wide text-[var(--accent)] sm:inline-flex">MASTER ADMIN</span>
+            </div>
+            <div className="flex shrink-0 items-center gap-3"><span className="hidden max-w-48 truncate text-xs text-[var(--muted)] sm:inline">{user.name}</span><button onClick={logout} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium">Sair</button></div>
+          </div>
+        </header>
+        <motion.section className="mx-auto max-w-6xl px-4 py-7 sm:px-6 sm:py-10" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: motionTokens.duration.normal, ease: motionTokens.ease.enter }}>
+          <span className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)]"><ShieldCheck size={14} /> PAINEL RESTRITO · SOMENTE ACESSOS</span>
+          <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Central do Master</h1><p className="muted mt-2 max-w-2xl text-sm leading-6">Aprove solicitações, gerencie contas, convites e histórico administrativo. Nenhum dado financeiro dos usuários é exibido aqui.</p></div><span className="rounded-xl bg-[var(--panel2)] px-3 py-2 text-xs text-[var(--muted)]">Master: {user.name}</span></div>
+          {message && <div role="status" aria-live="polite" className="mt-5 rounded-xl border border-[var(--accent)]/25 bg-[var(--accent)]/10 px-4 py-3 text-sm text-[var(--accent)]">{message}</div>}
+          <section className="panel mt-6 rounded-3xl p-4 sm:p-6"><MasterAdminPanel toast={setMessage} /></section>
+          <p className="muted mt-4 text-xs leading-5">Toda decisão administrativa é registrada. A exclusão definitiva só pode ser feita após mover a conta para a lixeira.</p>
+        </motion.section>
       </main>
     </MotionConfig>
   );
@@ -1631,7 +1651,6 @@ function ProfileSheet({
             <span>Alterar senha</span>
             <span className="muted text-xs">Enviar link</span>
           </button>
-          {user.role === "master" && <MasterUsers toast={toast} />}
           {confirmReset ? (
             <div className="mt-3 rounded-xl border border-[var(--danger)]/40 p-3">
               <p className="text-sm">
@@ -1671,95 +1690,6 @@ function ProfileSheet({
       </section>
     </Sheet>
   );
-}
-type MasterUser = { id: string; email?: string; lastSignInAt?: string; createdAt: string; profile: { full_name?: string; username?: string; account_status?: AccountStatus; account_role?: string } | null };
-function MasterUsers({ toast }: { toast: (text: string) => void }) {
-  const [users, setUsers] = useState<MasterUser[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [deleteCandidate, setDeleteCandidate] = useState<string | null>(null);
-  const [inviteLink, setInviteLink] = useState("");
-  const load = useCallback(async () => {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-    const { data } = await supabase.auth.getSession();
-    if (!data.session?.access_token) return;
-    const response = await fetch("/api/admin/users", { headers: { Authorization: `Bearer ${data.session.access_token}` } });
-    const body = await response.json();
-    if (response.ok) setUsers(body.users || []);
-    else toast(body.error || "Não foi possível carregar usuários.");
-    setLoading(false);
-  }, [toast]);
-  useEffect(() => {
-    void load();
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-
-    // Postgres Changes uses a WebSocket. The subscription is deliberately
-    // limited to profiles: financial tables are never exposed to the Master.
-    const channel = supabase
-      .channel("valurise-master-registration-requests")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "profiles" },
-        (payload) => {
-          const profile = payload.new as {
-            account_status?: AccountStatus;
-            account_role?: string;
-          };
-          if (profile.account_status !== "pending" || profile.account_role === "master") return;
-          toast("Novo pedido de acesso recebido.");
-          void load();
-        },
-      )
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [load, toast]);
-  // Realtime is the immediate path. This small fallback keeps the Master queue
-  // correct if a phone temporarily suspends its WebSocket in the background.
-  useEffect(() => {
-    const refresh = window.setInterval(() => void load(), 20_000);
-    return () => window.clearInterval(refresh);
-  }, [load]);
-  const act = async (userId: string, action: "approve" | "disable" | "restore" | "trash" | "delete_permanently") => {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-    const { data } = await supabase.auth.getSession();
-    if (!data.session?.access_token) return;
-    setBusy(`${userId}:${action}`);
-    const response = await fetch("/api/admin/users", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session.access_token}` }, body: JSON.stringify({ userId, action }) });
-    const body = await response.json();
-    setBusy(null);
-    if (!response.ok) return toast(body.error || "Não foi possível atualizar esta conta.");
-    toast("Conta atualizada.");
-    void load();
-  };
-  const createInvite = async () => {
-    const supabase = getSupabaseBrowserClient();
-    if (!supabase) return;
-    const { data } = await supabase.auth.getSession();
-    if (!data.session?.access_token) return;
-    const response = await fetch("/api/admin/invites", { method: "POST", headers: { Authorization: `Bearer ${data.session.access_token}` } });
-    const body = await response.json();
-    if (!response.ok) return toast(body.error || "Não foi possível gerar o convite.");
-    setInviteLink(body.link);
-    toast("Link de convite criado por 7 dias.");
-  };
-  const pendingUsers = users.filter((item) => item.profile?.account_status === "pending" && item.profile?.account_role !== "master");
-  const managedUsers = users.filter((item) => item.profile?.account_status !== "pending" || item.profile?.account_role === "master");
-  const pendingCount = pendingUsers.length;
-  const renderUser = (item: MasterUser, request = false) => {
-    const status = item.profile?.account_status || "pending";
-    const label = item.profile?.full_name || item.email || "Usuário";
-    const working = busy?.startsWith(item.id);
-    const confirmingDelete = deleteCandidate === item.id;
-    const isMasterAccount = item.profile?.account_role === "master";
-    return <article key={item.id} className={`rounded-2xl border p-4 ${request ? "border-[var(--accent)]/35 bg-[var(--accent)]/8" : "border-[var(--border)] bg-[var(--panel2)]/65"}`}><div className="flex items-start justify-between gap-3"><span className="min-w-0"><b className="block truncate text-sm">{label}</b><small className="muted mt-1 block truncate">{item.email}</small><small className={`mt-1 block text-[11px] capitalize ${request ? "text-[var(--accent)]" : "text-[var(--accent)]"}`}>{isMasterAccount ? "Conta Master" : status}</small></span>{status === "pending" && !isMasterAccount && <button disabled={working} onClick={() => void act(item.id, "approve")} className="shrink-0 rounded-xl bg-[var(--accent)] px-3 py-2 text-xs font-semibold text-[var(--accentfg)]">Aprovar</button>}</div>{!isMasterAccount && !request && <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs"><button disabled={working} onClick={() => void act(item.id, status === "trashed" ? "restore" : "trash")} className="muted hover:text-[var(--fg)]">{status === "trashed" ? "Restaurar da lixeira" : "Mover para lixeira"}</button>{status !== "trashed" && <button disabled={working} onClick={() => void act(item.id, status === "disabled" ? "restore" : "disable")} className="muted hover:text-[var(--fg)]">{status === "disabled" ? "Reativar" : "Desativar"}</button>}{status === "trashed" && (confirmingDelete ? <><button disabled={working} onClick={() => { setDeleteCandidate(null); void act(item.id, "delete_permanently"); }} className="font-medium text-[var(--danger)]">Confirmar exclusão definitiva</button><button disabled={working} onClick={() => setDeleteCandidate(null)} className="muted">Cancelar</button></> : <button disabled={working} onClick={() => setDeleteCandidate(item.id)} className="text-[var(--danger)]">Excluir definitivo</button>)}</div>}{confirmingDelete && <p className="mt-3 text-xs text-[var(--danger)]">Esta ação apaga a conta e todos os dados financeiros dela.</p>}</article>;
-  };
-  return <section><div className="flex items-start justify-between gap-4"><div><div className="flex items-center gap-2"><b className="text-lg">Usuários e convites</b>{pendingCount > 0 && <span className="rounded-full bg-[var(--accent)] px-2 py-0.5 text-[10px] font-bold text-[var(--accentfg)]">{pendingCount} pendente{pendingCount > 1 ? "s" : ""}</span>}</div><p className="muted mt-1 text-xs">Aprova acessos e administra contas sem ler dados financeiros.</p></div><button onClick={() => void load()} className="shrink-0 text-xs text-[var(--accent)]">Atualizar</button></div><section aria-live="polite" className="mt-5 rounded-2xl border border-[var(--accent)]/25 bg-[var(--accent)]/7 p-4"><div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2"><Bell size={16} className="text-[var(--accent)]"/><b className="text-sm">Solicitações de acesso</b></span><span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-xs font-bold text-[var(--accentfg)]">{pendingCount}</span></div>{loading ? <p className="muted mt-3 text-xs">Verificando solicitações…</p> : pendingCount ? <div className="mt-3 space-y-2">{pendingUsers.map((item) => renderUser(item, true))}</div> : <p className="muted mt-3 text-xs">Nenhuma solicitação pendente no momento.</p>}</section><div className="mt-5 rounded-2xl bg-[var(--panel2)] p-4"><div className="flex items-center justify-between gap-3"><span><b className="block text-sm">Convidar novo usuário</b><small className="muted block pt-1">O cadastro pelo link continua sujeito à sua aprovação.</small></span><button onClick={() => void createInvite()} className="shrink-0 rounded-xl border border-[var(--accent)] px-3 py-2 text-xs font-semibold text-[var(--accent)]">Gerar link</button></div>{inviteLink && <div className="mt-4 flex gap-2"><input aria-label="Link de convite" readOnly value={inviteLink} className="field min-w-0 flex-1 text-xs"/><button onClick={async () => { await navigator.clipboard?.writeText(inviteLink); toast("Link copiado."); }} className="rounded-xl bg-[var(--panel)] px-3 text-xs">Copiar</button></div>}</div>{!loading && <div className="mt-5"><b className="text-sm">Contas gerenciadas</b><div className="mt-3 max-h-[28rem] space-y-2 overflow-y-auto pr-1">{managedUsers.map((item) => renderUser(item))}</div></div>}</section>;
 }
 function Dashboard({
   user,

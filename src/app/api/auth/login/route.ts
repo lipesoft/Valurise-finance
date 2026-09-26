@@ -70,6 +70,26 @@ export async function POST(request: NextRequest) {
     const { data, error } = await authClient.auth.signInWithPassword({ email, password });
     if (error || !data.session || !data.user) return invalidCredentials();
 
+    // Older access requests were created before explicit email verification
+    // existed. A successful password login proves control of that legacy
+    // account, so it can safely enter the Master review queue now.
+    if (data.user.email_confirmed_at) {
+      const admin = getSupabaseAdminClient();
+      const { data: profile, error: profileError } = await admin.from("profiles")
+        .select("account_status, account_role")
+        .eq("id", data.user.id)
+        .maybeSingle();
+      if (profileError) return NextResponse.json({ error: "Não foi possível validar o acesso. Tente novamente." }, { status: 503 });
+
+      if (profile?.account_status === "pending" && profile.account_role === "user") {
+        const { error: requestError } = await admin.from("access_request_details")
+          .update({ request_status: "pending_review", requested_at: new Date().toISOString() })
+          .eq("user_id", data.user.id)
+          .eq("request_status", "verification_required");
+        if (requestError) return NextResponse.json({ error: "Não foi possível validar o pedido de acesso. Tente novamente." }, { status: 503 });
+      }
+    }
+
     return NextResponse.json({ session: data.session, user: data.user });
   } catch {
     return invalidCredentials();

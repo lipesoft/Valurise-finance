@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -26,112 +27,140 @@ async function consumeLimit(admin: ReturnType<typeof getSupabaseAdminClient>, ke
   });
 }
 
+const responseError = (message: string, status: number) => NextResponse.json({ error: message }, { status });
+
 /**
- * Public registration creates a real Supabase Auth user, already banned, and
- * a database-owned pending profile. The password goes straight to Supabase
- * Auth and is never stored by Valurise. Only a Master approval can unban it.
+ * Starts a Supabase Auth email-confirmation flow. The Master queue is populated
+ * only after Supabase changes email_confirmed_at; no password or API secret is
+ * persisted by Valurise.
  */
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
-  if (origin && new URL(origin).origin !== request.nextUrl.origin) {
-    return NextResponse.json({ error: "Solicitação inválida." }, { status: 403 });
+  if (origin) {
+    try {
+      if (new URL(origin).origin !== request.nextUrl.origin) return responseError("Solicitação inválida.", 403);
+    } catch {
+      return responseError("Solicitação inválida.", 403);
+    }
   }
-  const contentLength = Number(request.headers.get("content-length") || 0);
-  if (contentLength > 16_000) return NextResponse.json({ error: "Solicitação inválida." }, { status: 413 });
-
-  const admin = getSupabaseAdminClient();
-  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim();
-  const clientAddress = forwardedFor || request.headers.get("x-real-ip") || "unknown";
-  const addressLimit = await consumeLimit(admin, bucket("access-request:ip", clientAddress), 10);
-  if (addressLimit.error) return NextResponse.json({ error: "Cadastro temporariamente indisponível. Tente novamente mais tarde." }, { status: 503 });
-  if (addressLimit.data !== true) return NextResponse.json({ error: "Muitas tentativas. Aguarde um pouco e tente novamente." }, { status: 429, headers: { "Retry-After": "3600" } });
+  if (Number(request.headers.get("content-length") || 0) > 16_000) return responseError("Solicitação inválida.", 413);
 
   const rawBody = await request.text().catch(() => "");
-  if (rawBody.length > 16_000) return NextResponse.json({ error: "Solicitação inválida." }, { status: 413 });
+  if (rawBody.length > 16_000) return responseError("Solicitação inválida.", 413);
   const body = (() => { try { return JSON.parse(rawBody); } catch { return null; } })();
   const parsed = requestSchema.safeParse(body && {
     ...body,
     username: normalizeUsername(typeof body.username === "string" ? body.username : ""),
   });
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Confira nome, e-mail, usuário e senha (mínimo de 8 caracteres)." }, { status: 400 });
-  }
+  if (!parsed.success) return responseError("Confira nome, e-mail, usuário e senha (mínimo de 8 caracteres).", 400);
 
-  const { fullName, username, email, password } = parsed.data;
-  if (parsed.data.inviteToken) {
-    const { data: invite, error: inviteError } = await admin.from("access_invites")
-      .select("id").eq("token", parsed.data.inviteToken).is("used_by", null)
-      .gt("expires_at", new Date().toISOString()).maybeSingle();
-    if (inviteError) return NextResponse.json({ error: "Não foi possível validar o convite agora." }, { status: 503 });
-    if (!invite) return NextResponse.json({ error: "Este convite é inválido, expirou ou já foi utilizado." }, { status: 400 });
-  }
-  const emailLimit = await consumeLimit(admin, bucket("access-request:email", email.toLowerCase()), 4);
-  if (emailLimit.error) return NextResponse.json({ error: "Cadastro temporariamente indisponível. Tente novamente mais tarde." }, { status: 503 });
-  if (emailLimit.data !== true) return NextResponse.json({ error: "Muitas tentativas. Aguarde um pouco e tente novamente." }, { status: 429, headers: { "Retry-After": "3600" } });
+  const { fullName, username, password } = parsed.data;
+  const email = parsed.data.email.trim().toLowerCase();
+  const admin = getSupabaseAdminClient();
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim();
+  const clientAddress = forwardedFor || request.headers.get("x-real-ip") || "unknown";
+  const addressLimit = await consumeLimit(admin, bucket("access-request:ip", clientAddress), 10);
+  if (addressLimit.error) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
+  if (addressLimit.data !== true) return NextResponse.json({ error: "Muitas tentativas. Aguarde um pouco e tente novamente." }, { status: 429, headers: { "Retry-After": "3600" } });
 
-  if (!/^[a-z0-9._-]{3,32}$/.test(username)) {
-    return NextResponse.json({ error: "Escolha um usuário com pelo menos 3 caracteres." }, { status: 400 });
-  }
-  const { data: existingUsername } = await admin
+  if (!/^[a-z0-9._-]{3,32}$/.test(username)) return responseError("Escolha um usuário com pelo menos 3 caracteres.", 400);
+  const { data: existingUsername, error: usernameError } = await admin
     .from("profiles")
     .select("id")
     .eq("username", username)
     .maybeSingle();
-  // Use the same response for an occupied username/email and a newly recorded
-  // request so this endpoint cannot be used to enumerate registered accounts.
+  if (usernameError) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
   if (existingUsername) return genericAccepted();
 
-  const { data: created, error: createError } = await admin.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    ban_duration: "876000h",
-    user_metadata: { full_name: fullName, username },
-  });
-  if (createError || !created.user) {
-    if (createError?.message.toLowerCase().includes("already") || createError?.code === "email_exists") return genericAccepted();
-    return NextResponse.json({ error: "Não foi possível processar o cadastro agora. Tente novamente mais tarde." }, { status: 503 });
+  const emailLimit = await consumeLimit(admin, bucket("access-request:email", email), 4);
+  if (emailLimit.error) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
+  if (emailLimit.data !== true) return NextResponse.json({ error: "Muitas tentativas. Aguarde um pouco e tente novamente." }, { status: 429, headers: { "Retry-After": "3600" } });
+
+  let inviteId: string | null = null;
+  if (parsed.data.inviteToken) {
+    const { data: invite, error: inviteError } = await admin.from("access_invites")
+      .select("id")
+      .eq("token", parsed.data.inviteToken)
+      .is("used_by", null)
+      .is("revoked_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+    if (inviteError) return responseError("Não foi possível validar o convite agora.", 503);
+    if (!invite) return responseError("Este convite é inválido, expirou ou já foi utilizado.", 400);
+    inviteId = invite.id;
   }
 
-  // The auth trigger normally writes this row. Upsert makes the request
-  // durable even if the trigger was temporarily unavailable during setup.
-  const { error: profileError } = await admin.from("profiles").upsert({
-    id: created.user.id,
-    full_name: fullName,
-    username,
-    account_status: "pending",
-    account_role: "user",
-  }, { onConflict: "id", ignoreDuplicates: true });
-  if (profileError) {
-    // Compensate for the Auth record if persistence of the approval request
-    // fails. Leaving a usable-looking Auth user without a profile was the
-    // source of requests that could not reach the Master queue.
-    await admin.auth.admin.deleteUser(created.user.id);
-    return NextResponse.json({ error: "Cadastro criado, mas a solicitação não pôde ser registrada. Tente novamente." }, { status: 500 });
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !publishableKey) return responseError("Cadastro temporariamente indisponível.", 503);
+  const auth = createClient(url, publishableKey, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+  });
+  const { data: signup, error: signupError } = await auth.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo: request.nextUrl.origin,
+      data: { full_name: fullName, username },
+    },
+  });
+
+  if (signupError) {
+    if (signupError.code === "user_already_exists" || signupError.message.toLowerCase().includes("already registered")) return genericAccepted();
+    return responseError("Não foi possível iniciar a confirmação por e-mail. Tente novamente mais tarde.", 503);
+  }
+  const newUser = signup.user;
+  if (!newUser?.id || (Array.isArray(newUser.identities) && newUser.identities.length === 0)) return genericAccepted();
+
+  // A session or an already-confirmed address means Auth confirmations are not
+  // enforced. Roll back this just-created account rather than queueing an
+  // address that was never proven to belong to the applicant.
+  if (signup.session || newUser.email_confirmed_at) {
+    const deleted = await admin.auth.admin.deleteUser(newUser.id);
+    if (deleted.error) await admin.auth.admin.updateUserById(newUser.id, { ban_duration: "876000h" });
+    return responseError("A confirmação de e-mail não está ativa para este projeto. O pedido não foi enviado ao Master.", 503);
+  }
+
+  const { error: detailsError } = await admin.from("access_request_details").insert({
+    user_id: newUser.id,
+    invite_id: inviteId,
+    request_status: "pending_email",
+  });
+  if (detailsError) {
+    await admin.auth.admin.deleteUser(newUser.id);
+    return responseError("Não foi possível registrar a solicitação. Tente novamente.", 500);
+  }
+
+  // The email can be confirmed between signUp() returning and the request row
+  // being written. Re-read only this newly-created Auth user to close that race;
+  // never promote historical, administratively-confirmed accounts here.
+  const { data: createdAuthUser, error: authReadError } = await admin.auth.admin.getUserById(newUser.id);
+  if (authReadError || !createdAuthUser.user) {
+    await admin.auth.admin.deleteUser(newUser.id);
+    return responseError("Não foi possível verificar a solicitação. Tente novamente.", 503);
+  }
+  if (createdAuthUser.user.email_confirmed_at) {
+    const { error: confirmationError } = await admin.from("access_request_details")
+      .update({ request_status: "pending_review" })
+      .eq("user_id", newUser.id)
+      .eq("request_status", "pending_email");
+    if (confirmationError) {
+      await admin.auth.admin.deleteUser(newUser.id);
+      return responseError("Não foi possível atualizar a confirmação do pedido. Tente novamente.", 503);
+    }
   }
 
   const acceptedAt = new Date().toISOString();
   const { error: consentError } = await admin.from("user_consents").upsert({
-    user_id: created.user.id,
+    user_id: newUser.id,
     privacy_accepted_at: acceptedAt,
     privacy_version: legalVersions.privacy,
     terms_accepted_at: acceptedAt,
     terms_version: legalVersions.terms,
   }, { onConflict: "user_id" });
   if (consentError) {
-    await admin.auth.admin.deleteUser(created.user.id);
-    return NextResponse.json({ error: "Não foi possível registrar os consentimentos. Tente novamente." }, { status: 500 });
-  }
-
-  if (parsed.data.inviteToken) {
-    const { data: claimed, error: claimError } = await admin.from("access_invites")
-      .update({ used_by: created.user.id, used_at: acceptedAt })
-      .eq("token", parsed.data.inviteToken).is("used_by", null)
-      .gt("expires_at", acceptedAt).select("id").maybeSingle();
-    if (claimError || !claimed) {
-      await admin.auth.admin.deleteUser(created.user.id);
-      return NextResponse.json({ error: "Este convite acabou de expirar ou já foi utilizado. Solicite um novo link." }, { status: 409 });
-    }
+    await admin.auth.admin.deleteUser(newUser.id);
+    return responseError("Não foi possível registrar os consentimentos. Tente novamente.", 500);
   }
 
   return genericAccepted();
