@@ -311,7 +311,7 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
   const header = workspaceSelect.locator("xpath=ancestor::header");
   const searchButton = page.getByRole("button", { name: "Buscar em todo o Valurise" });
 
-  for (const width of [320, 360, 375, 390, 430]) {
+  for (const width of [320, 360, 375, 390, 430, 768, 1023, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
@@ -339,7 +339,7 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
       expect(controls[index - 1].right).toBeLessThanOrEqual(controls[index].x + 1);
     }
 
-    if (width <= 374) {
+    if (width < 1024) {
       await expect(searchButton).toBeHidden();
     } else {
       await expect(searchButton).toBeVisible();
@@ -347,7 +347,7 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
     }
   }
 
-  await page.setViewportSize({ width: 320, height: 844 });
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Abrir menu" }).click();
   const menu = page.getByRole("dialog", { name: "Menu principal" });
   await menu.getByRole("button", { name: "Buscar em todo o Valurise" }).click();

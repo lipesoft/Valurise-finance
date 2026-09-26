@@ -92,11 +92,6 @@ select:focus-visible {
     width: min(40vw, 260px);
   }
 }
-@media (max-width: 374px) {
-  .header-search-trigger {
-    display: none;
-  }
-}
 .field:focus {
   border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);

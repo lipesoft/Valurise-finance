@@ -984,7 +984,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
             <button
               aria-label="Buscar em todo o Valurise"
               onClick={() => setSearchOpen(true)}
-              className="header-search-trigger grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)]"
+              className="header-search-trigger hidden h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] lg:grid"
             >
               <Search size={18} />
             </button>
