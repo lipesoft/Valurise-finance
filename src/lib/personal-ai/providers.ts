@@ -91,12 +91,12 @@ function safeProviderMessage(value: unknown) {
 }
 
 function bodyDetails(body: unknown) {
-  if (typeof body !== "string") return { text: "", code: "", status: "", reason: "", quota: "" };
+  if (typeof body !== "string") return { text: "", code: "", status: "", reason: "", quota: "", providerHttpStatus: null as number | null };
   try {
     const parsed = JSON.parse(body) as { error?: string | { code?: string | number; type?: string; status?: string; message?: string; details?: unknown[] } };
     const error = parsed.error;
-    if (typeof error === "string") return { text: error.slice(0, 1000), code: "", status: "", reason: "", quota: "" };
-    if (!error || typeof error !== "object") return { text: "", code: "", status: "", reason: "", quota: "" };
+    if (typeof error === "string") return { text: error.slice(0, 1000), code: "", status: "", reason: "", quota: "", providerHttpStatus: null };
+    if (!error || typeof error !== "object") return { text: "", code: "", status: "", reason: "", quota: "", providerHttpStatus: null };
     const details = Array.isArray(error.details) ? error.details : [];
     const detailValues = details.flatMap((detail) => {
       if (!detail || typeof detail !== "object") return [];
@@ -111,15 +111,17 @@ function bodyDetails(body: unknown) {
       return values.filter((value): value is string => typeof value === "string");
     });
     const quota = detailValues.find((value) => /quota|perminute|perday|tokensper/i.test(value)) || "";
+    const bodyStatus = Number(error.code || error.status);
     return {
       text: String(error?.message || error?.status || "").slice(0, 1000),
       code: String(typeof error.code === "string" || typeof error.code === "number" ? error.code : error.type || "").slice(0, 100),
       status: String(error.status || "").slice(0, 100),
       reason: String(detailValues.find((value) => /permission|api_key|rate|quota|billing|service_disabled/i.test(value)) || "").slice(0, 100),
       quota: quota.slice(0, 200),
+      providerHttpStatus: Number.isInteger(bodyStatus) && bodyStatus >= 400 && bodyStatus <= 599 ? bodyStatus : null,
     };
   } catch {
-    return { text: body.slice(0, 1000), code: "", status: "", reason: "", quota: "" };
+    return { text: body.slice(0, 1000), code: "", status: "", reason: "", quota: "", providerHttpStatus: null };
   }
 }
 
@@ -127,8 +129,14 @@ export function classifyAIError(error: unknown, provider: AIProvider, model: str
   if (error instanceof AIProviderError) return error;
   const value = (error || {}) as Record<string, unknown>;
   const rawStatus = Number(value.statusCode || value.status || 0);
-  const status = Number.isFinite(rawStatus) && rawStatus > 0 ? rawStatus : null;
+  const transportStatus = Number.isFinite(rawStatus) && rawStatus > 0 ? rawStatus : null;
   const details = bodyDetails(value.responseBody);
+  // Some OpenAI-compatible gateways return HTTP 200 while embedding an
+  // upstream provider failure in the error envelope. Prefer that status only
+  // when the transport itself succeeded; otherwise the real HTTP status wins.
+  const status = transportStatus !== null && (transportStatus < 200 || transportStatus >= 300)
+    ? transportStatus
+    : details.providerHttpStatus ?? transportStatus;
   const rawCode = typeof value.code === "string" ? value.code : "";
   const code = details.reason || details.status || details.code || rawCode;
   const codeText = `${rawCode} ${details.code} ${details.status} ${details.reason} ${details.quota}`.toLowerCase();

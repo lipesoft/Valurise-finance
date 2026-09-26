@@ -82,6 +82,7 @@ import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
+import { WorkspaceDashboardHeader } from "@/components/dashboard/workspace-dashboard-header";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -1108,7 +1109,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
           <Investments data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} />
         )}
         {view === "budgets" && (
-          <Budgets data={data} tx={tx} month={month} save={saveData} toast={setToast} />
+          <Budgets data={data} tx={tx} month={month} save={saveData} toast={setToast} go={setView} />
         )}
         {view === "goals" && (
           <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} invites={inviteInbox.invites} respondInvite={inviteInbox.respond} sharedGoals={inviteInbox.sharedGoals} recordSharedGoalContribution={recordSharedGoalContribution} userId={user.username} allowSharing={workspace.type === "personal"} />
@@ -1776,11 +1777,7 @@ function Dashboard({
   sharedGoals = [],
 }: any) {
   const [customizingDashboard, setCustomizingDashboard] = useState(false);
-  const [greeting, setGreeting] = useState("Olá");
-  useEffect(() => {
-    const hour = new Date().getHours();
-    setGreeting(hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite");
-  }, []);
+  const isBusinessWorkspace = workspace?.type === "business";
   const accountBalanceCents = (data.institutions || []).reduce(
     (institutionTotal: number, institution: Institution) =>
       institutionTotal +
@@ -1803,27 +1800,11 @@ function Dashboard({
   );
   return (
     <StaggerContainer className="mx-auto max-w-5xl px-4 pt-5 lg:px-10">
-      <StaggerItem>
-      <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-        {workspace?.type === "business"
-          ? workspace.displayName
-          : `${greeting}, ${user.name}.`}
-      </h1>
-      </StaggerItem>
-      <StaggerItem>
-      <div className="mt-5 flex justify-between">
-        <button onClick={() => setMonth(addMonths(month, -1))}>
-          <ChevronLeft />
-        </button>
-        <b className="capitalize">
-          {format(month, "MMMM yyyy", { locale: ptBR })}
-        </b>
-        <button onClick={() => setMonth(addMonths(month, 1))}>
-          <ChevronRight />
-        </button>
-      </div>
-      </StaggerItem>
-      {workspace?.type === "business" && <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} go={go} />}
+      <WorkspaceDashboardHeader workspace={workspace} userName={user.name} month={month} setMonth={setMonth} />
+      {isBusinessWorkspace ? (
+        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} go={go} />
+      ) : (
+        <>
       <StaggerItem>
       <AnimatedCard className="panel mt-5 rounded-3xl p-6">
         <p className="muted text-sm">Patrimônio total</p>
@@ -1865,6 +1846,8 @@ function Dashboard({
         </button>
       </div>
       </StaggerItem>
+        </>
+      )}
     </StaggerContainer>
   );
 }
@@ -3178,19 +3161,39 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
     </section>
   );
 }
-function Budgets({ data, tx, month, save, toast }: any) {
+function Budgets({ data, tx, month, save, toast, go }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
   const [category, setCategory] = useState("");
   const [limit, setLimit] = useState("");
   const items = data.budgets || [];
+  const configuredCategories: string[] = (Array.isArray(data.categories) ? data.categories as unknown[] : [])
+    .filter((item): item is string => typeof item === "string")
+    .map((item: string) => item.trim())
+    .filter(Boolean);
+  const categoryOptions: string[] = Array.from(new Set<string>(configuredCategories.length ? configuredCategories : defaults))
+    .sort((left, right) => left.localeCompare(right, "pt-BR"));
   const persist = () => {
     const cents = Math.round(Number(limit.replace(",", ".")) * 100);
-    if (!category.trim() || !cents) return;
+    const selectedCategory = category.trim();
+    if (!selectedCategory || !Number.isSafeInteger(cents) || cents <= 0) {
+      toast("Escolha uma categoria e informe um limite mensal válido.");
+      return;
+    }
+    const isExistingLegacyCategory = editing?.category === selectedCategory;
+    if (!categoryOptions.includes(selectedCategory) && !isExistingLegacyCategory) {
+      toast("Escolha uma categoria cadastrada para acompanhar os lançamentos corretamente.");
+      return;
+    }
+    const budgetMonth = editing?.month || format(month, "yyyy-MM");
+    if (items.some((item: any) => item.id !== editing?.id && item.category === selectedCategory && item.month === budgetMonth)) {
+      toast("Já existe um orçamento desta categoria neste mês.");
+      return;
+    }
     save({
       ...data,
-      budgets: editing ? items.map((item: any) => item.id === editing.id ? { ...item, category: category.trim(), limitCents: cents } : item) : [...items, { id: crypto.randomUUID(), category: category.trim(), limitCents: cents, month: format(month, "yyyy-MM") }],
+      budgets: editing ? items.map((item: any) => item.id === editing.id ? { ...item, category: selectedCategory, limitCents: cents } : item) : [...items, { id: crypto.randomUUID(), category: selectedCategory, limitCents: cents, month: format(month, "yyyy-MM") }],
     });
     toast(editing ? "Orçamento atualizado com sucesso." : "Orçamento criado com sucesso.");
     setCategory("");
@@ -3253,19 +3256,38 @@ function Budgets({ data, tx, month, save, toast }: any) {
         <Sheet close={() => { setAdding(false); setEditing(null); }}>
           <section className="space-y-3">
             <b className="text-lg">{editing ? "Editar orçamento" : "Criar orçamento"}</b>
+            <label className="block space-y-1.5 text-sm">
+              <span>Categoria</span>
+              <select
+                aria-label="Categoria do orçamento"
+                className="field"
+                value={category}
+                onChange={(event) => setCategory(event.target.value)}
+              >
+                <option value="">Selecione uma categoria</option>
+                {categoryOptions.map((item: string) => (
+                  <option value={item} key={item}>{item}</option>
+                ))}
+                {editing && !categoryOptions.includes(editing.category) && (
+                  <option value={editing.category}>{editing.category} · legado</option>
+                )}
+              </select>
+            </label>
+            <p className="muted text-xs leading-5">
+              O orçamento acompanha gastos com o mesmo nome de categoria. Cadastre novas categorias em Categorias antes de criar o orçamento.
+            </p>
+            {editing && !categoryOptions.includes(editing.category) && (
+              <p role="status" className="rounded-xl bg-amber-400/10 p-3 text-xs leading-5 text-amber-200">
+                Este orçamento usa uma categoria antiga. Mantivemos a opção para preservar seus dados; escolha uma categoria atual para voltar a acompanhar os lançamentos correspondentes.
+              </p>
+            )}
+            {!categoryOptions.length && !editing && (
+              <button type="button" onClick={() => go?.("categories")} className="text-left text-xs font-medium text-[var(--accent)]">
+                Nenhuma categoria cadastrada. Ir para Categorias.
+              </button>
+            )}
             <input
-              className="field"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              placeholder="Categoria que você quer controlar"
-              list="budget-categories"
-            />
-            <datalist id="budget-categories">
-              {data.categories.map((item: string) => (
-                <option value={item} key={item} />
-              ))}
-            </datalist>
-            <input
+              aria-label="Limite mensal"
               className="field"
               value={limit}
               onChange={(e) => setLimit(e.target.value)}
@@ -3274,6 +3296,7 @@ function Budgets({ data, tx, month, save, toast }: any) {
             />
             <button
               onClick={persist}
+              disabled={!categoryOptions.length && !editing}
               className="primary h-11 w-full rounded-xl text-sm"
             >
               {editing ? "Salvar alterações" : "Criar orçamento"}
@@ -5260,6 +5283,10 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
   const applyEdit = () => {
     if (!editing || !editValue.trim()) return;
     const oldValue = editing.value, nextValue = editValue.trim();
+    if (editing.kind === "category" && data.categories.some((item: string) => item === nextValue && item !== oldValue)) {
+      toast("Já existe uma categoria com esse nome.");
+      return;
+    }
     if (editing.kind === "category") { save({ ...data, categories: data.categories.map((item: string) => item === oldValue ? nextValue : item), budgets: (data.budgets || []).map((item: any) => item.category === oldValue ? { ...item, category: nextValue } : item) }); saveTx(tx.map((item: FinanceTransaction) => item.category === oldValue ? { ...item, category: nextValue } : item)); }
     else save({ ...data, tags: (data.tags || []).map((item: string) => item === oldValue ? nextValue : item) });
     toast(`${editing.kind === "category" ? "Categoria" : "Etiqueta"} atualizada com sucesso.`); setEditing(null); setEditValue("");
@@ -5334,8 +5361,13 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
             />
             <button
               onClick={() => {
-                if (n) {
-                  save({ ...data, categories: [...data.categories, n] });
+                const clean = n.trim();
+                if (clean && data.categories.some((item: string) => item.toLocaleLowerCase("pt-BR") === clean.toLocaleLowerCase("pt-BR"))) {
+                  toast("Já existe uma categoria com esse nome.");
+                  return;
+                }
+                if (clean) {
+                  save({ ...data, categories: [...data.categories, clean] });
                   toast("Categoria criada com sucesso.");
                   setN("");
                   setAdding(false);
@@ -5349,7 +5381,7 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
         </Sheet>
       )}
       {editing && <Sheet close={() => setEditing(null)}><section className="space-y-3"><b className="text-lg">Editar {editing.kind === "category" ? "categoria" : "etiqueta"}</b><input autoFocus className="field" value={editValue} onChange={(event) => setEditValue(event.target.value)} /><button onClick={applyEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
-      {deleting && <DeleteConfirm title={`Excluir ${deleting.kind === "category" ? "categoria" : "etiqueta"}?`} description={deleting.kind === "category" ? `A categoria “${deleting.value}” sairá da lista. Lançamentos anteriores continuarão no extrato com a classificação original.` : `A etiqueta “${deleting.value}” será removida da lista de etiquetas disponíveis.`} close={() => setDeleting(null)} confirm={() => { if (deleting.kind === "category") save({ ...data, categories: data.categories.filter((item: string) => item !== deleting.value), budgets: (data.budgets || []).filter((item: any) => item.category !== deleting.value) }); else save({ ...data, tags: (data.tags || []).filter((item: string) => item !== deleting.value) }); toast(`${deleting.kind === "category" ? "Categoria" : "Etiqueta"} excluída.`); setDeleting(null); }} />}
+      {deleting && <DeleteConfirm title={`Excluir ${deleting.kind === "category" ? "categoria" : "etiqueta"}?`} description={deleting.kind === "category" ? (data.budgets?.some((item: any) => item.category === deleting.value) ? `A categoria “${deleting.value}” está vinculada a um orçamento. Mova ou exclua o orçamento antes de remover a categoria; assim seu planejamento não será apagado sem aviso.` : `A categoria “${deleting.value}” sairá da lista. Lançamentos anteriores continuarão no extrato com a classificação original.`) : `A etiqueta “${deleting.value}” será removida da lista de etiquetas disponíveis.`} close={() => setDeleting(null)} confirm={() => { if (deleting.kind === "category") { if (data.budgets?.some((item: any) => item.category === deleting.value)) { toast("Mova ou exclua o orçamento vinculado antes de remover esta categoria."); setDeleting(null); return; } save({ ...data, categories: data.categories.filter((item: string) => item !== deleting.value) }); } else save({ ...data, tags: (data.tags || []).filter((item: string) => item !== deleting.value) }); toast(`${deleting.kind === "category" ? "Categoria" : "Etiqueta"} excluída.`); setDeleting(null); }} />}
     </section>
   );
 }

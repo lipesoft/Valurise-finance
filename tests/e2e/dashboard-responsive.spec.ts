@@ -166,9 +166,15 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByText("Mercado QA")).toHaveCount(0);
   await page.getByRole("button", { name: "Pular por enquanto" }).click();
   await expect(page.getByRole("button", { name: "Registrar movimentação" })).toBeVisible();
+  await expect(page.locator("h1")).toHaveText("Empresa QA");
+  await expect(page.getByRole("region", { name: "Resumo empresarial" })).toBeVisible();
+  await expect(page.getByText("Patrimônio total", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);
 
   await page.getByLabel("Espaço financeiro ativo").selectOption(personalWorkspaceId);
   await expect(personalGreeting).toBeVisible();
+  await expect(page.getByText("Patrimônio total", { exact: true })).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
   await page.getByLabel("Espaço financeiro ativo").selectOption(businessWorkspaceId);
   await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
@@ -740,6 +746,38 @@ test("ao abrir um alerta, ele é marcado como visto e some do sino", async ({ pa
   await notifications.getByRole("button", { name: /Restam R\$/ }).click();
   await expect(page.getByRole("heading", { name: "Orçamentos" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Abrir notificações" })).toBeVisible();
+});
+
+test("orçamento só aceita categorias existentes e não cria duplicidade no mesmo mês", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Orçamentos", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar orçamento" }).click();
+
+  const category = page.getByRole("combobox", { name: "Categoria do orçamento" });
+  await expect(category.locator("option")).toHaveText([
+    "Selecione uma categoria", "Alimentação", "Moradia", "Transporte",
+  ]);
+  await expect(page.getByPlaceholder("Categoria que você quer controlar")).toHaveCount(0);
+  await category.selectOption("Alimentação");
+  await page.getByLabel("Limite mensal").fill("750,00");
+  await page.getByRole("button", { name: "Criar orçamento" }).click();
+  await expect(page.getByText("Já existe um orçamento desta categoria neste mês.")).toBeVisible();
+  await expect(category).toBeVisible();
+
+  await category.selectOption("Transporte");
+  await page.getByRole("button", { name: "Criar orçamento" }).click();
+  await expect(page.getByText("Orçamento criado com sucesso.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Orçamentos" })).toBeVisible();
+  await expect(page.getByText("Transporte", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Categorias", exact: true }).click();
+  await page.getByRole("button", { name: "Excluir categoria Alimentação" }).click();
+  await page.getByRole("button", { name: "Excluir", exact: true }).last().click();
+  await expect(page.getByText("Mova ou exclua o orçamento vinculado antes de remover esta categoria.")).toBeVisible();
+  await expect(page.getByText("Alimentação", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Orçamentos", exact: true }).click();
+  await expect(page.getByText("Alimentação", { exact: true }).first()).toBeVisible();
 });
 
 test("navegação, formulários e controles mantêm dimensões em desktop e mobile", async ({ page }) => {

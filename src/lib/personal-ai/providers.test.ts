@@ -70,6 +70,17 @@ describe("diagnóstico seguro dos provedores de IA", () => {
     expect(toolsUnsupported.category).toBe("TOOL_CALL_UNSUPPORTED");
   });
 
+  it("reconhece indisponibilidade do upstream quando um gateway devolve HTTP 200", () => {
+    const upstreamFailure = classifyAIError(Object.assign(new Error("Provider request failed"), {
+      statusCode: 200,
+      responseBody: JSON.stringify({ error: { code: 503, message: "Upstream provider temporarily unavailable" } }),
+    }), "openrouter", "openrouter/free");
+
+    expect(upstreamFailure.category).toBe("PROVIDER_UNAVAILABLE");
+    expect(upstreamFailure.httpStatus).toBe(503);
+    expect(upstreamFailure.providerCode).toBe("503");
+  });
+
   it("sanitiza chaves OpenRouter/Groq e valores de contexto em detalhes do provedor", () => {
     const failure = classifyAIError(Object.assign(new Error("Provider request failed"), {
       statusCode: 400,
