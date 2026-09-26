@@ -8,14 +8,20 @@ const json = (body: unknown, status = 200) => NextResponse.json(body, {
   headers: { "Cache-Control": "no-store, max-age=0" },
 });
 
-async function authorize(request: NextRequest) {
+type MasterAuthorization =
+  | { authorized: true; master: NonNullable<Awaited<ReturnType<typeof getVerifiedMaster>>> }
+  | { authorized: false; response: NextResponse };
+
+async function authorize(request: NextRequest): Promise<MasterAuthorization> {
   const master = await getVerifiedMaster(request.headers.get("authorization"));
-  return master ? { master } : { response: json({ error: "Não autorizado." }, 403) };
+  return master
+    ? { authorized: true, master }
+    : { authorized: false, response: json({ error: "Não autorizado." }, 403) };
 }
 
-export async function GET(request: NextRequest) {
+export async function GET(request: NextRequest): Promise<NextResponse> {
   const result = await authorize(request);
-  if ("response" in result) return result.response;
+  if (!result.authorized) return result.response;
   const page = z.coerce.number().int().min(1).max(100_000).safeParse(request.nextUrl.searchParams.get("page") ?? "1");
   if (!page.success) return json({ error: "Página inválida." }, 400);
 
@@ -26,15 +32,20 @@ export async function GET(request: NextRequest) {
     p_page_size: 25,
   });
   if (error || !data) return json({ error: "Não foi possível carregar os convites." }, 503);
-  return json({ ...data, items: (data.items ?? []).map((invite: { token: string; [key: string]: unknown }) => ({
-    ...invite,
-    link: `${request.nextUrl.origin}/?invite=${encodeURIComponent(invite.token)}`,
-  })) });
+  return json({ ...data, items: (data.items ?? []).map((invite: { token: string; status: string; [key: string]: unknown }) => {
+    const { token, ...safeInvite } = invite;
+    return {
+      ...safeInvite,
+      // A token only has value while the invitation can still be redeemed.
+      // Never send revoked, expired, or already-used invitation secrets back.
+      link: invite.status === "active" ? `${request.nextUrl.origin}/?invite=${encodeURIComponent(token)}` : "",
+    };
+  }) });
 }
 
 export async function POST(request: NextRequest) {
   const result = await authorize(request);
-  if ("response" in result) return result.response;
+  if (!result.authorized) return result.response;
 
   const admin = getSupabaseAdminClient();
   const { data, error } = await admin.rpc("master_create_access_invite", { p_actor_id: result.master.id });
@@ -49,7 +60,7 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   const result = await authorize(request);
-  if ("response" in result) return result.response;
+  if (!result.authorized) return result.response;
   const payload = z.object({ inviteId: z.string().uuid() }).safeParse(await request.json().catch(() => null));
   if (!payload.success) return json({ error: "Convite inválido." }, 400);
 

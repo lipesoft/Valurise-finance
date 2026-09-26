@@ -93,6 +93,47 @@ function publicActionError(message: string, action: string) {
   return json({ error: errors[action] }, 409);
 }
 
+type ActionAuditOutcome = "completed" | "failed" | "needs_attention";
+
+async function finishActionAudit(
+  admin: ReturnType<typeof getSupabaseAdminClient>,
+  actorId: string,
+  auditId: string,
+  outcome: "completed" | "failed",
+  detailCode: string | null,
+): Promise<{ recorded: boolean; outcome: ActionAuditOutcome | null }> {
+  const finish = await admin.rpc("master_finish_admin_audit", {
+    p_actor_id: actorId,
+    p_audit_id: auditId,
+    p_outcome: outcome,
+    p_detail_code: detailCode,
+  });
+  if (!finish.error && finish.data === true) return { recorded: true, outcome };
+
+  // A failure after the Auth side effect must not leave a silent or ambiguous
+  // audit entry. Persist a retryable attention state whenever the DB is back.
+  const attention = await admin.rpc("master_finish_admin_audit", {
+    p_actor_id: actorId,
+    p_audit_id: auditId,
+    p_outcome: "needs_attention",
+    p_detail_code: "audit_reconciliation_required",
+  });
+  if (!attention.error && attention.data === true) return { recorded: true, outcome: "needs_attention" };
+
+  // Resolve an ambiguous network response: the first UPDATE may have committed
+  // even when its response was lost. This is read-only and scoped to this actor.
+  const persisted = await admin.from("master_audit_log")
+    .select("outcome")
+    .eq("id", auditId)
+    .eq("actor_id", actorId)
+    .maybeSingle();
+  const persistedOutcome = persisted.data?.outcome;
+  if (!persisted.error && (persistedOutcome === "completed" || persistedOutcome === "failed" || persistedOutcome === "needs_attention")) {
+    return { recorded: true, outcome: persistedOutcome };
+  }
+  return { recorded: false, outcome: null };
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const master = await authorize(request);
   if (!master) return json({ error: "Não autorizado." }, 403);
@@ -102,6 +143,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const { userId, action, reasonCode, reasonNote, reauthPassword } = parsed.data;
   if (userId === master.id) return json({ error: "Você não pode alterar a própria conta Master." }, 400);
   if (!reasonCode) return json({ error: "Registre o motivo desta decisão para a auditoria." }, 400);
+  if (reasonCode === "other" && !reasonNote?.trim()) return json({ error: "Descreva o motivo quando selecionar “Outro motivo”." }, 400);
   if (action === "delete_permanently") {
     if (!reauthPassword) return json({ error: "Confirme sua senha Master para excluir definitivamente." }, 400);
     if (!master.email) return json({ error: "Não foi possível validar a reautenticação desta conta." }, 503);
@@ -163,28 +205,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   if (authError) {
-    const audit = await admin.rpc("master_finish_admin_audit", {
-      p_actor_id: master.id,
-      p_audit_id: transition.auditId,
-      p_outcome: "failed",
-      p_detail_code: transition.authAction === "delete" ? "auth_delete_failed" : transition.authAction === "unban" ? "auth_unban_failed" : "auth_ban_failed",
-    });
+    const detailCode = transition.authAction === "delete" ? "auth_delete_failed" : transition.authAction === "unban" ? "auth_unban_failed" : "auth_ban_failed";
+    const audit = await finishActionAudit(admin, master.id, transition.auditId, "failed", detailCode);
     if (authError.message.includes("workspace owner must transfer ownership before deletion")) {
       return json({ error: "Esta conta ainda administra uma empresa com outros integrantes. Transfira a titularidade antes de excluir definitivamente." }, 409);
     }
-    if (audit.error || audit.data !== true) {
+    if (!audit.recorded) {
       return json({ error: "A ação precisa de reconciliação: não foi possível confirmar o resultado no histórico administrativo. Atualize a auditoria antes de repetir." }, 503);
     }
+    if (audit.outcome === "needs_attention") return json({ error: "A autenticação não concluiu a alteração e o histórico marcou o caso para reconciliação. Atualize a auditoria para tentar novamente com segurança." }, 503);
     return json({ error: "A atualização não foi concluída no serviço de autenticação. O resultado foi registrado; tente novamente." }, 503);
   }
 
-  const { data: auditCompleted, error: auditError } = await admin.rpc("master_finish_admin_audit", {
-    p_actor_id: master.id,
-    p_audit_id: transition.auditId,
-    p_outcome: "completed",
-    p_detail_code: null,
-  });
-  if (auditError || auditCompleted !== true) return json({ error: "A alteração foi feita, mas a confirmação de auditoria precisa de atenção. Atualize o painel antes de repetir." }, 503);
+  const audit = await finishActionAudit(admin, master.id, transition.auditId, "completed", null);
+  if (!audit.recorded) return json({ error: "A alteração no acesso foi executada, mas o histórico não confirmou o resultado. Atualize a auditoria antes de repetir." }, 503);
+  if (audit.outcome === "needs_attention") return json({ error: "A alteração foi executada e o histórico marcou a confirmação para reconciliação. Atualize a auditoria e use a opção de nova tentativa." }, 503);
+  if (audit.outcome !== "completed") return json({ error: "A alteração foi executada, mas a auditoria ainda não confirmou a conclusão. Atualize o histórico e tente reconciliar." }, 503);
 
   return json({ ok: true, action, auditId: transition.auditId });
 }

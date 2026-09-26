@@ -9,8 +9,9 @@ function encode(value: unknown) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
-async function signInAsMaster(page: import("@playwright/test").Page, options: { manyRequests?: boolean; failedAudit?: boolean } = {}) {
+async function signInAsMaster(page: import("@playwright/test").Page, options: { manyRequests?: boolean; manyUsers?: boolean; inviteHistory?: boolean; failedAudit?: boolean; needsAttentionAudit?: boolean } = {}) {
   let pendingRequestArchived = false;
+  let activeInviteRevoked = false;
   const now = Math.floor(Date.now() / 1000);
   const accessToken = encode({ alg: "none", typ: "JWT" }) + "." + encode({
     sub: masterId,
@@ -168,11 +169,31 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
     const pending = status === "requests" ? requestPage : status === "pending" ? options.manyRequests
       ? visibleConfirmedRequests.slice((requestedPage - 1) * 25, requestedPage * 25)
       : visibleConfirmedRequests : status === "pending_email" ? [awaitingEmail] : status === "trashed" ? [trashedAccount] : [];
+    const manyUsers = options.manyUsers ? Array.from({ length: 206 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 500).padStart(12, "0")}`,
+      email: `usuario${index + 1}@valurise.invalid`,
+      email_confirmed_at: new Date().toISOString(),
+      last_sign_in_at: null,
+      created_at: new Date(Date.now() - index * 60_000).toISOString(),
+      full_name: `Usuário de teste ${index + 1}`,
+      username: `usuario.teste${index + 1}`,
+      role: "user",
+      stored_status: "active",
+      request_status: null,
+      requested_at: new Date().toISOString(),
+      invite_id: null,
+      invite_state: "none",
+      status: "active",
+    })) : [];
+    const userSearch = new URL(route.request().url()).searchParams.get("search")?.toLowerCase() || "";
+    const filteredManyUsers = manyUsers.filter((account) => !userSearch || `${account.email} ${account.full_name} ${account.username}`.toLowerCase().includes(userSearch));
+    const displayedManyUsers = filteredManyUsers.slice((requestedPage - 1) * 25, requestedPage * 25);
+    const pageItems = options.manyUsers && status !== "requests" && status !== "pending" && status !== "pending_email" && status !== "trashed" ? displayedManyUsers : pending;
     const pendingTotal = status === "requests" ? filteredRequests.length : options.manyRequests && status === "pending" ? 26 : pending.length;
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ items: pending, total: status === "trashed" ? 1 : pendingTotal, page: requestedPage, pageSize: 25, stats: { pending: pendingRequestArchived ? 0 : options.manyRequests ? 26 : 1, email_pending: 1, total: options.manyRequests ? 27 : 2, active: 1, disabled: 0, trashed: status === "trashed" ? 1 : 0, rejected: 0 } }),
+      body: JSON.stringify({ items: pageItems, total: status === "trashed" ? 1 : options.manyUsers && pageItems === displayedManyUsers ? filteredManyUsers.length : pendingTotal, page: requestedPage, pageSize: 25, stats: { pending: pendingRequestArchived ? 0 : options.manyRequests ? 26 : 1, email_pending: 1, total: options.manyUsers ? 206 : options.manyRequests ? 27 : 2, active: options.manyUsers ? 206 : 1, disabled: 0, trashed: status === "trashed" ? 1 : 0, rejected: 0 } }),
     });
   });
   await page.route("**/api/admin/invites**", async (route) => {
@@ -180,13 +201,22 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
       route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ invite: { id: "invite-new", token: "e2e-token", link: "http://127.0.0.1:3000/?invite=e2e-token" } }) });
       return;
     }
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], total: 0, page: 1, pageSize: 25 }) });
+    if (route.request().method() === "DELETE") {
+      activeInviteRevoked = true;
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      return;
+    }
+    const inviteRows = options.inviteHistory ? [
+      { id: "invite-active", token: "active-token", link: "http://127.0.0.1:3000/?invite=active-token", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(), usedAt: null, usedByName: null, revokedAt: activeInviteRevoked ? new Date().toISOString() : null, status: activeInviteRevoked ? "revoked" : "active" },
+      { id: "invite-used", token: "used-token", link: "", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(), usedAt: new Date().toISOString(), usedByName: "Pessoa convidada", revokedAt: null, status: "used" },
+    ] : [];
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: inviteRows, total: inviteRows.length, page: 1, pageSize: 25 }) });
   });
   await page.route("**/api/admin/audit**", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ items: [options.failedAudit
-      ? { id: "audit-failed-e2e", action: "trashed", outcome: "failed", reason_code: "user_requested", reason_note: null, detail_code: "auth_ban_failed", target_ref: trashedId, created_at: new Date().toISOString(), actor_name: "Master E2E", actor_email: "master@valurise.invalid", target_name: "Conta de Teste na Lixeira", target_email: "lixeira@valurise.invalid" }
+    body: JSON.stringify({ items: [options.failedAudit || options.needsAttentionAudit
+      ? { id: "audit-failed-e2e", action: "trashed", outcome: options.needsAttentionAudit ? "needs_attention" : "failed", reason_code: "user_requested", reason_note: null, detail_code: options.needsAttentionAudit ? "audit_reconciliation_required" : "auth_ban_failed", target_ref: trashedId, created_at: new Date().toISOString(), actor_name: "Master E2E", actor_email: "master@valurise.invalid", target_name: "Conta de Teste na Lixeira", target_email: "lixeira@valurise.invalid" }
       : { id: "audit-e2e", action: "approved", outcome: "completed", reason_code: null, reason_note: null, detail_code: null, target_ref: null, created_at: new Date().toISOString(), actor_name: "Master E2E", actor_email: "master@valurise.invalid", target_name: "Pedido Confirmado", target_email: "pedido@valurise.invalid" }], total: 1, page: 1, pageSize: 25 }),
   }));
 
@@ -214,7 +244,10 @@ test("painel Master mostra pedidos confirmados, mantém os outros em espera e of
   await page.getByRole("button", { name: "Aprovar" }).click();
   const approvalDialog = page.getByRole("dialog", { name: "Aprovar acesso" });
   await expect(approvalDialog.getByText(/O e-mail foi confirmado/)).toBeVisible();
-  await approvalDialog.getByRole("button", { name: "Aprovar acesso" }).click();
+  const approveAction = approvalDialog.getByRole("button", { name: "Aprovar acesso" });
+  await expect(approveAction).toBeDisabled();
+  await approvalDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
+  await approveAction.click();
   await expect(page.getByText("Acesso aprovado.")).toBeVisible();
 
   await page.getByRole("button", { name: "Usuários" }).click();
@@ -240,6 +273,7 @@ test("arquiva um pedido sem recusá-lo e permite reabri-lo pela lixeira", async 
   await page.getByRole("button", { name: "Arquivar solicitação" }).click();
   const archiveDialog = page.getByRole("dialog", { name: "Arquivar solicitação" });
   await expect(archiveDialog.getByText(/sem ser aprovado nem recusado/)).toBeVisible();
+  await archiveDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
   await archiveDialog.getByRole("button", { name: "Arquivar solicitação" }).click();
   await expect(page.getByText("Solicitação arquivada na lixeira sem ser recusada.")).toBeVisible();
   await expect(page.getByText("Nenhuma solicitação confirmada aguardando decisão.")).toBeVisible();
@@ -247,9 +281,11 @@ test("arquiva um pedido sem recusá-lo e permite reabri-lo pela lixeira", async 
   await page.getByRole("button", { name: "Usuários" }).click();
   await page.locator("#master-account-status").selectOption("trashed");
   await expect(page.getByText("Pedido arquivado — ainda não aprovado nem recusado.")).toBeVisible();
+  await page.locator('summary[aria-label="Ações de Pedido Confirmado"]').click();
   await page.getByRole("button", { name: "Reabrir solicitação" }).click();
   const reopenDialog = page.getByRole("dialog", { name: "Reabrir solicitação" });
   await expect(reopenDialog.getByText(/Reabrir não aprova nem libera a conta/)).toBeVisible();
+  await reopenDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
   await reopenDialog.getByRole("button", { name: "Reabrir solicitação" }).click();
   await expect(page.getByText("Solicitação reaberta e devolvida para análise.")).toBeVisible();
 
@@ -287,6 +323,36 @@ test("fila de solicitações pagina sem saltar resultados", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Próxima página" })).toBeDisabled();
 });
 
+test("lista mais de 200 contas com paginação, busca e menu de ações", async ({ page }) => {
+  await signInAsMaster(page, { manyUsers: true });
+  await page.getByRole("button", { name: "Usuários" }).click();
+
+  await expect(page.getByText("Página 1 de 9 · 206 registros")).toBeVisible();
+  await expect(page.getByText("Usuário de teste 1", { exact: true })).toBeVisible();
+  for (let pageNumber = 2; pageNumber <= 9; pageNumber += 1) {
+    await page.getByRole("button", { name: "Próxima página" }).click();
+  }
+  await expect(page.getByText("Página 9 de 9 · 206 registros")).toBeVisible();
+  await expect(page.getByText("Usuário de teste 206", { exact: true })).toBeVisible();
+  await page.getByLabel("Buscar por nome, usuário ou e-mail").fill("usuario206@");
+  await expect(page.getByText("Página 1 de 1 · 1 registro")).toBeVisible();
+  await page.locator('summary[aria-label="Ações de Usuário de teste 206"]').click();
+  await expect(page.getByRole("button", { name: "Desativar conta" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("convites mostram validade e uso, e o Master consegue revogar um convite ativo", async ({ page }) => {
+  await signInAsMaster(page, { inviteHistory: true });
+  await page.getByRole("button", { name: "Convites" }).click();
+
+  await expect(page.getByText("Convite ativo", { exact: true })).toBeVisible();
+  await expect(page.getByText("Utilizado", { exact: true })).toBeVisible();
+  await expect(page.getByText("Usado por Pessoa convidada")).toBeVisible();
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(page.getByText("Convite cancelado.")).toBeVisible();
+  await expect(page.getByText("Convite ativo", { exact: true })).toHaveCount(0);
+});
+
 test("filtra auditoria por ação, resultado e período", async ({ page }) => {
   await signInAsMaster(page);
   await page.getByRole("button", { name: "Auditoria" }).click();
@@ -319,17 +385,22 @@ test("recusa exige motivo e exclusão definitiva exige reautenticação e confir
   await signInAsMaster(page);
   await page.getByRole("button", { name: "Recusar", exact: true }).click();
   const rejectionDialog = page.getByRole("dialog", { name: "Recusar solicitação" });
-  await rejectionDialog.getByRole("button", { name: "Recusar solicitação" }).click();
+  const rejectAction = rejectionDialog.getByRole("button", { name: "Recusar solicitação" });
+  await expect(rejectAction).toBeDisabled();
+  await rejectionDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("policy_violation");
+  await rejectAction.click();
   await expect(page.getByText("Solicitação recusada.")).toBeVisible();
 
   await page.getByRole("button", { name: "Usuários" }).click();
   await page.getByLabel("Filtrar contas").selectOption("trashed");
   await expect(page.getByText("Conta de Teste na Lixeira")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Restaurar" })).toHaveCount(0);
-  await page.getByRole("button", { name: /Excluir definitivamente/ }).click();
+  await page.locator('summary[aria-label="Ações de Conta de Teste na Lixeira"]').click();
+  await expect(page.getByRole("button", { name: "Restaurar conta" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Excluir definitivamente" }).click();
   const deleteDialog = page.getByRole("dialog", { name: "Excluir definitivamente?" });
   const confirmDelete = deleteDialog.getByRole("button", { name: "Excluir definitivamente" });
   await expect(confirmDelete).toBeDisabled();
+  await deleteDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
   await deleteDialog.getByLabel("Confirme sua senha Master").fill("senha-ficticia-de-teste");
   await deleteDialog.getByLabel("Digite EXCLUIR para confirmar").fill("EXCLUIR");
   await expect(confirmDelete).toBeEnabled();
@@ -343,7 +414,21 @@ test("permite tentar novamente uma etapa de acesso que falhou", async ({ page })
   const failedEvent = page.getByRole("article").filter({ hasText: "Conta de Teste na Lixeira" });
   await expect(failedEvent.getByText("Falhou — pode ser tentada novamente")).toBeVisible();
   await failedEvent.getByRole("button", { name: "Tentar novamente" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Mover para lixeira" }).click();
+  const retryDialog = page.getByRole("dialog");
+  await retryDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
+  await retryDialog.getByRole("button", { name: "Mover para a lixeira" }).click();
+  await expect(page.getByText("Conta movida para a lixeira.")).toBeVisible();
+});
+
+test("auditoria em reconciliação expõe uma nova tentativa segura", async ({ page }) => {
+  await signInAsMaster(page, { needsAttentionAudit: true });
+  await page.getByRole("button", { name: "Auditoria" }).click();
+  const attentionEvent = page.getByRole("article").filter({ hasText: "Conta de Teste na Lixeira" });
+  await expect(attentionEvent.getByText("Precisa de atenção")).toBeVisible();
+  await attentionEvent.getByRole("button", { name: "Tentar novamente" }).click();
+  const retryDialog = page.getByRole("dialog");
+  await retryDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
+  await retryDialog.getByRole("button", { name: "Mover para a lixeira" }).click();
   await expect(page.getByText("Conta movida para a lixeira.")).toBeVisible();
 });
 

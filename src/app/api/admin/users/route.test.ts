@@ -3,11 +3,12 @@ import { NextRequest } from "next/server";
 
 const { admin, getVerifiedMaster, verifyMasterPassword } = vi.hoisted(() => {
   const rpc = vi.fn();
+  const from = vi.fn();
   const deleteUser = vi.fn();
   const getUserById = vi.fn();
   const updateUserById = vi.fn();
   return {
-    admin: { rpc, auth: { admin: { deleteUser, getUserById, updateUserById } } },
+    admin: { rpc, from, auth: { admin: { deleteUser, getUserById, updateUserById } } },
     getVerifiedMaster: vi.fn(),
     verifyMasterPassword: vi.fn(),
   };
@@ -19,7 +20,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 vi.mock("@/lib/supabase/reauth", () => ({ verifyMasterPassword }));
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 const actorId = "00000000-0000-4000-8000-000000000001";
 const accountId = "00000000-0000-4000-8000-000000000002";
@@ -32,9 +33,59 @@ function post(body: unknown) {
   });
 }
 
+describe("GET /api/admin/users", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    admin.rpc.mockResolvedValue({ data: null, error: null });
+    admin.from.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+        }),
+      }),
+    });
+    getVerifiedMaster.mockResolvedValue({ id: actorId, email: "master@example.invalid" });
+  });
+
+  it("encaminha busca, filtro e página para a consulta paginada do banco", async () => {
+    admin.rpc.mockResolvedValueOnce({ data: { items: [], total: 206, page: 9, pageSize: 25 }, error: null });
+    const request = new NextRequest("http://localhost/api/admin/users?search=filip&status=active&page=9", {
+      headers: { Authorization: "Bearer fake-token" },
+    });
+
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ total: 206, page: 9, pageSize: 25 });
+    expect(admin.rpc).toHaveBeenCalledWith("master_list_accounts", {
+      p_search: "filip",
+      p_status: "active",
+      p_page: 9,
+      p_page_size: 25,
+    });
+  });
+
+  it("rejeita filtros ou páginas inválidas sem consultar o banco", async () => {
+    const invalidFilter = await GET(new NextRequest("http://localhost/api/admin/users?status=unknown"));
+    const invalidPage = await GET(new NextRequest("http://localhost/api/admin/users?page=0"));
+
+    expect(invalidFilter.status).toBe(400);
+    expect(invalidPage.status).toBe(400);
+    expect(admin.rpc).not.toHaveBeenCalled();
+  });
+});
+
 describe("POST /api/admin/users", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    admin.rpc.mockResolvedValue({ data: null, error: null });
+    admin.from.mockReturnValue({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+        }),
+      }),
+    });
     getVerifiedMaster.mockResolvedValue({ id: actorId, email: "master@example.invalid" });
     verifyMasterPassword.mockResolvedValue({ valid: true, unavailable: false });
   });
@@ -57,6 +108,14 @@ describe("POST /api/admin/users", () => {
     expect(admin.rpc).not.toHaveBeenCalled();
     expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
     expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("exige detalhe quando o motivo é Outro", async () => {
+    const response = await POST(post({ userId: accountId, action: "approve", reasonCode: "other" }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/descreva o motivo/i);
+    expect(admin.rpc).not.toHaveBeenCalled();
   });
 
   it("arquiva pedido confirmado sem recusá-lo, exige auditoria e bloqueia a conta", async () => {
@@ -89,7 +148,7 @@ describe("POST /api/admin/users", () => {
       .mockResolvedValueOnce({ data: true, error: null });
     admin.auth.admin.updateUserById.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
 
-    const response = await POST(post({ userId: accountId, action: "reopen_request", reasonCode: "other" }));
+    const response = await POST(post({ userId: accountId, action: "reopen_request", reasonCode: "user_requested" }));
 
     expect(response.status).toBe(200);
     expect(admin.rpc).toHaveBeenNthCalledWith(1, "master_reopen_access_request", expect.objectContaining({
@@ -142,13 +201,32 @@ describe("POST /api/admin/users", () => {
       .mockResolvedValueOnce({ data: true, error: null });
     admin.auth.admin.deleteUser.mockResolvedValue({ data: null, error: { message: "temporary auth error" } });
 
-    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "other", reauthPassword: "fake-master-password" }));
+    const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested", reauthPassword: "fake-master-password" }));
 
     expect(response.status).toBe(503);
     expect(admin.rpc).toHaveBeenNthCalledWith(2, "master_finish_admin_audit", expect.objectContaining({
       p_audit_id: "audit-2",
       p_outcome: "failed",
       p_detail_code: "auth_delete_failed",
+    }));
+  });
+
+  it("marca a auditoria para reconciliação quando não consegue confirmar o resultado após a alteração de Auth", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-needs-attention", authAction: "ban", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: null, error: { message: "temporary database response failure" } })
+      .mockResolvedValueOnce({ data: true, error: null });
+    admin.auth.admin.updateUserById.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
+
+    const response = await POST(post({ userId: accountId, action: "disable", reasonCode: "policy_violation" }));
+
+    expect(response.status).toBe(503);
+    expect((await response.json()).error).toMatch(/reconciliação/i);
+    expect(admin.rpc).toHaveBeenNthCalledWith(3, "master_finish_admin_audit", expect.objectContaining({
+      p_actor_id: actorId,
+      p_audit_id: "audit-needs-attention",
+      p_outcome: "needs_attention",
+      p_detail_code: "audit_reconciliation_required",
     }));
   });
 
@@ -169,16 +247,22 @@ describe("POST /api/admin/users", () => {
     expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
   });
 
-  it("não declara a exclusão como concluída se o banco não confirmar a auditoria", async () => {
+  it("marca reconciliação se não consegue confirmar a auditoria da exclusão", async () => {
     admin.rpc
       .mockResolvedValueOnce({ data: { auditId: "audit-3", authAction: "delete", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: false, error: null })
       .mockResolvedValueOnce({ data: false, error: null });
     admin.auth.admin.deleteUser.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
 
     const response = await POST(post({ userId: accountId, action: "delete_permanently", reasonCode: "user_requested", reauthPassword: "fake-master-password" }));
 
     expect(response.status).toBe(503);
-    expect((await response.json()).error).toMatch(/auditoria/);
+    expect((await response.json()).error).toMatch(/histórico não confirmou/i);
+    expect(admin.rpc).toHaveBeenNthCalledWith(3, "master_finish_admin_audit", expect.objectContaining({
+      p_audit_id: "audit-3",
+      p_outcome: "needs_attention",
+      p_detail_code: "audit_reconciliation_required",
+    }));
   });
 
   it("finaliza com segurança uma repetição quando o usuário Auth já foi removido", async () => {

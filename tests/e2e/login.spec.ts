@@ -212,3 +212,52 @@ test("impede envio duplicado enquanto o login está em andamento", async ({ page
   await expect(page.getByRole("button", { name: "Aguarde…" })).toBeVisible();
   await expect(page.getByText("Login ou senha inválidos.")).toBeVisible();
 });
+
+test("bloqueia envios repetidos durante solicitação de acesso e recuperação de senha", async ({ page }) => {
+  let accessRequests = 0;
+  let resetRequests = 0;
+  await page.route("**/api/auth/request-access", async (route) => {
+    accessRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.route("**/api/auth/password-reset", async (route) => {
+    resetRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.goto("/");
+  await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
+  await page.getByRole("button", { name: "Solicitar acesso" }).click();
+  await page.getByLabel("Seu nome").fill("Pessoa de Teste");
+  await page.getByLabel("Usuário").fill("teste.envios");
+  await page.getByLabel("E-mail").fill("teste.envios@exemplo.invalid");
+  await page.getByLabel("Senha", { exact: true }).fill("senha-e2e-ficticia");
+  await page.getByLabel(/Política de Privacidade/).check();
+  await page.getByLabel(/Termos de Uso/).check();
+  const accessButton = page.locator("form.login-card button[type='submit']");
+  await page.locator("form.login-card").evaluate((form: HTMLFormElement) => {
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+  await expect(accessButton).toBeDisabled();
+  await expect.poll(() => accessRequests).toBe(1);
+  await page.waitForTimeout(500);
+  expect(accessRequests).toBe(1);
+  await expect(page.getByRole("heading", { name: "Próximo passo do seu acesso" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Ir para o login" }).click();
+  await page.getByRole("button", { name: "Esqueci minha senha" }).click();
+  await page.getByLabel("E-mail").fill("teste.envios@exemplo.invalid");
+  const resetButton = page.locator("form.login-card button[type='submit']");
+  await page.locator("form.login-card").evaluate((form: HTMLFormElement) => {
+    form.requestSubmit();
+    form.requestSubmit();
+  });
+  await expect(resetButton).toBeDisabled();
+  await expect.poll(() => resetRequests).toBe(1);
+  await page.waitForTimeout(500);
+  expect(resetRequests).toBe(1);
+  await expect(page.getByText("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.")).toBeVisible();
+});
