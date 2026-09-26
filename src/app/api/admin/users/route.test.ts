@@ -47,6 +47,58 @@ describe("POST /api/admin/users", () => {
     expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
   });
 
+  it("exige justificativa antes de registrar qualquer decisão ou mudança de acesso", async () => {
+    for (const action of ["approve", "reject", "disable", "restore", "trash", "archive_request", "reopen_request", "delete_permanently"]) {
+      const response = await POST(post({ userId: accountId, action }));
+      expect(response.status, action).toBe(400);
+      expect((await response.json()).error).toMatch(/motivo/i);
+    }
+
+    expect(admin.rpc).not.toHaveBeenCalled();
+    expect(admin.auth.admin.updateUserById).not.toHaveBeenCalled();
+    expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("arquiva pedido confirmado sem recusá-lo, exige auditoria e bloqueia a conta", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-archive", authAction: "ban", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: true, error: null });
+    admin.auth.admin.updateUserById.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
+
+    const response = await POST(post({ userId: accountId, action: "archive_request", reasonCode: "other", reasonNote: "Fora da fila por enquanto" }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.action).toBe("archive_request");
+    expect(admin.rpc).toHaveBeenNthCalledWith(1, "master_archive_access_request", expect.objectContaining({
+      p_actor_id: actorId,
+      p_target_user_id: accountId,
+      p_reason_code: "other",
+      p_reason_note: "Solicitação confirmada arquivada: Fora da fila por enquanto",
+    }));
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith(accountId, { ban_duration: "876000h" });
+    expect(admin.rpc).toHaveBeenNthCalledWith(2, "master_finish_admin_audit", expect.objectContaining({
+      p_audit_id: "audit-archive",
+      p_outcome: "completed",
+    }));
+  });
+
+  it("reabre um pedido arquivado mantendo a conta pendente e auditando a ação", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-reopen", authAction: "unban", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: true, error: null });
+    admin.auth.admin.updateUserById.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
+
+    const response = await POST(post({ userId: accountId, action: "reopen_request", reasonCode: "other" }));
+
+    expect(response.status).toBe(200);
+    expect(admin.rpc).toHaveBeenNthCalledWith(1, "master_reopen_access_request", expect.objectContaining({
+      p_target_user_id: accountId,
+      p_reason_note: "Solicitação arquivada reaberta: devolvida à fila para nova análise.",
+    }));
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith(accountId, { ban_duration: "none" });
+  });
+
   it("não executa exclusão Auth se o banco disser que a conta não está na lixeira", async () => {
     admin.rpc.mockResolvedValueOnce({ data: null, error: { message: "account must be in trash before permanent deletion" } });
 

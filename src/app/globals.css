@@ -368,6 +368,12 @@ input[type="radio"] {
   .field { font-size: 16px; }
   .login-card .field { font-size: 16px; }
   .login-card { backdrop-filter: none; }
+  .login-ambient {
+    background: radial-gradient(ellipse 21rem 17rem at 50% 12%, rgba(0, 139, 92, 0.12), transparent 76%);
+  }
+  .login-overlay {
+    background: linear-gradient(180deg, rgba(8, 10, 14, 0.12), rgba(8, 10, 14, 0.32));
+  }
 }
 .skeleton {
   background: linear-gradient(

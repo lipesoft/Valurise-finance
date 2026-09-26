@@ -41,7 +41,7 @@ type Account = {
 type PageData = { items: Account[]; total: number; page: number; pageSize: number; stats: Record<string, number> };
 type Invite = { id: string; token: string; link: string; createdAt: string; expiresAt: string; usedAt: string | null; usedByName: string | null; revokedAt: string | null; status: string };
 type AuditEntry = { id: string; action: string; outcome: string; reason_code: string | null; reason_note: string | null; detail_code: string | null; created_at: string; actor_name: string | null; actor_email: string | null; target_ref: string | null; target_name: string | null; target_email: string | null };
-type PendingAction = { user: Account; action: "approve" | "reject" | "disable" | "restore" | "trash" | "delete_permanently" };
+type PendingAction = { user: Account; action: "approve" | "reject" | "disable" | "restore" | "trash" | "archive_request" | "reopen_request" | "delete_permanently" };
 type RequestTarget = { search: string; userId?: string; nonce: number };
 
 const pageSize = 25;
@@ -93,6 +93,12 @@ function dateLabel(value?: string | null) {
 
 function accountName(account: Account) {
   return account.full_name || account.email || "Usuário";
+}
+
+function auditActionLabel(entry: AuditEntry) {
+  if (entry.action === "trashed" && entry.reason_note?.startsWith("Solicitação confirmada arquivada:")) return "Solicitação arquivada";
+  if (entry.action === "restored" && entry.reason_note?.startsWith("Solicitação arquivada reaberta:")) return "Solicitação reaberta para análise";
+  return actionLabels[entry.action] || entry.action;
 }
 
 function dateInputStart(value: string): string | undefined {
@@ -297,16 +303,12 @@ export function MasterAdminPanel({
   const totalPages = section === "requests" ? requestTotalPages : Math.max(1, Math.ceil(total / pageSize));
 
   const chooseAction = (user: Account, action: PendingAction["action"], trigger?: HTMLButtonElement) => {
-    if (["reject", "disable", "trash", "delete_permanently"].includes(action)) {
-      setReasonCode(action === "delete_permanently" ? "user_requested" : "other");
-      setReasonNote("");
-      setDeleteConfirmation("");
-      setDeletePassword("");
-      modalOpener.current = trigger ?? null;
-      setPendingAction({ user, action });
-      return;
-    }
-    void executeAction({ user, action });
+    setReasonCode(action === "delete_permanently" ? "user_requested" : action === "restore" ? "user_requested" : "other");
+    setReasonNote("");
+    setDeleteConfirmation("");
+    setDeletePassword("");
+    modalOpener.current = trigger ?? null;
+    setPendingAction({ user, action });
   };
 
   const executeAction = async (action: PendingAction, reason?: { code: string; note: string }, reauthPassword?: string) => {
@@ -332,6 +334,8 @@ export function MasterAdminPanel({
         disable: "Conta desativada.",
         restore: "Conta restaurada.",
         trash: "Conta movida para a lixeira.",
+        archive_request: "Solicitação arquivada na lixeira sem ser recusada.",
+        reopen_request: "Solicitação reaberta e devolvida para análise.",
         delete_permanently: "Conta excluída definitivamente.",
       };
       toast(messages[action.action]);
@@ -416,6 +420,7 @@ export function MasterAdminPanel({
           {request && account.status === "pending" && <>
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "approve", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--accent)] px-3.5 text-xs font-semibold text-[var(--accentfg)] disabled:opacity-50"><Check className="mr-1 inline" size={14}/>Aprovar</button>
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "reject", event.currentTarget)} className="min-h-10 rounded-xl border border-[var(--danger)]/30 px-3.5 text-xs font-medium text-[var(--danger)] disabled:opacity-50">Recusar</button>
+            <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "archive_request", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3.5 text-xs font-medium disabled:opacity-50">Arquivar solicitação</button>
           </>}
           {!request && account.role !== "master" && account.status === "active" && <>
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "disable", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3 text-xs disabled:opacity-50">Desativar</button>
@@ -426,9 +431,12 @@ export function MasterAdminPanel({
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "trash", event.currentTarget)} className="min-h-10 rounded-xl border border-[var(--danger)]/25 px-3 text-xs text-[var(--danger)] disabled:opacity-50">Mover para lixeira</button>
           </>}
           {!request && account.role !== "master" && account.status === "trashed" && <>
-            {account.request_status !== "rejected" && <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "restore", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3 text-xs disabled:opacity-50">Restaurar</button>}
+            {account.request_status === "pending_review"
+              ? <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "reopen_request", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3 text-xs text-[var(--accent)] disabled:opacity-50">Reabrir solicitação</button>
+              : account.request_status !== "rejected" && <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "restore", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3 text-xs disabled:opacity-50">Restaurar</button>}
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "delete_permanently", event.currentTarget)} className="min-h-10 rounded-xl border border-[var(--danger)]/35 px-3 text-xs text-[var(--danger)] disabled:opacity-50"><Trash2 className="mr-1 inline" size={14}/>Excluir definitivamente</button>
           </>}
+          {!request && account.status === "trashed" && account.request_status === "pending_review" && <small className="muted block w-full text-xs">Pedido arquivado — ainda não aprovado nem recusado.</small>}
         </div>
       </div>
     </article>;
@@ -498,8 +506,10 @@ export function MasterAdminPanel({
         const expectedDetail: Record<string, string> = {
           approved: "auth_unban_failed", rejected: "auth_ban_failed", disabled: "auth_ban_failed", restored: "auth_unban_failed", trashed: "auth_ban_failed", permanently_deleted: "auth_delete_failed",
         };
-        const retryAction = entry.target_ref && entry.outcome !== "completed" && retryActions[entry.action] && expectedDetail[entry.action] === entry.detail_code
-          ? retryActions[entry.action]
+        const isArchivedRequest = entry.action === "trashed" && entry.reason_note?.startsWith("Solicitação confirmada arquivada:");
+        const isReopenedRequest = entry.action === "restored" && entry.reason_note?.startsWith("Solicitação arquivada reaberta:");
+        const retryAction = entry.target_ref && entry.outcome !== "completed" && expectedDetail[entry.action] === entry.detail_code
+          ? isArchivedRequest ? "archive_request" : isReopenedRequest ? "reopen_request" : retryActions[entry.action]
           : undefined;
         const accountForRetry = entry.target_ref ? {
           id: entry.target_ref,
@@ -517,7 +527,7 @@ export function MasterAdminPanel({
           email_confirmed_at: null,
           last_sign_in_at: null,
         } satisfies Account : null;
-        return <article key={entry.id} className="rounded-2xl border border-[var(--border)] p-4"><div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><b className="text-sm">{actionLabels[entry.action] || entry.action}</b><p className="muted mt-1 text-xs">{entry.target_name || entry.target_email || "Registro administrativo"} · {dateLabel(entry.created_at)}</p>{entry.reason_code && <p className="muted mt-2 text-xs">Motivo: {reasonLabels[entry.reason_code] || entry.reason_code}{entry.reason_note ? " — " + entry.reason_note : ""}</p>}{entry.actor_name && <small className="muted mt-2 block text-[11px]">Realizada por {entry.actor_name}</small>}</div><span className={"inline-flex w-fit items-center gap-1.5 rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px] " + (entry.outcome === "completed" ? "text-[var(--accent)]" : "text-[var(--danger)]")}>{entry.outcome === "completed" ? <Check size={12}/> : <Clock3 size={12} />}{outcomeLabels[entry.outcome] || entry.outcome}</span></div>{entry.detail_code && <div className="mt-2 flex flex-wrap items-center gap-3"><small className="muted text-[11px]">A etapa no serviço de acesso não foi concluída.</small>{retryAction && accountForRetry && <button type="button" disabled={Boolean(busy)} onClick={(event) => chooseAction(accountForRetry, retryAction, event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold text-[var(--accent)] disabled:opacity-50">Tentar novamente</button>}</div>}</article>;
+        return <article key={entry.id} className="rounded-2xl border border-[var(--border)] p-4"><div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><b className="text-sm">{auditActionLabel(entry)}</b><p className="muted mt-1 text-xs">{entry.target_name || entry.target_email || "Registro administrativo"} · {dateLabel(entry.created_at)}</p>{entry.reason_code && <p className="muted mt-2 text-xs">Motivo: {reasonLabels[entry.reason_code] || entry.reason_code}{entry.reason_note ? " — " + entry.reason_note : ""}</p>}{entry.actor_name && <small className="muted mt-2 block text-[11px]">Realizada por {entry.actor_name}</small>}</div><span className={"inline-flex w-fit items-center gap-1.5 rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px] " + (entry.outcome === "completed" ? "text-[var(--accent)]" : "text-[var(--danger)]")}>{entry.outcome === "completed" ? <Check size={12}/> : <Clock3 size={12} />}{outcomeLabels[entry.outcome] || entry.outcome}</span></div>{entry.detail_code && <div className="mt-2 flex flex-wrap items-center gap-3"><small className="muted text-[11px]">A etapa no serviço de acesso não foi concluída.</small>{retryAction && accountForRetry && <button type="button" disabled={Boolean(busy)} onClick={(event) => chooseAction(accountForRetry, retryAction, event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold text-[var(--accent)] disabled:opacity-50">Tentar novamente</button>}</div>}</article>;
       })}{!loading && audit.length === 0 && <div className="rounded-2xl bg-[var(--panel2)]/50 p-8 text-center"><Clipboard className="muted mx-auto" size={22}/><p className="mt-3 text-sm">Nenhum evento nesta consulta</p><p className="muted mt-1 text-xs">As ações feitas daqui aparecerão neste histórico.</p></div>}</div>
       {pageControls}
     </div>}
@@ -525,12 +535,15 @@ export function MasterAdminPanel({
     {loading && <p role="status" className="muted mt-4 text-center text-xs">Atualizando painel…</p>}
 
     {pendingAction && <div className="fixed inset-0 z-[100] grid place-items-end bg-black/55 p-0 backdrop-blur-sm sm:place-items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) closeActionDialog(); }}>
-      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="master-action-title" aria-describedby={pendingAction.action === "delete_permanently" ? "master-delete-warning" : undefined} className="panel w-full max-w-md rounded-t-3xl p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl sm:p-6">
-        <div className="flex items-start justify-between gap-4"><div><h2 id="master-action-title" className="text-lg font-semibold">{pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "disable" ? "Desativar conta" : pendingAction.action === "trash" ? "Mover para a lixeira" : "Excluir definitivamente?"}</h2><p className="muted mt-2 text-sm">{accountName(pendingAction.user)} · {pendingAction.user.email}</p></div><button type="button" aria-label="Fechar" disabled={Boolean(busy)} onClick={closeActionDialog} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-50"><X size={18}/></button></div>
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="master-action-title" aria-describedby={pendingAction.action === "delete_permanently" ? "master-delete-warning" : pendingAction.action === "archive_request" ? "master-archive-warning" : pendingAction.action === "reopen_request" ? "master-reopen-warning" : undefined} className="panel w-full max-w-md rounded-t-3xl p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl sm:p-6">
+        <div className="flex items-start justify-between gap-4"><div><h2 id="master-action-title" className="text-lg font-semibold">{pendingAction.action === "approve" ? "Aprovar acesso" : pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "disable" ? "Desativar conta" : pendingAction.action === "trash" ? "Mover para a lixeira" : pendingAction.action === "archive_request" ? "Arquivar solicitação" : pendingAction.action === "reopen_request" ? "Reabrir solicitação" : pendingAction.action === "restore" ? "Restaurar conta" : "Excluir definitivamente?"}</h2><p className="muted mt-2 text-sm">{accountName(pendingAction.user)} · {pendingAction.user.email}</p></div><button type="button" aria-label="Fechar" disabled={Boolean(busy)} onClick={closeActionDialog} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-50"><X size={18}/></button></div>
+        {pendingAction.action === "approve" && <p className="muted mt-4 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">O e-mail foi confirmado. Ao aprovar, o acesso financeiro desta conta será liberado. A decisão ficará registrada na auditoria.</p>}
+        {pendingAction.action === "archive_request" && <p id="master-archive-warning" className="muted mt-4 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">O pedido sairá da fila e irá para a lixeira, sem ser aprovado nem recusado. Você poderá reabri-lo depois.</p>}
+        {pendingAction.action === "reopen_request" && <p id="master-reopen-warning" className="muted mt-4 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">O pedido voltará à fila como aguardando análise. Reabrir não aprova nem libera a conta.</p>}
         {pendingAction.action === "delete_permanently" && <><p id="master-delete-warning" className="mt-4 rounded-xl border border-[var(--danger)]/25 bg-[var(--danger)]/5 p-3 text-xs leading-5 text-[var(--danger)]">A conta já está na lixeira. Esta ação remove a conta de autenticação e seus dados vinculados; não pode ser desfeita.</p><label className="mt-4 block text-xs font-medium" htmlFor="master-delete-password">Confirme sua senha Master</label><input id="master-delete-password" type="password" autoComplete="current-password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} className="field mt-2 min-h-11 w-full" />{deletePassword && <small className="muted mt-1 block text-xs">A senha é verificada pelo servidor e não fica salva no navegador.</small>}<label className="mt-4 block text-xs font-medium" htmlFor="master-delete-confirmation">Digite EXCLUIR para confirmar</label><input id="master-delete-confirmation" autoComplete="off" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} className="field mt-2 min-h-11 w-full" />{deleteConfirmation && deleteConfirmation !== "EXCLUIR" && <small className="mt-1 block text-xs text-[var(--danger)]">Digite exatamente EXCLUIR.</small>}</>}
-        <label className="mt-4 block text-xs font-medium" htmlFor="master-action-reason">Motivo para auditoria</label><select id="master-action-reason" value={reasonCode} onChange={(event) => setReasonCode(event.target.value)} className="field mt-2 min-h-11 w-full"><option value="duplicate_request">Solicitação duplicada</option><option value="incomplete_request">Informações incompletas</option><option value="policy_violation">Violação de política</option><option value="security_concern">Preocupação de segurança</option><option value="user_requested">Pedido do usuário</option><option value="other">Outro motivo</option></select>
-        <label className="mt-4 block text-xs font-medium" htmlFor="master-action-note">Observação (opcional)</label><textarea id="master-action-note" value={reasonNote} onChange={(event) => setReasonNote(event.target.value)} maxLength={280} rows={3} className="field mt-2 min-h-24 w-full resize-y py-3" placeholder="Até 280 caracteres" />
-        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" disabled={Boolean(busy)} onClick={closeActionDialog} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Cancelar</button><button type="button" disabled={Boolean(busy) || (pendingAction.action === "delete_permanently" && (deleteConfirmation !== "EXCLUIR" || deletePassword.length === 0))} onClick={() => void executeAction(pendingAction, { code: reasonCode, note: reasonNote.trim() }, deletePassword)} className={"min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-50 " + (pendingAction.action === "delete_permanently" || pendingAction.action === "reject" ? "bg-[var(--danger)] text-white" : "bg-[var(--accent)] text-[var(--accentfg)]")}>{busy ? "Processando…" : pendingAction.action === "delete_permanently" ? "Excluir definitivamente" : pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "trash" ? "Mover para lixeira" : "Confirmar"}</button></div>
+        {pendingAction.action !== "approve" && <><label className="mt-4 block text-xs font-medium" htmlFor="master-action-reason">Motivo para auditoria</label><select id="master-action-reason" value={reasonCode} onChange={(event) => setReasonCode(event.target.value)} className="field mt-2 min-h-11 w-full"><option value="duplicate_request">Solicitação duplicada</option><option value="incomplete_request">Informações incompletas</option><option value="policy_violation">Violação de política</option><option value="security_concern">Preocupação de segurança</option><option value="user_requested">Pedido do usuário</option><option value="other">Outro motivo</option></select></>}
+        <label className="mt-4 block text-xs font-medium" htmlFor="master-action-note">Observação (opcional)</label><textarea id="master-action-note" value={reasonNote} onChange={(event) => setReasonNote(event.target.value)} maxLength={pendingAction.action === "archive_request" || pendingAction.action === "reopen_request" ? 220 : 280} rows={3} className="field mt-2 min-h-24 w-full resize-y py-3" placeholder="Até 280 caracteres" />
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" disabled={Boolean(busy)} onClick={closeActionDialog} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Cancelar</button><button type="button" disabled={Boolean(busy) || (pendingAction.action === "delete_permanently" && (deleteConfirmation !== "EXCLUIR" || deletePassword.length === 0))} onClick={() => void executeAction(pendingAction, { code: reasonCode, note: reasonNote.trim() }, deletePassword)} className={"min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-50 " + (pendingAction.action === "delete_permanently" || pendingAction.action === "reject" ? "bg-[var(--danger)] text-white" : "bg-[var(--accent)] text-[var(--accentfg)]")}>{busy ? "Processando…" : pendingAction.action === "delete_permanently" ? "Excluir definitivamente" : pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "approve" ? "Aprovar acesso" : pendingAction.action === "archive_request" ? "Arquivar solicitação" : pendingAction.action === "reopen_request" ? "Reabrir solicitação" : pendingAction.action === "trash" ? "Mover para lixeira" : "Confirmar"}</button></div>
       </section>
     </div>}
   </section>;

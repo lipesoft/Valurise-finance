@@ -10,6 +10,7 @@ function encode(value: unknown) {
 }
 
 async function signInAsMaster(page: import("@playwright/test").Page, options: { manyRequests?: boolean; failedAudit?: boolean } = {}) {
+  let pendingRequestArchived = false;
   const now = Math.floor(Date.now() / 1000);
   const accessToken = encode({ alg: "none", typ: "JWT" }) + "." + encode({
     sub: masterId,
@@ -54,6 +55,16 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
     const method = route.request().method();
     if (method === "POST") {
       const body = route.request().postDataJSON() as { userId: string; action: string; reasonCode?: string };
+      if (body.userId === pendingId && body.action === "archive_request") {
+        pendingRequestArchived = true;
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+        return;
+      }
+      if (body.userId === pendingId && body.action === "reopen_request") {
+        pendingRequestArchived = false;
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+        return;
+      }
       if ((body.action === "approve" || body.action === "reject") && body.userId === pendingId) {
         route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
         return;
@@ -118,33 +129,50 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
       invite_state: "none",
       status: "pending_email",
     };
-    const allRequests = [...confirmedRequests, awaitingEmail].sort((first, second) => second.created_at.localeCompare(first.created_at));
+    const visibleConfirmedRequests = pendingRequestArchived ? [] : confirmedRequests;
+    const allRequests = [...visibleConfirmedRequests, awaitingEmail].sort((first, second) => second.created_at.localeCompare(first.created_at));
     const requestSearch = new URL(route.request().url()).searchParams.get("search")?.toLowerCase() || "";
     const filteredRequests = allRequests.filter((account) => !requestSearch || `${account.email} ${account.full_name} ${account.username}`.toLowerCase().includes(requestSearch));
     const requestPage = filteredRequests.slice((requestedPage - 1) * 25, requestedPage * 25);
+    const trashedAccount = pendingRequestArchived ? {
+      id: pendingId,
+      email: "pedido@valurise.invalid",
+      email_confirmed_at: new Date().toISOString(),
+      last_sign_in_at: null,
+      created_at: new Date().toISOString(),
+      full_name: "Pedido Confirmado",
+      username: "pedido.confirmado",
+      role: "user",
+      stored_status: "trashed",
+      request_status: "pending_review",
+      requested_at: new Date().toISOString(),
+      invite_id: null,
+      invite_state: "none",
+      status: "trashed",
+    } : {
+      id: trashedId,
+      email: "lixeira@valurise.invalid",
+      email_confirmed_at: new Date().toISOString(),
+      last_sign_in_at: null,
+      created_at: new Date().toISOString(),
+      full_name: "Conta de Teste na Lixeira",
+      username: "conta.lixeira",
+      role: "user",
+      stored_status: "trashed",
+      request_status: "rejected",
+      requested_at: new Date().toISOString(),
+      invite_id: null,
+      invite_state: "none",
+      status: "trashed",
+    };
     const pending = status === "requests" ? requestPage : status === "pending" ? options.manyRequests
-      ? confirmedRequests.slice((requestedPage - 1) * 25, requestedPage * 25)
-      : confirmedRequests : status === "pending_email" ? [awaitingEmail] : status === "trashed" ? [{
-        id: trashedId,
-        email: "lixeira@valurise.invalid",
-        email_confirmed_at: new Date().toISOString(),
-        last_sign_in_at: null,
-        created_at: new Date().toISOString(),
-        full_name: "Conta de Teste na Lixeira",
-        username: "conta.lixeira",
-        role: "user",
-        stored_status: "trashed",
-        request_status: "rejected",
-        requested_at: new Date().toISOString(),
-        invite_id: null,
-        invite_state: "none",
-        status: "trashed",
-      }] : [];
+      ? visibleConfirmedRequests.slice((requestedPage - 1) * 25, requestedPage * 25)
+      : visibleConfirmedRequests : status === "pending_email" ? [awaitingEmail] : status === "trashed" ? [trashedAccount] : [];
     const pendingTotal = status === "requests" ? filteredRequests.length : options.manyRequests && status === "pending" ? 26 : pending.length;
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ items: pending, total: status === "trashed" ? 1 : pendingTotal, page: requestedPage, pageSize: 25, stats: { pending: options.manyRequests ? 26 : 1, email_pending: 1, total: options.manyRequests ? 27 : 2, active: 1, disabled: 0, trashed: status === "trashed" ? 1 : 0, rejected: 0 } }),
+      body: JSON.stringify({ items: pending, total: status === "trashed" ? 1 : pendingTotal, page: requestedPage, pageSize: 25, stats: { pending: pendingRequestArchived ? 0 : options.manyRequests ? 26 : 1, email_pending: 1, total: options.manyRequests ? 27 : 2, active: 1, disabled: 0, trashed: status === "trashed" ? 1 : 0, rejected: 0 } }),
     });
   });
   await page.route("**/api/admin/invites**", async (route) => {
@@ -184,6 +212,9 @@ test("painel Master mostra pedidos confirmados, mantém os outros em espera e of
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.getByRole("button", { name: "Aprovar" }).click();
+  const approvalDialog = page.getByRole("dialog", { name: "Aprovar acesso" });
+  await expect(approvalDialog.getByText(/O e-mail foi confirmado/)).toBeVisible();
+  await approvalDialog.getByRole("button", { name: "Aprovar acesso" }).click();
   await expect(page.getByText("Acesso aprovado.")).toBeVisible();
 
   await page.getByRole("button", { name: "Usuários" }).click();
@@ -199,6 +230,32 @@ test("painel Master mostra pedidos confirmados, mantém os outros em espera e of
   await expect(page.getByRole("article").getByText("Acesso aprovado", { exact: true })).toBeVisible();
   await expect(page.locator("#master-audit-filter")).toBeVisible();
   await expect(page.getByLabel("Resultado")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("arquiva um pedido sem recusá-lo e permite reabri-lo pela lixeira", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signInAsMaster(page);
+
+  await page.getByRole("button", { name: "Arquivar solicitação" }).click();
+  const archiveDialog = page.getByRole("dialog", { name: "Arquivar solicitação" });
+  await expect(archiveDialog.getByText(/sem ser aprovado nem recusado/)).toBeVisible();
+  await archiveDialog.getByRole("button", { name: "Arquivar solicitação" }).click();
+  await expect(page.getByText("Solicitação arquivada na lixeira sem ser recusada.")).toBeVisible();
+  await expect(page.getByText("Nenhuma solicitação confirmada aguardando decisão.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Usuários" }).click();
+  await page.locator("#master-account-status").selectOption("trashed");
+  await expect(page.getByText("Pedido arquivado — ainda não aprovado nem recusado.")).toBeVisible();
+  await page.getByRole("button", { name: "Reabrir solicitação" }).click();
+  const reopenDialog = page.getByRole("dialog", { name: "Reabrir solicitação" });
+  await expect(reopenDialog.getByText(/Reabrir não aprova nem libera a conta/)).toBeVisible();
+  await reopenDialog.getByRole("button", { name: "Reabrir solicitação" }).click();
+  await expect(page.getByText("Solicitação reaberta e devolvida para análise.")).toBeVisible();
+
+  await page.getByRole("navigation", { name: "Seções do painel Master" }).getByRole("button", { name: /Solicitações/ }).click();
+  await expect(page.getByText("Pedido Confirmado")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Aprovar" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
