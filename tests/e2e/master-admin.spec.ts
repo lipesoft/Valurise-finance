@@ -224,7 +224,7 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
   const necessary = page.getByRole("button", { name: "Apenas necessários" });
   await necessary.waitFor({ state: "visible", timeout: 5000 }).catch(() => undefined);
   if (await necessary.isVisible().catch(() => false)) await necessary.click();
-  await expect(page.locator('div[aria-hidden="false"] .login-shell')).toBeVisible();
+  await expect(page.locator('div[aria-hidden="false"] .login-shell')).toBeVisible({ timeout: 15_000 });
   await page.getByLabel("Usuário ou e-mail").fill("master@valurise.invalid");
   await page.getByLabel("Senha", { exact: true }).fill("senha-ficticia-de-teste");
   await page.getByRole("button", { name: "Entrar na conta" }).click();

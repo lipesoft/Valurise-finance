@@ -101,7 +101,8 @@ export function ValuriseSplash({ status, onComplete }: ValuriseSplashProps) {
               src="/valurise-icon.webp"
               alt=""
               aria-hidden="true"
-              fill
+              width={192}
+              height={192}
               sizes="(max-width: 480px) 40vw, 192px"
               className={styles.logoImage}
               preload

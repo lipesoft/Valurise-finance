@@ -229,6 +229,14 @@ test("splash acompanha a sincronização real e expande a marca suavemente na en
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toMatch(/rgb\(18, 19, 26\)/);
 
   const mark = page.getByTestId("splash-mark");
+  const logo = mark.locator("img");
+  const markBox = await mark.boundingBox();
+  const logoBox = await logo.boundingBox();
+  expect(markBox).not.toBeNull();
+  expect(logoBox).not.toBeNull();
+  expect(logoBox!.width).toBeLessThanOrEqual(markBox!.width + 1);
+  expect(logoBox!.height).toBeLessThanOrEqual(markBox!.height + 1);
+  await expect.poll(() => logo.evaluate((element) => getComputedStyle(element.parentElement!).position)).toBe("absolute");
   for (const width of [375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

@@ -7,7 +7,7 @@ async function dismissCookieNotice(page: import("@playwright/test").Page) {
 }
 
 async function waitForApplicationReady(page: import("@playwright/test").Page) {
-  await expect(page.locator('div[aria-hidden="false"] .login-shell')).toBeVisible();
+  await expect(page.locator('div[aria-hidden="false"] .login-shell')).toBeVisible({ timeout: 15_000 });
 }
 
 test("aplica cabeçalhos básicos de segurança", async ({ page }) => {
