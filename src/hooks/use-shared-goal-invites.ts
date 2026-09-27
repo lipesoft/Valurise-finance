@@ -47,6 +47,7 @@ export type SharedGoalSummary = {
   current_cents: number;
   shared_goal_contributions: SharedGoalContribution[];
   participants: SharedGoalParticipant[];
+  currentUserIsOwner: boolean;
 };
 
 type InviteFeedback = (message: string) => void;
@@ -108,6 +109,18 @@ export function useSharedGoalInvites(
     const participantGoalIds = [...new Set([...goalIds, ...pendingIds])]
       .filter((id): id is string => typeof id === "string" && uuidPattern.test(id));
 
+    const ownerMembershipResult = localSharedGoalIds.length
+      ? await supabase
+          .from("shared_goal_members")
+          .select("shared_goal_id")
+          .eq("user_id", userId)
+          .eq("role", "owner")
+          .in("shared_goal_id", localSharedGoalIds)
+      : { data: [], error: null };
+    const ownedGoalIds = new Set(
+      (ownerMembershipResult.data || []).map((membership) => membership.shared_goal_id),
+    );
+
     const participantResult = participantGoalIds.length
       ? await supabase.rpc("list_shared_goal_participants", { p_goal_ids: participantGoalIds })
       : { data: [], error: null };
@@ -156,13 +169,14 @@ export function useSharedGoalInvites(
             current_cents: contributions.reduce((total, contribution) => total + contribution.amount_cents, 0),
             shared_goal_contributions: contributions,
             participants: participantsByGoal.get(goal.id) || [],
+            currentUserIsOwner: ownedGoalIds.has(goal.id),
           };
         });
     }
 
     setInvites(invitesWithInviter);
     setSharedGoals(nextGoals);
-    setLoadError(Boolean(participantResult.error));
+    setLoadError(Boolean(participantResult.error || ownerMembershipResult.error));
   }, [localSharedGoalIds, userId]);
 
   useEffect(() => {

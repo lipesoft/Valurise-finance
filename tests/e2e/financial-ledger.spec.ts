@@ -92,6 +92,10 @@ async function loginWithFinancialSeed(
       const ownsSharedGoal = (state.data.goals as { sharedGoalId?: string }[]).some((item) => item.sharedGoalId === sharedGoalId);
       return fulfillCors(route, 200, invites.some((invite) => invite.status === "accepted") || ownsSharedGoal ? [goal] : []);
     }
+    if (url.pathname === "/rest/v1/shared_goal_members") {
+      const ownsSharedGoal = (state.data.goals as { sharedGoalId?: string }[]).some((item) => item.sharedGoalId === sharedGoalId);
+      return fulfillCors(route, 200, ownsSharedGoal ? [{ shared_goal_id: sharedGoalId }] : []);
+    }
     if (url.pathname === "/rest/v1/rpc/list_shared_goal_participants") {
       return fulfillCors(route, 200, [
         { shared_goal_id: sharedGoalId, participant_name: "Lipe", participant_role: "owner", invitation_status: "owner" },
@@ -131,6 +135,24 @@ async function loginWithFinancialSeed(
         contributed_at: body.p_transaction_date,
       }];
       return fulfillCors(route, 200, { version, transaction });
+    }
+    if (url.pathname === "/rest/v1/rpc/delete_shared_goal") {
+      const body = request.postDataJSON() as { p_shared_goal_id: string; p_local_goal_id: string; p_expected_version: number };
+      const ownsGoal = options.ownedSharedGoal
+        && body.p_shared_goal_id === sharedGoalId
+        && (state.data.goals as { id: string; sharedGoalId?: string }[]).some((item) => item.id === body.p_local_goal_id && item.sharedGoalId === sharedGoalId);
+      if (!ownsGoal || body.p_expected_version !== version) {
+        return fulfillCors(route, ownsGoal ? 409 : 403, { code: ownsGoal ? "40001" : "42501", message: "permission denied" });
+      }
+      state = {
+        ...state,
+        data: {
+          ...state.data,
+          goals: (state.data.goals as { id: string; sharedGoalId?: string }[]).filter((item) => item.id !== body.p_local_goal_id),
+        },
+      };
+      version += 1;
+      return fulfillCors(route, 200, { version });
     }
     if (url.pathname === "/rest/v1/user_financial_state") {
       if (request.method() === "GET") return fulfillCors(route, 200, { state, version });
@@ -209,6 +231,7 @@ test("convite de meta chega, pode ser aceito e a meta compartilhada atualiza no 
   await expect(goalCard).toContainText("Meta compartilhada");
   await expect(goalCard).toContainText("Compartilhada por Lipe");
   await expect(goalCard).toContainText("R$ 0,00 de R$ 300.000,00");
+  await expect(goalCard.getByRole("button", { name: /Excluir a meta/ })).toHaveCount(0);
   await expect(goalCard.getByText("Extrato da meta")).toBeVisible();
   await goalCard.getByRole("button", { name: "+ Adicionar dinheiro" }).click();
   await page.getByLabel("Valor da contribuição").fill("125,00");
@@ -232,6 +255,24 @@ test("meta do titular mostra pessoas aceitas e convites pendentes", async ({ pag
   await expect(goalCard).toContainText("Compartilhada com Grazielle");
   await expect(goalCard).toContainText("Convite pendente para Vagner Guedes");
   await expect(goalCard).not.toContainText("financeiro@valurise.invalid");
+});
+
+test("criador pode excluir meta compartilhada e o participante não recebe ação de exclusão", async ({ page }) => {
+  await loginWithFinancialSeed(page, [], { ownedSharedGoal: true });
+  await page.getByRole("button", { name: "Metas", exact: true }).click();
+
+  const goalCard = page.locator("article").filter({ hasText: "Casa própria" });
+  await expect(goalCard.getByRole("button", { name: "Excluir a meta Casa própria" })).toBeVisible();
+  await expect(goalCard.getByRole("button", { name: /Editar a meta/ })).toHaveCount(0);
+  await goalCard.getByRole("button", { name: "Excluir a meta Casa própria" }).click();
+
+  const confirmation = page.getByRole("dialog");
+  await expect(confirmation).toContainText("serão removidos para todos os participantes");
+  await expect(confirmation).toContainText("lançamentos já registrados nos extratos permanecem");
+  await confirmation.getByRole("button", { name: "Excluir", exact: true }).click();
+
+  await expect(goalCard).toHaveCount(0);
+  await expect(page.getByText("Meta compartilhada excluída para todos os participantes.")).toBeVisible();
 });
 
 test("registra aporte com conta de origem e reverte o saldo ao excluir o lançamento", async ({ page }) => {

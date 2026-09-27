@@ -993,6 +993,73 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
     stateWriteQueue.current = operation.then(() => undefined).catch(() => undefined);
     return operation;
   };
+  const deleteSharedGoal = (input: { sharedGoalId: string; localGoalId: string }) => {
+    if (workspace.type !== "personal") {
+      setToast("A exclusão de metas compartilhadas está disponível no espaço pessoal.");
+      return Promise.resolve(false);
+    }
+
+    const operation = stateWriteQueue.current.catch(() => undefined).then(async () => {
+      if (stateConflictRef.current || stateVersionRef.current === null) {
+        setToast("Atualize os dados sincronizados antes de excluir esta meta.");
+        return false;
+      }
+      const localGoal = dataRef.current.goals?.find((goal) =>
+        goal.id === input.localGoalId && goal.sharedGoalId === input.sharedGoalId,
+      );
+      if (!localGoal) {
+        setToast("Esta meta mudou em outro dispositivo. Atualize os dados e tente novamente.");
+        return false;
+      }
+
+      const supabase = getSupabaseBrowserClient();
+      if (!supabase) {
+        setToast("A exclusão precisa de uma conexão ativa com sua conta.");
+        return false;
+      }
+
+      const { data: response, error } = await supabase.rpc("delete_shared_goal", {
+        p_shared_goal_id: input.sharedGoalId,
+        p_local_goal_id: input.localGoalId,
+        p_expected_version: stateVersionRef.current,
+      });
+      if (error) {
+        if (error.code === "40001") {
+          stateConflictRef.current = true;
+          setStateConflict(true);
+          setToast("Os dados mudaram em outro dispositivo. Atualize antes de excluir a meta.");
+        } else if (error.code === "42501") {
+          setToast("Somente quem criou a meta pode excluí-la.");
+        } else {
+          setToast("Não foi possível excluir a meta compartilhada. Tente novamente.");
+        }
+        return false;
+      }
+
+      const result = response as { version?: number } | null;
+      const nextVersion = Number(result?.version);
+      if (!result || !Number.isSafeInteger(nextVersion) || nextVersion <= stateVersionRef.current) {
+        setToast("A exclusão foi processada, mas não recebemos a confirmação da sincronização. Atualize os dados.");
+        stateConflictRef.current = true;
+        setStateConflict(true);
+        return false;
+      }
+
+      const nextData = {
+        ...dataRef.current,
+        goals: (dataRef.current.goals || []).filter((goal) => goal.id !== input.localGoalId),
+      };
+      dataRef.current = nextData;
+      setData(nextData);
+      localStorage.setItem(key + ":data", JSON.stringify(nextData));
+      stateVersionRef.current = nextVersion;
+      await inviteInbox.refresh();
+      return true;
+    });
+
+    stateWriteQueue.current = operation.then(() => undefined).catch(() => undefined);
+    return operation;
+  };
   const createCategory = (name: string) => {
     const clean = name.trim();
     if (!clean) return;
@@ -1298,7 +1365,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
           <Budgets data={data} tx={tx} month={month} save={saveData} toast={setToast} go={setView} />
         )}
         {view === "goals" && (
-          <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} invites={inviteInbox.invites} respondInvite={inviteInbox.respond} sharedGoals={inviteInbox.sharedGoals} recordSharedGoalContribution={recordSharedGoalContribution} userId={user.username} allowSharing={workspace.type === "personal"} />
+          <Goals data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} invites={inviteInbox.invites} respondInvite={inviteInbox.respond} sharedGoals={inviteInbox.sharedGoals} recordSharedGoalContribution={recordSharedGoalContribution} deleteSharedGoal={deleteSharedGoal} userId={user.username} allowSharing={workspace.type === "personal"} />
         )}
         {view === "categories" && (
           <Categories data={data} tx={tx} month={month} save={saveData} saveTx={saveTx} toast={setToast} />
@@ -2991,8 +3058,8 @@ function ItemActions({ onEdit, onDelete, label, className = "mt-3" }: { onEdit: 
     <button onClick={onDelete} className="inline-flex items-center gap-1.5 font-medium text-[var(--danger)]" aria-label={`Excluir ${label}`}><Trash2 size={14} />Excluir</button>
   </div>;
 }
-function DeleteConfirm({ title, description, confirm, close }: { title: string; description: string; confirm: () => void; close: () => void }) {
-  return <Sheet close={close}><section className="space-y-4"><div><b className="text-lg">{title}</b><p className="muted mt-2 text-sm leading-6">{description}</p></div><div className="flex gap-2"><button onClick={close} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium">Cancelar</button><button onClick={confirm} className="h-11 flex-1 rounded-xl bg-[var(--danger)] px-3 text-sm font-semibold text-white">Excluir</button></div></section></Sheet>;
+function DeleteConfirm({ title, description, confirm, close, busy = false }: { title: string; description: string; confirm: () => void; close: () => void; busy?: boolean }) {
+  return <Sheet close={close}><section className="space-y-4"><div><b className="text-lg">{title}</b><p className="muted mt-2 text-sm leading-6">{description}</p></div><div className="flex gap-2"><button onClick={close} disabled={busy} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium disabled:opacity-50">Cancelar</button><button onClick={confirm} disabled={busy} aria-busy={busy} className="h-11 flex-1 rounded-xl bg-[var(--danger)] px-3 text-sm font-semibold text-white disabled:opacity-60">{busy ? "Excluindo…" : "Excluir"}</button></div></section></Sheet>;
 }
 function centsInput(value?: number) {
   return value === undefined ? "" : (value / 100).toFixed(2).replace(".", ",");
@@ -3404,7 +3471,7 @@ function Budgets({ data, tx, month, save, toast, go }: any) {
     </section>
   );
 }
-function Goals({ data, transactions = [], save, saveTransactions, toast, invites = [], respondInvite, sharedGoals = [], recordSharedGoalContribution, userId, allowSharing = true }: any) {
+function Goals({ data, transactions = [], save, saveTransactions, toast, invites = [], respondInvite, sharedGoals = [], recordSharedGoalContribution, deleteSharedGoal, userId, allowSharing = true }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
@@ -3417,6 +3484,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
   const [contributionAccount, setContributionAccount] = useState("");
   const [contributionDate, setContributionDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [savingContribution, setSavingContribution] = useState(false);
+  const [deletingBusy, setDeletingBusy] = useState(false);
   const [sharingGoal, setSharingGoal] = useState<any | null>(null);
   const [recipientId, setRecipientId] = useState("");
   const [sharing, setSharing] = useState(false);
@@ -3598,7 +3666,9 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
                   <button onClick={() => { setContributionFor(item.id); setContribution(""); setContributionAccount(""); setContributionDate(format(new Date(), "yyyy-MM-dd")); }} className="text-sm font-medium text-[var(--accent)]">+ Adicionar dinheiro</button>
                   {allowSharing && <button onClick={() => setSharingGoal({ ...item, currentCents })} className="text-sm font-medium text-[var(--accent)]">{item.sharedGoalId ? "Convidar pessoa" : "Compartilhar"}</button>}
                 </div>
-                {!item.sharedGoalId && <ItemActions label={`a meta ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />}
+                {!item.sharedGoalId
+                  ? <ItemActions label={`a meta ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} />
+                  : sharedGoal?.currentUserIsOwner && <div className="mt-3 flex items-center gap-3 text-xs"><button onClick={() => setDeleting({ ...item, name: goalName })} className="inline-flex min-h-9 items-center gap-1.5 font-medium text-[var(--danger)]" aria-label={`Excluir a meta ${goalName}`}><Trash2 size={14} />Excluir</button></div>}
               </article>
             );
           })}
@@ -3697,7 +3767,38 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
         </Sheet>
       )}
       {allowSharing && sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Depois de aceitar, os participantes verão o nome exibido na sua conta e o progresso desta meta; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
-      {deleting && <DeleteConfirm title="Excluir meta?" description={`A meta “${deleting.name}” e o seu progresso individual serão removidos. Isso não apaga lançamentos da sua conta.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, goals: items.filter((item: any) => item.id !== deleting.id) }); toast("Meta excluída."); setDeleting(null); }} />}
+      {deleting && <DeleteConfirm
+        title={deleting.sharedGoalId ? "Excluir meta compartilhada?" : "Excluir meta?"}
+        description={deleting.sharedGoalId
+          ? `A meta “${deleting.name}”, seus convites e o progresso compartilhado serão removidos para todos os participantes. Os lançamentos já registrados nos extratos permanecem.`
+          : `A meta “${deleting.name}” e o seu progresso individual serão removidos. Isso não apaga lançamentos da sua conta.`}
+        close={() => { if (!deletingBusy) setDeleting(null); }}
+        busy={deletingBusy}
+        confirm={async () => {
+          if (deletingBusy) return;
+          if (!deleting.sharedGoalId) {
+            save({ ...data, goals: items.filter((item: any) => item.id !== deleting.id) });
+            toast("Meta excluída.");
+            setDeleting(null);
+            return;
+          }
+          const sharedGoal = (sharedGoals as SharedGoalSummary[]).find((goal) => goal.id === deleting.sharedGoalId);
+          if (!sharedGoal?.currentUserIsOwner) {
+            toast("Somente quem criou a meta pode excluí-la.");
+            setDeleting(null);
+            return;
+          }
+          setDeletingBusy(true);
+          try {
+            const deleted = await deleteSharedGoal({ sharedGoalId: deleting.sharedGoalId, localGoalId: deleting.id });
+            if (!deleted) return;
+            toast("Meta compartilhada excluída para todos os participantes.");
+            setDeleting(null);
+          } finally {
+            setDeletingBusy(false);
+          }
+        }}
+      />}
     </section>
   );
 }
