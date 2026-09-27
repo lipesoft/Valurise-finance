@@ -86,6 +86,8 @@ import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/
 import { WorkspaceDashboardHeader } from "@/components/dashboard/workspace-dashboard-header";
 import { MasterAdminPanel } from "@/components/master-admin-panel";
 import { MasterNotifications } from "@/components/master-notifications";
+import { FinanceIconBadge, FinanceIconPicker } from "@/components/finance-icons";
+import { inferBankIconId, inferCategoryIconId, resolveCategoryIconId, resolveInstitutionIconId, type FinanceIconId } from "@/lib/finance-icons";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -113,11 +115,13 @@ type Institution = {
   id: string;
   name: string;
   color: string;
-  accounts: { id: string; name: string; balance: number }[];
+  iconId?: FinanceIconId;
+  accounts: { id: string; name: string; balance: number; iconId?: FinanceIconId }[];
   cards: {
     id: string;
     name: string;
     limit: number;
+    iconId?: FinanceIconId;
     closingDay?: string;
     dueDay?: string;
     bestPurchaseDay?: string;
@@ -125,6 +129,7 @@ type Institution = {
 };
 type Data = {
   categories: string[];
+  categoryIcons?: Record<string, FinanceIconId>;
   institutions: Institution[];
   investments?: {
     id: string;
@@ -1350,7 +1355,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
           />
         )}{" "}
         {view === "statement" && (
-          <Statement tx={tx} month={month} save={saveTx} toast={setToast} />
+          <Statement tx={tx} month={month} save={saveTx} toast={setToast} categoryIcons={data.categoryIcons} />
         )}{" "}
         {view === "accounts" && (
           <Institutions data={data} save={saveData} toast={setToast} />
@@ -2071,7 +2076,7 @@ function DashboardWidgets({
     id === "flow" ? (
       <CashflowPreview key={id} sum={sum} />
     ) : id === "categories" ? (
-      <CategorySpendPreview key={id} sum={sum} />
+      <CategorySpendPreview key={id} sum={sum} categoryIcons={data.categoryIcons} />
     ) : id === "evolution" ? (
       <FinancialEvolution key={id} allTx={allTx} />
     ) : id === "improvements" ? (
@@ -2087,7 +2092,7 @@ function DashboardWidgets({
     ) : id === "accounts" ? (
       <AccountsDashboardPreview key={id} data={data} allTx={allTx} go={go} />
     ) : (
-      <RecentStatementPreview key={id} tx={tx} go={go} />
+      <RecentStatementPreview key={id} tx={tx} go={go} categoryIcons={data.categoryIcons} />
     );
   return (
     <section className="mt-4">
@@ -2255,7 +2260,7 @@ function CashflowPreview({ sum }: { sum: ReturnType<typeof calculateSummary> }) 
     </section>
   );
 }
-function CategorySpendPreview({ sum }: { sum: ReturnType<typeof calculateSummary> }) {
+function CategorySpendPreview({ sum, categoryIcons }: { sum: ReturnType<typeof calculateSummary>; categoryIcons?: Record<string, FinanceIconId> }) {
   const palette = ["#4edea3", "#7c8cff", "#f7bd5c", "#f48ea7", "#50bce9"];
   const categories =
     sum.topCategories.length > 5
@@ -2318,7 +2323,7 @@ function CategorySpendPreview({ sum }: { sum: ReturnType<typeof calculateSummary
           <div className="min-w-0 divide-y divide-[var(--border)]">
             {segments.slice(0, 4).map((item: any) => (
               <div className="flex min-w-0 items-center gap-2 py-2" key={item.category}>
-                <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+                <FinanceIconBadge iconId={resolveCategoryIconId(item.category, categoryIcons)} size={25} className="rounded-lg" />
                 <span className="min-w-0 flex-1 truncate text-xs">{item.category}</span>
                 <b className="shrink-0 text-xs">{Math.round((item.amountCents / sum.expenseCents) * 100)}%</b>
               </div>
@@ -2353,12 +2358,15 @@ function AccountsDashboardPreview({ data, allTx, go }: any) {
             );
             return (
               <div className="flex items-center justify-between gap-3 py-3" key={institution.id}>
-                <span className="min-w-0">
-                  <b className="block truncate text-sm">{institution.name}</b>
-                  <small className="muted block">
-                    {institution.accounts.length || 0} conta(s) · {institution.cards.length || 0} cartão(ões)
-                  </small>
-                </span>
+                <div className="flex min-w-0 items-center gap-3">
+                  <FinanceIconBadge iconId={resolveInstitutionIconId(institution)} size={36} />
+                  <span className="min-w-0">
+                    <b className="block truncate text-sm">{institution.name}</b>
+                    <small className="muted block">
+                      {institution.accounts.length || 0} conta(s) · {institution.cards.length || 0} cartão(ões)
+                    </small>
+                  </span>
+                </div>
                 <b className="shrink-0 text-sm">{formatBRL(balance)}</b>
               </div>
             );
@@ -2370,7 +2378,7 @@ function AccountsDashboardPreview({ data, allTx, go }: any) {
     </section>
   );
 }
-function RecentStatementPreview({ tx, go }: { tx: FinanceTransaction[]; go: (view: View) => void }) {
+function RecentStatementPreview({ tx, go, categoryIcons }: { tx: FinanceTransaction[]; go: (view: View) => void; categoryIcons?: Record<string, FinanceIconId> }) {
   return (
     <section className="panel rounded-2xl p-5">
       <div className="flex items-center justify-between gap-3">
@@ -2387,16 +2395,14 @@ function RecentStatementPreview({ tx, go }: { tx: FinanceTransaction[]; go: (vie
           {tx.slice(0, 4).map((item) => {
             const positive = item.type === "income";
             const transfer = item.type === "transfer";
-            const Icon = positive ? ArrowDownLeft : transfer ? WalletCards : item.type === "investment" ? BarChart3 : ArrowUpRight;
             const place = transfer ? `${item.account} → ${item.destinationAccount}` : item.account;
+            const iconId = transfer ? "transfer" : item.type === "investment" ? "investment" : resolveCategoryIconId(item.category, categoryIcons);
             return (
               <div
                 className="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-x-3 py-3 sm:grid-cols-[2.25rem_minmax(0,1fr)_auto] sm:items-center"
                 key={item.id}
               >
-                <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${positive ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)]"}`}>
-                  <Icon size={16} />
-                </span>
+                <FinanceIconBadge iconId={iconId} size={36} />
                 <span className="min-w-0 flex-1">
                   <b className="block truncate text-sm">{item.description || item.category}</b>
                   <small className="muted mt-0.5 block truncate">
@@ -5178,6 +5184,11 @@ function Institutions({ data, save, toast }: any) {
   const [accountName, setAccountName] = useState("");
   const [targetInstitution, setTargetInstitution] = useState("");
   const [extraAccount, setExtraAccount] = useState("");
+  const [institutionIconId, setInstitutionIconId] = useState<FinanceIconId | "">("");
+  const [accountIconId, setAccountIconId] = useState<FinanceIconId | "">("");
+  const [editingIconId, setEditingIconId] = useState<FinanceIconId | "">("");
+  const selectedInstitution = data.institutions.find((institution: Institution) => institution.id === targetInstitution);
+  const resetAdding = () => { setAdding(false); setN(""); setAccountName(""); setTargetInstitution(""); setExtraAccount(""); setInstitutionIconId(""); setAccountIconId(""); };
   const addAccount = () => {
     if (!targetInstitution || !extraAccount.trim()) return;
     const institutions = data.institutions.map((institution: Institution) =>
@@ -5190,6 +5201,7 @@ function Institutions({ data, save, toast }: any) {
                 id: crypto.randomUUID(),
                 name: extraAccount.trim(),
                 balance: 0,
+                ...(accountIconId ? { iconId: accountIconId } : {}),
               },
             ],
           }
@@ -5198,23 +5210,25 @@ function Institutions({ data, save, toast }: any) {
     save({ ...data, institutions });
     toast("Conta adicionada com sucesso.");
     setExtraAccount("");
+    setAccountIconId("");
+    setTargetInstitution("");
     setAdding(false);
   };
   const saveEdit = () => {
     if (!editing || !n.trim()) return;
     const institutions = data.institutions.map((institution: Institution) => {
       if (institution.id !== editing.institution.id) return institution;
-      if (!editing.account) return { ...institution, name: n.trim() };
-      return { ...institution, accounts: institution.accounts.map((account: any) => account.id === editing.account.id ? { ...account, name: n.trim() } : account) };
+      if (!editing.account) return { ...institution, name: n.trim(), iconId: editingIconId || undefined };
+      return { ...institution, accounts: institution.accounts.map((account: any) => account.id === editing.account.id ? { ...account, name: n.trim(), iconId: editingIconId || undefined } : account) };
     });
-    save({ ...data, institutions }); toast(editing.account ? "Conta atualizada com sucesso." : "Instituição atualizada com sucesso."); setEditing(null); setN("");
+    save({ ...data, institutions }); toast(editing.account ? "Conta atualizada com sucesso." : "Instituição atualizada com sucesso."); setEditing(null); setN(""); setEditingIconId("");
   };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
         title="Contas"
         help="Cadastre a instituição uma vez e inclua as contas dentro dela. Os saldos acompanham os lançamentos e transferências."
-        onAdd={() => setAdding(true)}
+        onAdd={() => { resetAdding(); setAdding(true); }}
         addLabel="Adicionar conta ou instituição"
       />
       <p className="muted mt-2 text-sm">
@@ -5224,11 +5238,11 @@ function Institutions({ data, save, toast }: any) {
         <div className="mt-6 space-y-3">
           {data.institutions.map((i: Institution) => (
             <div className="panel rounded-2xl p-4" key={i.id}>
-              <div className="flex items-start justify-between gap-3"><b className="min-w-0 truncate">{i.name}</b><ItemActions className="mt-0 shrink-0" label={`a instituição ${i.name}`} onEdit={() => { setEditing({ institution: i }); setN(i.name); }} onDelete={() => setDeleting({ institution: i })} /></div>
+              <div className="flex items-start justify-between gap-3"><span className="flex min-w-0 items-center gap-3"><FinanceIconBadge iconId={resolveInstitutionIconId(i)} size={40}/><b className="min-w-0 truncate">{i.name}</b></span><ItemActions className="mt-0 shrink-0" label={`a instituição ${i.name}`} onEdit={() => { setEditing({ institution: i }); setN(i.name); setEditingIconId(i.iconId || ""); }} onDelete={() => setDeleting({ institution: i })} /></div>
               <p className="muted mt-1 text-sm">
                 {i.accounts.map((x) => x.name).join(", ") || "Sem conta"}
               </p>
-              {i.accounts.length > 0 && <div className="mt-3 divide-y divide-[var(--border)]">{i.accounts.map((account: any) => <div key={account.id} className="flex items-center justify-between gap-3 py-2"><span className="min-w-0"><b className="block truncate text-sm">{account.name}</b><small className="muted">Saldo inicial: {formatBRL(account.balance || 0)}</small></span><ItemActions className="mt-0 shrink-0" label={`a conta ${account.name}`} onEdit={() => { setEditing({ institution: i, account }); setN(account.name); }} onDelete={() => setDeleting({ institution: i, account })} /></div>)}</div>}
+              {i.accounts.length > 0 && <div className="mt-3 divide-y divide-[var(--border)]">{i.accounts.map((account: any) => <div key={account.id} className="flex items-center justify-between gap-3 py-2"><span className="flex min-w-0 items-center gap-3"><FinanceIconBadge iconId={account.iconId || resolveInstitutionIconId(i)} size={32}/><span className="min-w-0"><b className="block truncate text-sm">{account.name}</b><small className="muted">Saldo inicial: {formatBRL(account.balance || 0)}</small></span></span><ItemActions className="mt-0 shrink-0" label={`a conta ${account.name}`} onEdit={() => { setEditing({ institution: i, account }); setN(account.name); setEditingIconId(account.iconId || ""); }} onDelete={() => setDeleting({ institution: i, account })} /></div>)}</div>}
             </div>
           ))}
         </div>
@@ -5236,7 +5250,7 @@ function Institutions({ data, save, toast }: any) {
         <Empty text="Você ainda não cadastrou nenhuma instituição." />
       )}
       {adding && (
-        <Sheet close={() => setAdding(false)}>
+        <Sheet close={resetAdding}>
           <section className="space-y-3">
             <b className="text-lg">Adicionar instituição</b>
             <p className="muted text-sm">
@@ -5249,6 +5263,7 @@ function Institutions({ data, save, toast }: any) {
               onChange={(e) => setN(e.target.value)}
               placeholder="Nova instituição"
             />
+            <FinanceIconPicker label="Símbolo da instituição" value={institutionIconId} onChange={setInstitutionIconId} autoIconId={inferBankIconId(n) || "bank"} autoLabel="Automático" />
             <input
               className="field"
               value={accountName}
@@ -5257,15 +5272,16 @@ function Institutions({ data, save, toast }: any) {
             />
             <button
               onClick={() => {
-                if (n) {
+                if (n.trim()) {
                   save({
                     ...data,
                     institutions: [
                       ...data.institutions,
                       {
                         id: crypto.randomUUID(),
-                        name: n,
+                        name: n.trim(),
                         color: "#4edea3",
+                        ...(institutionIconId ? { iconId: institutionIconId } : {}),
                         accounts: accountName.trim()
                           ? [
                               {
@@ -5282,10 +5298,11 @@ function Institutions({ data, save, toast }: any) {
                   toast("Instituição criada com sucesso.");
                   setN("");
                   setAccountName("");
+                  setInstitutionIconId("");
                   setAdding(false);
                 }
               }}
-              aria-label="Adicionar instituição"
+              aria-label="Criar instituição"
               className="primary h-11 w-full rounded-xl text-sm"
             >
               Criar instituição
@@ -5298,7 +5315,7 @@ function Institutions({ data, save, toast }: any) {
                 </b>
                 <select
                   value={targetInstitution}
-                  onChange={(event) => setTargetInstitution(event.target.value)}
+                  onChange={(event) => { setTargetInstitution(event.target.value); setAccountIconId(""); }}
                   className="field"
                 >
                   <option value="">Escolha a instituição</option>
@@ -5314,6 +5331,7 @@ function Institutions({ data, save, toast }: any) {
                   onChange={(event) => setExtraAccount(event.target.value)}
                   placeholder="Ex.: Conta digital, carteira"
                 />
+                {selectedInstitution && <FinanceIconPicker label="Símbolo da conta" value={accountIconId} onChange={setAccountIconId} autoIconId={resolveInstitutionIconId(selectedInstitution)} autoLabel="Usar banco" />}
                 <button
                   onClick={addAccount}
                   className="primary h-11 w-full rounded-xl text-sm"
@@ -5325,7 +5343,7 @@ function Institutions({ data, save, toast }: any) {
           </section>
         </Sheet>
       )}
-      {editing && <Sheet close={() => { setEditing(null); setN(""); }}><section className="space-y-3"><b className="text-lg">Editar {editing.account ? "conta" : "instituição"}</b><input autoFocus className="field" value={n} onChange={(event) => setN(event.target.value)} placeholder={editing.account ? "Nome da conta" : "Nome da instituição"}/><button onClick={saveEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
+      {editing && <Sheet close={() => { setEditing(null); setN(""); setEditingIconId(""); }}><section className="space-y-3"><b className="text-lg">Editar {editing.account ? "conta" : "instituição"}</b><input autoFocus className="field" value={n} onChange={(event) => setN(event.target.value)} placeholder={editing.account ? "Nome da conta" : "Nome da instituição"}/><FinanceIconPicker label={`Símbolo da ${editing.account ? "conta" : "instituição"}`} value={editingIconId} onChange={setEditingIconId} autoIconId={editing.account ? resolveInstitutionIconId(editing.institution) : inferBankIconId(n) || "bank"} autoLabel="Automático"/><button onClick={saveEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
       {deleting && <DeleteConfirm title={`Excluir ${deleting.account ? "conta" : "instituição"}?`} description={deleting.account ? `A conta “${deleting.account.name}” será removida. Confirme somente se não houver lançamentos que dependam dela.` : `A instituição “${deleting.institution.name}”, suas contas e cartões serão removidos da sua organização. Lançamentos históricos permanecem no extrato.`} close={() => setDeleting(null)} confirm={() => { const institutions = data.institutions.flatMap((institution: Institution) => { if (institution.id !== deleting.institution.id) return [institution]; if (!deleting.account) return []; return [{ ...institution, accounts: institution.accounts.filter((account: any) => account.id !== deleting.account.id) }]; }); save({ ...data, institutions }); toast(deleting.account ? "Conta excluída." : "Instituição excluída."); setDeleting(null); }} />}
     </section>
   );
@@ -5339,6 +5357,9 @@ function Cards({ data, save, toast }: any) {
   const [limit, setLimit] = useState("");
   const [closingDay, setClosingDay] = useState("");
   const [dueDay, setDueDay] = useState("");
+  const [iconId, setIconId] = useState<FinanceIconId | "">("");
+  const selectedInstitution = data.institutions.find((institution: Institution) => institution.id === institutionId);
+  const resetForm = () => { setNickname(""); setLimit(""); setClosingDay(""); setDueDay(""); setIconId(""); setInstitutionId(""); setAdding(false); setEditing(null); };
 
   const saveCard = () => {
     if (!institutionId || !Number(limit.replace(",", "."))) return;
@@ -5349,24 +5370,20 @@ function Cards({ data, save, toast }: any) {
             cards: editing ? institution.cards.map((card: any) => card.id === editing.card.id ? {
                 ...card,
                 name: nickname.trim() || "Crédito",
+                iconId: iconId || undefined,
                 limit: Math.round(Number(limit.replace(",", ".")) * 100),
                 closingDay: closingDay || undefined,
                 dueDay: dueDay || undefined,
                 bestPurchaseDay: bestPurchaseDay(closingDay)?.toString(),
-              } : card) : [...institution.cards, { id: crypto.randomUUID(), name: nickname.trim() || "Crédito", limit: Math.round(Number(limit.replace(",", ".")) * 100), closingDay: closingDay || undefined, dueDay: dueDay || undefined, bestPurchaseDay: bestPurchaseDay(closingDay)?.toString() }],
+              } : card) : [...institution.cards, { id: crypto.randomUUID(), name: nickname.trim() || "Crédito", limit: Math.round(Number(limit.replace(",", ".")) * 100), iconId: iconId || undefined, closingDay: closingDay || undefined, dueDay: dueDay || undefined, bestPurchaseDay: bestPurchaseDay(closingDay)?.toString() }],
           }
         : institution,
     );
     save({ ...data, institutions });
     toast(editing ? "Cartão atualizado com sucesso." : "Cartão criado com sucesso.");
-    setNickname("");
-    setLimit("");
-    setClosingDay("");
-    setDueDay("");
-    setAdding(false);
-    setEditing(null);
+    resetForm();
   };
-  const startEdit = ({ institution, card }: { institution: Institution; card: any }) => { setEditing({ institution, card }); setInstitutionId(institution.id); setNickname(card.name); setLimit(centsInput(card.limit)); setClosingDay(card.closingDay || ""); setDueDay(card.dueDay || ""); setAdding(true); };
+  const startEdit = ({ institution, card }: { institution: Institution; card: any }) => { setEditing({ institution, card }); setInstitutionId(institution.id); setNickname(card.name); setLimit(centsInput(card.limit)); setClosingDay(card.closingDay || ""); setDueDay(card.dueDay || ""); setIconId(card.iconId || ""); setAdding(true); };
 
   const cards = data.institutions.flatMap((institution: Institution) =>
     institution.cards.map((card) => ({ institution, card })),
@@ -5376,7 +5393,7 @@ function Cards({ data, save, toast }: any) {
       <SectionTitle
         title="Cartões"
         help="Escolha uma instituição e crie o cartão dentro dela. O apelido evita nomes redundantes e facilita a escolha no lançamento."
-        onAdd={() => setAdding(true)}
+        onAdd={() => { resetForm(); setAdding(true); }}
         addLabel="Adicionar cartão"
       />
       <p className="muted mt-2 text-sm">
@@ -5386,10 +5403,7 @@ function Cards({ data, save, toast }: any) {
         <div className="mt-5 space-y-3">
           {cards.map(({ institution, card }) => (
             <article className="panel rounded-2xl p-4" key={card.id}>
-              <b>{institution.name}</b>
-              <p className="muted mt-1 text-sm">
-                {card.name} · crédito · limite {formatBRL(card.limit)}
-              </p>
+              <div className="flex items-center gap-3"><FinanceIconBadge iconId={card.iconId || resolveInstitutionIconId(institution)} size={42}/><span className="min-w-0"><b className="block truncate">{institution.name}</b><p className="muted mt-1 text-sm">{card.name} · crédito · limite {formatBRL(card.limit)}</p></span></div>
               {(card.closingDay || card.dueDay) && (
                 <p className="muted mt-1 text-xs">
                   Fecha dia {card.closingDay || "—"} · vence dia{" "}
@@ -5409,10 +5423,11 @@ function Cards({ data, save, toast }: any) {
         <Empty text="Você ainda não possui cartões cadastrados." />
       )}
       {data.institutions.length && (adding || editing) ? (
-        <Sheet close={() => { setAdding(false); setEditing(null); }}>
+        <Sheet close={resetForm}>
           <section className="space-y-3">
             <b className="text-sm">{editing ? "Editar cartão" : "Adicionar cartão"}</b>
             <select
+              aria-label="Instituição do cartão"
               value={institutionId}
               onChange={(event) => setInstitutionId(event.target.value)}
               className="field"
@@ -5424,6 +5439,7 @@ function Cards({ data, save, toast }: any) {
                 </option>
               ))}
             </select>
+            {selectedInstitution && <FinanceIconPicker label="Símbolo do cartão" value={iconId} onChange={setIconId} autoIconId={resolveInstitutionIconId(selectedInstitution)} autoLabel={`Automático · ${selectedInstitution.name}`} />}
             <input
               value={nickname}
               onChange={(event) => setNickname(event.target.value)}
@@ -5473,6 +5489,7 @@ function Cards({ data, save, toast }: any) {
 function Categories({ data, tx, month, save, saveTx, toast }: any) {
   const [n, setN] = useState("");
   const [tag, setTag] = useState("");
+  const [categoryIconId, setCategoryIconId] = useState<FinanceIconId | "">("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{ kind: "category" | "tag"; value: string } | null>(null);
   const [deleting, setDeleting] = useState<{ kind: "category" | "tag"; value: string } | null>(null);
@@ -5484,7 +5501,14 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
       toast("Já existe uma categoria com esse nome.");
       return;
     }
-    if (editing.kind === "category") { save({ ...data, categories: data.categories.map((item: string) => item === oldValue ? nextValue : item), budgets: (data.budgets || []).map((item: any) => item.category === oldValue ? { ...item, category: nextValue } : item) }); saveTx(tx.map((item: FinanceTransaction) => item.category === oldValue ? { ...item, category: nextValue } : item)); }
+    if (editing.kind === "category") {
+      const categoryIcons = { ...(data.categoryIcons || {}) } as Record<string, FinanceIconId>;
+      delete categoryIcons[oldValue];
+      delete categoryIcons[nextValue];
+      if (categoryIconId) categoryIcons[nextValue] = categoryIconId;
+      save({ ...data, categoryIcons, categories: data.categories.map((item: string) => item === oldValue ? nextValue : item), budgets: (data.budgets || []).map((item: any) => item.category === oldValue ? { ...item, category: nextValue } : item) });
+      saveTx(tx.map((item: FinanceTransaction) => item.category === oldValue ? { ...item, category: nextValue } : item));
+    }
     else save({ ...data, tags: (data.tags || []).map((item: string) => item === oldValue ? nextValue : item) });
     toast(`${editing.kind === "category" ? "Categoria" : "Etiqueta"} atualizada com sucesso.`); setEditing(null); setEditValue("");
   };
@@ -5496,14 +5520,15 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
         onAdd={() => setAdding(true)}
         addLabel="Adicionar categoria"
       />
-      <CategorySpendingDonut tx={tx.filter((item: FinanceTransaction) => isSameMonth(new Date(item.date), month))} />
+      <CategorySpendingDonut tx={tx.filter((item: FinanceTransaction) => isSameMonth(new Date(item.date), month))} categoryIcons={data.categoryIcons} />
       <div className="mt-5 flex flex-wrap gap-2">
         {data.categories.map((x: string) => (
           <span
-            className="rounded-full bg-[var(--panel2)] px-3 py-2 text-sm"
+            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--panel2)] py-1.5 pl-2 pr-3 text-sm"
             key={x}
           >
-            <span>{x}</span><button className="ml-2 text-[var(--accent)]" aria-label={`Editar categoria ${x}`} onClick={() => { setEditing({ kind: "category", value: x }); setEditValue(x); }}><Pencil size={12} /></button><button className="ml-1 text-[var(--danger)]" aria-label={`Excluir categoria ${x}`} onClick={() => setDeleting({ kind: "category", value: x })}><Trash2 size={12} /></button>
+            <FinanceIconBadge iconId={resolveCategoryIconId(x, data.categoryIcons)} size={24} className="rounded-full" />
+            <span>{x}</span><button className="ml-1 text-[var(--accent)]" aria-label={`Editar categoria ${x}`} onClick={() => { setEditing({ kind: "category", value: x }); setEditValue(x); setCategoryIconId(data.categoryIcons?.[x] || ""); }}><Pencil size={12} /></button><button className="text-[var(--danger)]" aria-label={`Excluir categoria ${x}`} onClick={() => setDeleting({ kind: "category", value: x })}><Trash2 size={12} /></button>
           </span>
         ))}
       </div>
@@ -5547,7 +5572,7 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
         </div>
       </section>
       {adding && (
-        <Sheet close={() => setAdding(false)}>
+        <Sheet close={() => { setAdding(false); setN(""); setCategoryIconId(""); }}>
           <section className="space-y-3">
             <b className="text-lg">Nova categoria</b>
             <input
@@ -5556,7 +5581,9 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
               onChange={(e) => setN(e.target.value)}
               placeholder="Nova categoria"
             />
+            <FinanceIconPicker label="Símbolo da categoria" value={categoryIconId} onChange={setCategoryIconId} collection="category" autoIconId={inferCategoryIconId(n)} autoLabel="Automático" />
             <button
+              aria-label="Criar categoria"
               onClick={() => {
                 const clean = n.trim();
                 if (clean && data.categories.some((item: string) => item.toLocaleLowerCase("pt-BR") === clean.toLocaleLowerCase("pt-BR"))) {
@@ -5564,9 +5591,10 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
                   return;
                 }
                 if (clean) {
-                  save({ ...data, categories: [...data.categories, clean] });
+                  save({ ...data, categoryIcons: { ...(data.categoryIcons || {}), ...(categoryIconId ? { [clean]: categoryIconId } : {}) }, categories: [...data.categories, clean] });
                   toast("Categoria criada com sucesso.");
                   setN("");
+                  setCategoryIconId("");
                   setAdding(false);
                 }
               }}
@@ -5577,12 +5605,12 @@ function Categories({ data, tx, month, save, saveTx, toast }: any) {
           </section>
         </Sheet>
       )}
-      {editing && <Sheet close={() => setEditing(null)}><section className="space-y-3"><b className="text-lg">Editar {editing.kind === "category" ? "categoria" : "etiqueta"}</b><input autoFocus className="field" value={editValue} onChange={(event) => setEditValue(event.target.value)} /><button onClick={applyEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
-      {deleting && <DeleteConfirm title={`Excluir ${deleting.kind === "category" ? "categoria" : "etiqueta"}?`} description={deleting.kind === "category" ? (data.budgets?.some((item: any) => item.category === deleting.value) ? `A categoria “${deleting.value}” está vinculada a um orçamento. Mova ou exclua o orçamento antes de remover a categoria; assim seu planejamento não será apagado sem aviso.` : `A categoria “${deleting.value}” sairá da lista. Lançamentos anteriores continuarão no extrato com a classificação original.`) : `A etiqueta “${deleting.value}” será removida da lista de etiquetas disponíveis.`} close={() => setDeleting(null)} confirm={() => { if (deleting.kind === "category") { if (data.budgets?.some((item: any) => item.category === deleting.value)) { toast("Mova ou exclua o orçamento vinculado antes de remover esta categoria."); setDeleting(null); return; } save({ ...data, categories: data.categories.filter((item: string) => item !== deleting.value) }); } else save({ ...data, tags: (data.tags || []).filter((item: string) => item !== deleting.value) }); toast(`${deleting.kind === "category" ? "Categoria" : "Etiqueta"} excluída.`); setDeleting(null); }} />}
+      {editing && <Sheet close={() => { setEditing(null); setCategoryIconId(""); }}><section className="space-y-3"><b className="text-lg">Editar {editing.kind === "category" ? "categoria" : "etiqueta"}</b><input autoFocus className="field" value={editValue} onChange={(event) => setEditValue(event.target.value)} />{editing.kind === "category" && <FinanceIconPicker label="Símbolo da categoria" value={categoryIconId} onChange={setCategoryIconId} collection="category" autoIconId={inferCategoryIconId(editValue)} autoLabel="Automático"/>}<button onClick={applyEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
+      {deleting && <DeleteConfirm title={`Excluir ${deleting.kind === "category" ? "categoria" : "etiqueta"}?`} description={deleting.kind === "category" ? (data.budgets?.some((item: any) => item.category === deleting.value) ? `A categoria “${deleting.value}” está vinculada a um orçamento. Mova ou exclua o orçamento antes de remover a categoria; assim seu planejamento não será apagado sem aviso.` : `A categoria “${deleting.value}” sairá da lista. Lançamentos anteriores continuarão no extrato com a classificação original.`) : `A etiqueta “${deleting.value}” será removida da lista de etiquetas disponíveis.`} close={() => setDeleting(null)} confirm={() => { if (deleting.kind === "category") { if (data.budgets?.some((item: any) => item.category === deleting.value)) { toast("Mova ou exclua o orçamento vinculado antes de remover esta categoria."); setDeleting(null); return; } const categoryIcons = { ...(data.categoryIcons || {}) } as Record<string, FinanceIconId>; delete categoryIcons[deleting.value]; save({ ...data, categoryIcons, categories: data.categories.filter((item: string) => item !== deleting.value) }); } else save({ ...data, tags: (data.tags || []).filter((item: string) => item !== deleting.value) }); toast(`${deleting.kind === "category" ? "Categoria" : "Etiqueta"} excluída.`); setDeleting(null); }} />}
     </section>
   );
 }
-function CategorySpendingDonut({ tx }: { tx: FinanceTransaction[] }) {
+function CategorySpendingDonut({ tx, categoryIcons }: { tx: FinanceTransaction[]; categoryIcons?: Record<string, FinanceIconId> }) {
   const palette = ["#4edea3", "#7c8cff", "#f7bd5c", "#f48ea7", "#50bce9", "#b993f2"];
   const items = Object.entries(
     tx
@@ -5659,7 +5687,7 @@ function CategorySpendingDonut({ tx }: { tx: FinanceTransaction[] }) {
               const percentage = Math.round((item.amountCents / total) * 100);
               return (
                 <div className="flex min-w-0 items-center gap-3 py-2.5" key={item.name}>
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: palette[index % palette.length] }} />
+                  <FinanceIconBadge iconId={resolveCategoryIconId(item.name, categoryIcons)} size={30} />
                   <span className="min-w-0 flex-1">
                     <b className="block truncate text-sm">{item.name}</b>
                     <small className="muted">{percentage}% dos gastos</small>
@@ -5676,7 +5704,7 @@ function CategorySpendingDonut({ tx }: { tx: FinanceTransaction[] }) {
     </section>
   );
 }
-function Statement({ tx, month, save, toast }: any) {
+function Statement({ tx, month, save, toast, categoryIcons }: any) {
   const [query, setQuery] = useState("");
   const [type, setType] = useState("all");
   const [min, setMin] = useState("");
@@ -5784,6 +5812,7 @@ function Statement({ tx, month, save, toast }: any) {
                       : x.type === "investment"
                         ? "Aporte"
                         : x.category;
+                    const iconId = transfer ? "transfer" : x.type === "investment" ? "investment" : resolveCategoryIconId(x.category, categoryIcons);
                     return (
                       <motion.button
                         onClick={() => setSelected(x)}
@@ -5795,19 +5824,7 @@ function Statement({ tx, month, save, toast }: any) {
                         className="flex w-full items-center gap-3 border-b border-[var(--border)] py-4 text-left last:border-0 hover:bg-[var(--panel2)]"
                         key={x.id}
                       >
-                        <span
-                          className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${positive ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)]"}`}
-                        >
-                          {positive ? (
-                            <ArrowDownLeft size={18} />
-                          ) : transfer ? (
-                            <WalletCards size={18} />
-                          ) : x.type === "investment" ? (
-                            <BarChart3 size={18} />
-                          ) : (
-                            <ArrowUpRight size={18} />
-                          )}
-                        </span>
+                        <FinanceIconBadge iconId={iconId} size={40} />
                         <span className="min-w-0 flex-1">
                           <b className="block truncate text-sm">
                             {x.description || x.category}

@@ -52,10 +52,12 @@ async function fulfillCors(route: Route, status: number, body?: unknown) {
 async function loginWithFinancialSeed(
   page: Page,
   initialInvites: Record<string, unknown>[] = [],
-  options: { ownedSharedGoal?: boolean } = {},
+  options: { ownedSharedGoal?: boolean; transactions?: Record<string, unknown>[]; categoryIcons?: Record<string, string> } = {},
 ) {
   const sharedGoalId = "00000000-0000-4000-8000-000000000777";
   let state = initialState(options.ownedSharedGoal ? sharedGoalId : undefined);
+  if (options.categoryIcons) state.data.categoryIcons = options.categoryIcons;
+  if (options.transactions) state.transactions = options.transactions;
   let version = 1;
   let invites = [...initialInvites];
   let contributions: Record<string, unknown>[] = [];
@@ -344,4 +346,70 @@ test("parcelamento no cartão divide centavos, cria parcelas futuras e reserva l
   await expect(page.getByText(/Comprometido:/)).toContainText(/100,00/);
   await expect(page.getByText(/Próxima fatura:/)).toContainText(/33,33/);
   await expect(page.getByText(/disponível:/)).toContainText(/1\.900,00/);
+});
+
+test("banco selecionado aplica sua marca SVG no cartão e permite personalizar ícones", async ({ page }) => {
+  await loginWithFinancialSeed(page);
+  await page.getByRole("button", { name: "Contas", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar conta ou instituição" }).click();
+  await page.getByPlaceholder("Nova instituição").fill("Nubank");
+  await page.getByPlaceholder("Nome da conta (opcional)").fill("Conta principal");
+  await expect(page.getByRole("button", { name: "Automático (recomendado)" })).toHaveAttribute("aria-pressed", "true");
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("button", { name: "Criar instituição" }).click();
+  await expect(page.locator('[data-finance-icon="bank-nubank"]').first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Cartões", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar cartão" }).click();
+  await page.getByLabel("Instituição do cartão").selectOption({ label: "Nubank" });
+  await expect(page.getByRole("button", { name: "Automático · Nubank (recomendado)" })).toHaveAttribute("aria-pressed", "true");
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByPlaceholder("Apelido, ex.: Platinum (opcional)").fill("Ultravioleta");
+  await page.getByPlaceholder("Limite").fill("5000,00");
+  await page.getByRole("button", { name: "Adicionar cartão", exact: true }).last().click();
+  const card = page.locator("article").filter({ hasText: "Ultravioleta" });
+  await expect(card.locator('[data-finance-icon="bank-nubank"]')).toBeVisible();
+});
+
+test("ícone escolhido para uma categoria aparece no extrato sem alterar os lançamentos", async ({ page }) => {
+  const now = new Date().toISOString();
+  await loginWithFinancialSeed(page, [], { transactions: [{
+    id: "icon-e2e-expense",
+    type: "expense",
+    amountCents: 2_500,
+    category: "Alimentação",
+    account: "Banco Teste • Conta",
+    description: "Almoço de teste",
+    date: now,
+    createdAt: now,
+  }] });
+  await page.getByRole("button", { name: "Categorias", exact: true }).click();
+  await page.getByRole("button", { name: "Editar categoria Alimentação" }).click();
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("button", { name: "Usar ícone Saúde" }).click();
+  await page.getByRole("button", { name: "Salvar alterações" }).click();
+  await expect(page.locator('[data-finance-icon="health"]').first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Extrato", exact: true }).click();
+  const transaction = page.getByRole("button").filter({ hasText: "Almoço de teste" });
+  await expect(transaction.locator('[data-finance-icon="health"]')).toBeVisible();
+  await expect(transaction).toContainText("Alimentação");
+  await expect(transaction).toContainText("R$ 25,00");
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(transaction.locator('[data-finance-icon="health"]')).toBeVisible();
+  }
 });
