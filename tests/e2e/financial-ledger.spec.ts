@@ -14,7 +14,7 @@ const user = {
   created_at: new Date().toISOString(),
 };
 
-function initialState(): { data: Record<string, unknown>; transactions: Record<string, unknown>[]; profile: Record<string, unknown> } {
+function initialState(sharedGoalId?: string): { data: Record<string, unknown>; transactions: Record<string, unknown>[]; profile: Record<string, unknown> } {
   return {
     data: {
       categories: ["Alimentação"],
@@ -26,7 +26,7 @@ function initialState(): { data: Record<string, unknown>; transactions: Record<s
         cards: [{ id: "card-e2e", name: "Cartão", limit: 200000, closingDay: "10", dueDay: "17" }],
       }],
       investments: [{ id: "investment-e2e", name: "CDB Reserva", assetClass: "CDB", contributedCents: 10000, currentCents: 12000 }],
-      goals: [{ id: "goal-e2e", name: "Reserva", targetCents: 50000, currentCents: 10000 }],
+      goals: [{ id: "goal-e2e", name: "Reserva", targetCents: 50000, currentCents: 10000, ...(sharedGoalId ? { sharedGoalId } : {}) }],
       recurringBills: [],
       onboarded: true,
     },
@@ -49,11 +49,15 @@ async function fulfillCors(route: Route, status: number, body?: unknown) {
   });
 }
 
-async function loginWithFinancialSeed(page: Page, initialInvites: Record<string, unknown>[] = []) {
-  let state = initialState();
+async function loginWithFinancialSeed(
+  page: Page,
+  initialInvites: Record<string, unknown>[] = [],
+  options: { ownedSharedGoal?: boolean } = {},
+) {
+  const sharedGoalId = "00000000-0000-4000-8000-000000000777";
+  let state = initialState(options.ownedSharedGoal ? sharedGoalId : undefined);
   let version = 1;
   let invites = [...initialInvites];
-  const sharedGoalId = "00000000-0000-4000-8000-000000000777";
   let contributions: Record<string, unknown>[] = [];
   const profile = {
     full_name: "Pessoa de teste",
@@ -85,7 +89,15 @@ async function loginWithFinancialSeed(page: Page, initialInvites: Record<string,
         created_at: new Date().toISOString(),
         shared_goal_contributions: contributions,
       };
-      return fulfillCors(route, 200, invites.some((invite) => invite.status === "accepted") ? [goal] : []);
+      const ownsSharedGoal = (state.data.goals as { sharedGoalId?: string }[]).some((item) => item.sharedGoalId === sharedGoalId);
+      return fulfillCors(route, 200, invites.some((invite) => invite.status === "accepted") || ownsSharedGoal ? [goal] : []);
+    }
+    if (url.pathname === "/rest/v1/rpc/list_shared_goal_participants") {
+      return fulfillCors(route, 200, [
+        { shared_goal_id: sharedGoalId, participant_name: "Lipe", participant_role: "owner", invitation_status: "owner" },
+        { shared_goal_id: sharedGoalId, participant_name: "Grazielle", participant_role: "member", invitation_status: "accepted" },
+        { shared_goal_id: sharedGoalId, participant_name: "Vagner Guedes", participant_role: "member", invitation_status: "pending" },
+      ]);
     }
     if (url.pathname === "/rest/v1/rpc/respond_shared_goal_invite") {
       const body = request.postDataJSON() as { p_invite_id: string; p_accept: boolean };
@@ -161,7 +173,11 @@ async function loginWithFinancialSeed(page: Page, initialInvites: Record<string,
     localStorage.setItem(`${workspaceKey}:tx`, JSON.stringify(financialState.transactions));
     localStorage.setItem(`${workspaceKey}:profile`, JSON.stringify(financialState.profile));
     localStorage.setItem("valurise:cookie-consent", JSON.stringify({ preference: "essential_only", version: "2026-09-23-v1" }));
-  }, { storedSession: session, workspaceId: personalWorkspaceId, financialState: initialState() });
+  }, {
+    storedSession: session,
+    workspaceId: personalWorkspaceId,
+    financialState: initialState(options.ownedSharedGoal ? sharedGoalId : undefined),
+  });
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Pessoa de teste/ })).toBeVisible({ timeout: 20_000 });
@@ -182,6 +198,8 @@ test("convite de meta chega, pode ser aceito e a meta compartilhada atualiza no 
   const notifications = page.getByRole("region", { name: "Notificações financeiras" });
   await expect(notifications.getByText("Casa própria")).toBeVisible();
   await expect(notifications.getByText(/outros dados financeiros continuam privados/)).toBeVisible();
+  await expect(notifications.getByText(/Enviado por Lipe/)).toBeVisible();
+  await expect(notifications).not.toContainText("Grazielle");
   await notifications.getByRole("button", { name: "Aceitar convite" }).click();
   await expect(notifications.getByText("Tudo em dia")).toBeVisible();
   await expect(page.getByRole("button", { name: "Abrir notificações" })).toBeVisible();
@@ -189,6 +207,7 @@ test("convite de meta chega, pode ser aceito e a meta compartilhada atualiza no 
   await page.getByRole("button", { name: "Metas", exact: true }).click();
   const goalCard = page.locator("article").filter({ hasText: "Casa própria" });
   await expect(goalCard).toContainText("Meta compartilhada");
+  await expect(goalCard).toContainText("Compartilhada por Lipe");
   await expect(goalCard).toContainText("R$ 0,00 de R$ 300.000,00");
   await expect(goalCard.getByText("Extrato da meta")).toBeVisible();
   await goalCard.getByRole("button", { name: "+ Adicionar dinheiro" }).click();
@@ -203,6 +222,16 @@ test("convite de meta chega, pode ser aceito e a meta compartilhada atualiza no 
   const summary = page.locator(".panel").filter({ hasText: "Patrimônio total" });
   await expect(summary).toContainText("R$ 875,00");
   await expect(page.getByText("Casa própria").last()).toBeVisible();
+});
+
+test("meta do titular mostra pessoas aceitas e convites pendentes", async ({ page }) => {
+  await loginWithFinancialSeed(page, [], { ownedSharedGoal: true });
+  await page.getByRole("button", { name: "Metas", exact: true }).click();
+
+  const goalCard = page.locator("article").filter({ hasText: "Casa própria" });
+  await expect(goalCard).toContainText("Compartilhada com Grazielle");
+  await expect(goalCard).toContainText("Convite pendente para Vagner Guedes");
+  await expect(goalCard).not.toContainText("financeiro@valurise.invalid");
 });
 
 test("registra aporte com conta de origem e reverte o saldo ao excluir o lançamento", async ({ page }) => {

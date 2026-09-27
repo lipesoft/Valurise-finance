@@ -169,6 +169,23 @@ type Data = {
   dashboardWidgets?: { id: string; visible: boolean }[];
   onboarded: boolean;
 };
+
+function sharedGoalPeopleLabel(goal: SharedGoalSummary, currentUserIsOwner: boolean) {
+  if (!currentUserIsOwner) {
+    const owner = goal.participants.find((participant) => participant.role === "owner");
+    return owner ? `Compartilhada por ${owner.name}` : "Remetente não identificado";
+  }
+
+  const recipients = goal.participants.filter((participant) => participant.role === "member");
+  const accepted = recipients.filter((participant) => participant.status === "accepted");
+  const pending = recipients.filter((participant) => participant.status === "pending");
+  const details = [
+    accepted.length ? `Compartilhada com ${accepted.map((participant) => participant.name).join(", ")}` : "",
+    pending.length ? `Convite pendente para ${pending.map((participant) => participant.name).join(", ")}` : "",
+  ].filter(Boolean);
+  return details.join(" · ") || "Ainda sem outras pessoas convidadas.";
+}
+
 const defaults = [
   "Alimentação",
   "Mercado",
@@ -1514,7 +1531,7 @@ function NotificationCenter({
               const goal = invite.shared_goals;
               return <article key={invite.id} className="rounded-xl border border-[var(--accent)]/20 bg-[var(--accent)]/5 p-3">
                 <b className="block truncate text-sm">{goal?.name || "Meta compartilhada"}</b>
-                <p className="muted mt-1 text-xs leading-5">Alguém convidou você para acompanhar esta meta. Seus outros dados financeiros continuam privados.</p>
+                <p className="muted mt-1 text-xs leading-5">Enviado por <b className="text-[var(--fg)]">{invite.inviter?.name || "Remetente não identificado"}</b> para acompanhar esta meta. Seus outros dados financeiros continuam privados.</p>
                 {goal?.target_cents ? <small className="muted mt-1 block">Objetivo: {formatBRL(goal.target_cents)}</small> : null}
                 <div className="mt-3 flex gap-2">
                   <button disabled={respondingId !== null} onClick={() => void respondInvite(invite.id, false)} className="min-h-10 flex-1 rounded-lg bg-[var(--panel2)] px-3 text-xs font-medium disabled:opacity-50">{respondingId === invite.id ? "Aguarde…" : "Recusar"}</button>
@@ -3548,7 +3565,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
       <p className="muted mt-2 text-sm">
         Acompanhe objetivos financeiros no seu ritmo.
       </p>
-      {invites.length > 0 && <section className="panel mt-4 rounded-2xl p-4"><div className="flex items-center justify-between gap-3"><div><b className="text-sm">Convites de metas</b><p className="muted mt-1 text-xs">Responda aqui ou pelo sino de notificações.</p></div><span className="rounded-full bg-[var(--accent)]/15 px-2 py-1 text-xs font-semibold text-[var(--accent)]">{invites.length}</span></div><div className="mt-3 space-y-2">{invites.map((invite: SharedGoalInvite) => <div key={invite.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--panel2)] p-3"><span className="min-w-0 flex-1"><b className="block truncate text-sm">{invite.shared_goals?.name || "Meta compartilhada"}</b><small className="muted">Convite para acompanhar em conjunto</small></span><span className="flex shrink-0 gap-2"><button onClick={() => void respondInvite(invite.id, false)} className="muted min-h-10 rounded-lg px-3 text-xs">Recusar</button><button onClick={() => void respondInvite(invite.id, true)} className="primary min-h-10 rounded-lg px-3 text-xs font-medium">Aceitar</button></span></div>)}</div></section>}
+      {invites.length > 0 && <section className="panel mt-4 rounded-2xl p-4"><div className="flex items-center justify-between gap-3"><div><b className="text-sm">Convites de metas</b><p className="muted mt-1 text-xs">Responda aqui ou pelo sino de notificações.</p></div><span className="rounded-full bg-[var(--accent)]/15 px-2 py-1 text-xs font-semibold text-[var(--accent)]">{invites.length}</span></div><div className="mt-3 space-y-2">{invites.map((invite: SharedGoalInvite) => <div key={invite.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--panel2)] p-3"><span className="min-w-0 flex-1"><b className="block truncate text-sm">{invite.shared_goals?.name || "Meta compartilhada"}</b><small className="muted">{invite.inviter ? `Enviada por ${invite.inviter.name}` : "Remetente não identificado"} · Convite para acompanhar em conjunto</small></span><span className="flex shrink-0 gap-2"><button onClick={() => void respondInvite(invite.id, false)} className="muted min-h-10 rounded-lg px-3 text-xs">Recusar</button><button onClick={() => void respondInvite(invite.id, true)} className="primary min-h-10 rounded-lg px-3 text-xs font-medium">Aceitar</button></span></div>)}</div></section>}
       {items.length || receivedSharedGoals.length ? (
         <div className="mt-5 space-y-3">
           {items.map((item: any) => {
@@ -3561,7 +3578,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
             return (
               <article className="panel rounded-2xl p-4" key={item.id}>
                 <div className="flex min-w-0 items-center justify-between gap-3">
-                  <span className="min-w-0"><b className="block truncate">{goalName}</b>{sharedGoal && <small className="muted">Meta compartilhada</small>}</span>
+                  <span className="min-w-0"><b className="block truncate">{goalName}</b>{sharedGoal && <><small className="muted block">Meta compartilhada</small><small className="muted block">{sharedGoalPeopleLabel(sharedGoal, true)}</small></>}</span>
                   <span className="shrink-0 text-sm">{percentage}%</span>
                 </div>
                 <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--panel2)]">
@@ -3588,7 +3605,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
           {receivedSharedGoals.map((goal: SharedGoalSummary) => {
             const percentage = goal.target_cents > 0 ? Math.min(100, Math.round((goal.current_cents / goal.target_cents) * 100)) : 0;
             return <article className="panel rounded-2xl p-4" key={goal.id}>
-              <div className="flex min-w-0 items-center justify-between gap-3"><span className="min-w-0"><b className="block truncate">{goal.name}</b><small className="muted">Meta compartilhada</small></span><span className="shrink-0 text-sm">{percentage}%</span></div>
+              <div className="flex min-w-0 items-center justify-between gap-3"><span className="min-w-0"><b className="block truncate">{goal.name}</b><small className="muted block">Meta compartilhada</small><small className="muted block">{sharedGoalPeopleLabel(goal, false)}</small></span><span className="shrink-0 text-sm">{percentage}%</span></div>
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--panel2)]"><AnimatedProgress value={percentage} className="block h-full bg-[var(--accent)]" /></div>
               <p className="muted mt-2 text-sm">{formatBRL(goal.current_cents)} de {formatBRL(goal.target_cents)}</p>
               {goal.target_date && <p className="muted mt-1 text-xs">Prazo: {format(new Date(`${goal.target_date}T12:00:00`), "dd/MM/yyyy")}</p>}
@@ -3679,7 +3696,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
           </section>
         </Sheet>
       )}
-      {allowSharing && sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Ela só verá esta meta depois de aceitar o convite; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
+      {allowSharing && sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Depois de aceitar, os participantes verão o nome exibido na sua conta e o progresso desta meta; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
       {deleting && <DeleteConfirm title="Excluir meta?" description={`A meta “${deleting.name}” e o seu progresso individual serão removidos. Isso não apaga lançamentos da sua conta.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, goals: items.filter((item: any) => item.id !== deleting.id) }); toast("Meta excluída."); setDeleting(null); }} />}
     </section>
   );

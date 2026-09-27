@@ -8,11 +8,25 @@ export type SharedGoalInvite = {
   shared_goal_id: string;
   status: "pending";
   created_at: string;
+  inviter: SharedGoalParticipant | null;
   shared_goals: {
     name: string;
     target_cents: number;
     target_date: string | null;
   } | null;
+};
+
+export type SharedGoalParticipant = {
+  name: string;
+  role: "owner" | "member";
+  status: "owner" | "accepted" | "pending";
+};
+
+type SharedGoalParticipantRow = {
+  shared_goal_id: string;
+  participant_name: string;
+  participant_role: "owner" | "member";
+  invitation_status: "owner" | "accepted" | "pending";
 };
 
 export type SharedGoalContribution = {
@@ -32,6 +46,7 @@ export type SharedGoalSummary = {
   created_at: string;
   current_cents: number;
   shared_goal_contributions: SharedGoalContribution[];
+  participants: SharedGoalParticipant[];
 };
 
 type InviteFeedback = (message: string) => void;
@@ -87,8 +102,32 @@ export function useSharedGoalInvites(
     hasLoaded.current = true;
 
     const acceptedIds = (acceptedResult.data || []).map((invite) => invite.shared_goal_id);
+    const pendingIds = nextInvites.map((invite) => invite.shared_goal_id);
     const goalIds = [...new Set([...localSharedGoalIds, ...acceptedIds])]
       .filter((id): id is string => typeof id === "string" && uuidPattern.test(id));
+    const participantGoalIds = [...new Set([...goalIds, ...pendingIds])]
+      .filter((id): id is string => typeof id === "string" && uuidPattern.test(id));
+
+    const participantResult = participantGoalIds.length
+      ? await supabase.rpc("list_shared_goal_participants", { p_goal_ids: participantGoalIds })
+      : { data: [], error: null };
+    const participantsByGoal = new Map<string, SharedGoalParticipant[]>();
+    if (!participantResult.error) {
+      for (const row of (participantResult.data || []) as unknown as SharedGoalParticipantRow[]) {
+        const current = participantsByGoal.get(row.shared_goal_id) || [];
+        current.push({
+          name: row.participant_name || "Usuário Valurise",
+          role: row.participant_role,
+          status: row.invitation_status,
+        });
+        participantsByGoal.set(row.shared_goal_id, current);
+      }
+    }
+    const invitesWithInviter = nextInvites.map((invite) => ({
+      ...invite,
+      inviter: (participantsByGoal.get(invite.shared_goal_id) || []).find((participant) => participant.role === "owner") || null,
+    }));
+
     let nextGoals: SharedGoalSummary[] = [];
     if (goalIds.length) {
       const goalsResult = await supabase
@@ -116,13 +155,14 @@ export function useSharedGoalInvites(
             target_cents: Number(goal.target_cents),
             current_cents: contributions.reduce((total, contribution) => total + contribution.amount_cents, 0),
             shared_goal_contributions: contributions,
+            participants: participantsByGoal.get(goal.id) || [],
           };
         });
     }
 
-    setInvites(nextInvites);
+    setInvites(invitesWithInviter);
     setSharedGoals(nextGoals);
-    setLoadError(false);
+    setLoadError(Boolean(participantResult.error));
   }, [localSharedGoalIds, userId]);
 
   useEffect(() => {
