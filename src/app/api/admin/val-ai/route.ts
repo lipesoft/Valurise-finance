@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateText, tool } from "ai";
 import { z } from "zod";
 import { createValModel } from "@/lib/val-ai/adapter";
-import { getValHealthCheckPrompt, VAL_HEALTH_CHECK_TOOL_DESCRIPTION, VAL_HEALTH_CHECK_TOOL_NAME } from "@/lib/val-ai/health-check";
+import { getValHealthCheckPrompt, isValHealthCheckSuccessful, VAL_HEALTH_CHECK_TOOL_DESCRIPTION, VAL_HEALTH_CHECK_TOOL_NAME } from "@/lib/val-ai/health-check";
 import { discoverFreeModelCatalog, readSafeQuotaHeaders } from "@/lib/val-ai/provider-catalog";
 import { verifyCurrentFreeCatalogEntry } from "@/lib/val-ai/catalog-policy";
 import { isApprovedFreeModel, isFreeModelCatalogFresh, type ValModelCandidate, type ValProvider } from "@/lib/val-ai/policy";
@@ -307,8 +307,7 @@ export async function POST(request: NextRequest) {
           ...(requiresTools ? { tools: { [VAL_HEALTH_CHECK_TOOL_NAME]: tool({ description: VAL_HEALTH_CHECK_TOOL_DESCRIPTION, inputSchema: z.object({}).strict(), execute: async () => ({ ok: true }) }) }, toolChoice: "required" as const } : {}),
           maxOutputTokens: requiresTools ? 32 : 8, temperature: 0, maxRetries: 0, timeout: 12_000, abortSignal: AbortSignal.timeout(13_000),
         });
-        if (!result.text.trim()) throw new Error("EMPTY_RESPONSE");
-        if (requiresTools && !result.steps.flatMap((step) => step.toolCalls).some((call) => call.toolName === VAL_HEALTH_CHECK_TOOL_NAME)) throw new Error("TOOL_CALL_UNSUPPORTED");
+        if (!isValHealthCheckSuccessful(result, requiresTools)) throw new Error(requiresTools ? "TOOL_CALL_UNSUPPORTED" : "EMPTY_RESPONSE");
       } catch (error) {
         const failure = error instanceof Error && error.message === "TOOL_CALL_UNSUPPORTED"
           ? { category: "TOOL_CALL_UNSUPPORTED", httpStatus: null, providerCode: "TOOL_CALL_NOT_CONFIRMED", providerMessage: null, requestId: null }
