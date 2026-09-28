@@ -29,6 +29,12 @@ export type ValModelRequirements = {
   now?: number;
 };
 
+export type ValServiceStatus = "operational" | "degraded" | "unavailable";
+export type ValReadinessCandidate = ValModelCandidate & {
+  requiresProbe?: boolean;
+  requiresProviderProbe?: boolean;
+};
+
 export function providerCircuitDecision(health: ValHealth, openUntil: string | null, now = Date.now()) {
   if (health === "CIRCUIT_OPEN") {
     const until = openUntil ? Date.parse(openUntil) : Number.NaN;
@@ -73,6 +79,26 @@ export function isApprovedFreeModel(candidate: ValModelCandidate, requirements: 
   if (requirements.reasoning && !candidate.supportsReasoning) return false;
   if (requirements.contextTokens && (candidate.contextWindow === null || candidate.contextWindow < requirements.contextTokens)) return false;
   return true;
+}
+
+/**
+ * Reports whether the Val can answer a financial query right now.
+ * Candidates that still need a half-open circuit probe are not yet ready;
+ * the UI must not present them as operational before that probe succeeds.
+ */
+export function getValServiceStatus(
+  enabled: boolean,
+  candidates: ValReadinessCandidate[],
+  now = Date.now(),
+): ValServiceStatus {
+  if (!enabled) return "unavailable";
+  const ready = candidates.filter((candidate) =>
+    !candidate.requiresProbe
+    && !candidate.requiresProviderProbe
+    && isApprovedFreeModel(candidate, { tools: true, now }),
+  );
+  if (!ready.length) return "unavailable";
+  return ready.some((candidate) => candidate.health === "HEALTHY") ? "operational" : "degraded";
 }
 
 export function selectFreeModels<TCandidate extends ValModelCandidate>(candidates: TCandidate[], requirements: ValModelRequirements = {}) {

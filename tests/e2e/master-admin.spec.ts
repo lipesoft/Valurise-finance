@@ -494,6 +494,8 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   await expect(page.getByPlaceholder("Cole a chave do provider")).toHaveCount(2);
   await page.getByRole("button", { name: "Visão geral" }).click();
   await expect(page.getByText("Operacional", { exact: true })).toBeVisible();
+  await expect(page.getByText("Há um modelo gratuito validado e pronto para consultas financeiras.")).toBeVisible();
+  await expect(page.getByText("1 modelo(s) gratuito(s) pronto(s) para ferramentas")).toBeVisible();
   await expect(page.getByText("14", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Provedores" }).click();
   await expect(keyInput).toBeVisible();
@@ -524,4 +526,12 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
+
+  responseData.overview.status = "unavailable";
+  responseData.overview.freeModels = 0;
+  await page.getByRole("button", { name: "Visão geral" }).click();
+  await page.getByRole("button", { name: "Atualizar" }).last().click();
+  await expect(page.getByText("Indisponível", { exact: true })).toBeVisible();
+  await expect(page.getByText("Nenhum modelo gratuito com ferramentas está pronto agora. Verifique chave, cota, catálogo e validação no provider.")).toBeVisible();
+  await expect(page.getByText("0 modelo(s) gratuito(s) pronto(s) para ferramentas")).toBeVisible();
 });

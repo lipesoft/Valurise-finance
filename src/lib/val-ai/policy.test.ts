@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { classifyValTask, hasKnownZeroProviderQuota, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, isProviderQuotaCoolingDown, providerCircuitDecision, providerQuotaUtilizationPercent, runFreeModelCandidates, selectFreeModels, type ValModelCandidate } from "./policy";
+import { classifyValTask, getValServiceStatus, hasKnownZeroProviderQuota, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, isProviderQuotaCoolingDown, providerCircuitDecision, providerQuotaUtilizationPercent, runFreeModelCandidates, selectFreeModels, type ValReadinessCandidate } from "./policy";
 
-const model = (overrides: Partial<ValModelCandidate> = {}): ValModelCandidate => ({
+const model = (overrides: Partial<ValReadinessCandidate> = {}): ValReadinessCandidate => ({
   provider: "groq", modelId: "openai/gpt-oss-20b", isFree: true, freeVerified: true,
   enabled: true, supportsChat: true, supportsTools: true, supportsStructuredOutput: false,
   supportsReasoning: false, contextWindow: 8192, health: "HEALTHY", circuitOpenUntil: null,
@@ -10,6 +10,20 @@ const model = (overrides: Partial<ValModelCandidate> = {}): ValModelCandidate =>
 });
 
 describe("Val FreeModelPolicy", () => {
+  it("só informa Val operacional se houver modelo gratuito com ferramentas pronto agora", () => {
+    expect(getValServiceStatus(true, [model()])).toBe("operational");
+    expect(getValServiceStatus(false, [model()])).toBe("unavailable");
+    expect(getValServiceStatus(true, [])).toBe("unavailable");
+    expect(getValServiceStatus(true, [model({ supportsTools: false })])).toBe("unavailable");
+    expect(getValServiceStatus(true, [model({ isFree: false })])).toBe("unavailable");
+  });
+
+  it("não conta circuitos aguardando sonda como serviço disponível", () => {
+    expect(getValServiceStatus(true, [model({ requiresProbe: true })])).toBe("unavailable");
+    expect(getValServiceStatus(true, [model({ requiresProviderProbe: true })])).toBe("unavailable");
+    expect(getValServiceStatus(true, [model({ health: "DEGRADED" })])).toBe("degraded");
+  });
+
   it("bloqueia modelos pagos mesmo quando são saudáveis e têm prioridade maior", () => {
     const paid = model({ modelId: "vendor/paid", isFree: false });
     expect(isApprovedFreeModel(paid)).toBe(false);

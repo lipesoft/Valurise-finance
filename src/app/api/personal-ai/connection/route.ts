@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { legalVersions } from "@/lib/legal-content";
 import { loadValRouterRuntime, valFeatureIsEnabled } from "@/lib/val-ai/router";
+import { getValServiceStatus } from "@/lib/val-ai/policy";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
 
@@ -22,13 +23,13 @@ export async function GET(request: NextRequest) {
   const [{ data: preference, error: preferenceError }, { data: consent, error: consentError }, runtime] = await Promise.all([
     admin.from("val_ai_user_preferences").select("actions_enabled, updated_at").eq("workspace_id", workspace.id).eq("user_id", user.id).maybeSingle(),
     admin.from("workspace_ai_consents").select("ai_data_sharing_version, accepted_at, revoked_at").eq("user_id", user.id).eq("workspace_id", workspace.id).maybeSingle(),
-    loadValRouterRuntime({}),
+    loadValRouterRuntime({ tools: true }),
   ]);
   if (preferenceError || consentError) return NextResponse.json({ error: "A Central da Val ainda está sendo preparada." }, { status: 503 });
   const insightsEnabled = consent?.ai_data_sharing_version === legalVersions.aiSharing && Boolean(consent.accepted_at);
   const renewalRequired = Boolean(consent?.accepted_at && consent.ai_data_sharing_version !== legalVersions.aiSharing);
   return NextResponse.json({ connection: {
-    available: runtime.enabled && runtime.candidates.length > 0,
+    available: getValServiceStatus(runtime.enabled, runtime.candidates) !== "unavailable",
     insights_enabled: insightsEnabled,
     actions_enabled: Boolean(preference?.actions_enabled && insightsEnabled),
     actions_allowed: valFeatureIsEnabled(runtime.settings, "actions"),
@@ -69,9 +70,9 @@ export async function POST(request: NextRequest) {
   const { data: cancelled, error: cancelError } = await admin.from("personal_ai_action_proposals")
     .update({ status: "cancelled", acted_at: now }).eq("user_id", user.id).eq("workspace_id", workspace.id).eq("status", "pending").select("id");
   if (cancelError) return NextResponse.json({ error: "Preferência salva, mas não foi possível encerrar propostas antigas. Não confirme propostas anteriores; tente novamente." }, { status: 503 });
-  const runtimeNow = await loadValRouterRuntime({});
+  const runtimeNow = await loadValRouterRuntime({ tools: true });
   return NextResponse.json({ ok: true, pendingProposalsCancelled: Boolean(cancelled?.length), connection: {
-    available: runtimeNow.enabled && runtimeNow.candidates.length > 0,
+    available: getValServiceStatus(runtimeNow.enabled, runtimeNow.candidates) !== "unavailable",
     insights_enabled: parsed.data.insightsEnabled,
     actions_enabled: actionsEnabled,
     actions_allowed: runtime?.val_actions_enabled === true,

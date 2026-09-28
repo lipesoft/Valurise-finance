@@ -6,8 +6,8 @@ import { createValModel } from "@/lib/val-ai/adapter";
 import { getValHealthCheckPrompt, isValHealthCheckSuccessful, VAL_HEALTH_CHECK_TOOL_DESCRIPTION, VAL_HEALTH_CHECK_TOOL_NAME } from "@/lib/val-ai/health-check";
 import { discoverFreeModelCatalog, readSafeQuotaHeaders } from "@/lib/val-ai/provider-catalog";
 import { verifyCurrentFreeCatalogEntry } from "@/lib/val-ai/catalog-policy";
-import { isApprovedFreeModel, isFreeModelCatalogFresh, type ValModelCandidate, type ValProvider } from "@/lib/val-ai/policy";
-import { loadValProviderKey } from "@/lib/val-ai/router";
+import { getValServiceStatus, isApprovedFreeModel, isFreeModelCatalogFresh, type ValModelCandidate, type ValProvider } from "@/lib/val-ai/policy";
+import { loadValProviderKey, loadValRouterRuntime } from "@/lib/val-ai/router";
 import { classifyAIError } from "@/lib/personal-ai/providers";
 import { encryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient, getVerifiedMaster } from "@/lib/supabase/admin";
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const today = new Date(); today.setUTCHours(0, 0, 0, 0);
   const month = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
-  const [providers, keys, models, settings, dayRows, monthRows, recentErrors, userUsage, users, overrides, auditRows] = await Promise.all([
+  const [providers, keys, models, settings, dayRows, monthRows, recentErrors, userUsage, users, overrides, auditRows, routerRuntime] = await Promise.all([
     admin.from("val_ai_providers").select("id, enabled, free_tier_confirmed, health_status, failure_count, circuit_open_until, priority, last_health_check, last_latency_ms, last_error_category, quota_headers, updated_at"),
     admin.from("val_ai_provider_keys").select("id, provider_id, key_suffix, is_active, created_at, updated_at").eq("is_active", true),
     admin.from("val_ai_models").select("id, provider_id, model_id, display_name, is_free, free_verified, free_evidence, is_enabled, priority, supports_chat, supports_tools, supports_structured_output, supports_reasoning, supports_streaming, context_window, health_status, last_health_check, last_success_at, last_failure_at, last_latency_ms, failure_count, circuit_open_until, official_prompt_price, official_completion_price, daily_request_limit, monthly_request_limit, daily_token_limit, monthly_token_limit, catalog_seen_at"),
@@ -61,6 +61,7 @@ export async function GET(request: NextRequest) {
     admin.from("profiles").select("id, full_name, username, account_status, account_role").eq("account_role", "user").order("full_name", { ascending: true }).limit(1000),
     admin.from("val_ai_user_quota_overrides").select("*"),
     admin.from("val_ai_admin_audit_log").select("id, actor_id, action, provider_id, model_id, target_user_id, outcome, metadata, created_at").order("created_at", { ascending: false }).limit(40),
+    loadValRouterRuntime({ tools: true }),
   ]);
   const required = [providers, keys, models, settings, dayRows, monthRows, recentErrors, userUsage, users, overrides, auditRows];
   const failure = required.find((result) => result.error);
@@ -84,7 +85,7 @@ export async function GET(request: NextRequest) {
       monthly: (userUsage.data || []).find((row: Record<string, unknown>) => String(row.user_id) === id && row.period_kind === "month" && row.period_start === month.toISOString().slice(0, 10)) || { requests: 0, tokens: 0 },
       override: overrideMap.get(id) || null,
     }));
-  const enabledModels = (models.data || []).filter((model: Record<string, unknown>) => model.is_enabled === true && model.is_free === true && model.free_verified === true);
+  const readyFreeModels = routerRuntime.candidates.filter((model) => !model.requiresProbe && !model.requiresProviderProbe);
   const usageByModel = new Map<string, Record<string, unknown>>();
   for (const row of [...(dayRows.data || []), ...(monthRows.data || [])]) {
     const key = `${row.period_kind}:${row.provider_id}:${row.model_id}`;
@@ -104,13 +105,13 @@ export async function GET(request: NextRequest) {
     models: models.data,
     settings: settings.data,
     overview: {
-      status: settings.data?.val_enabled && settings.data?.val_router_enabled && enabledModels.length ? "operational" : enabledModels.length ? "degraded" : "unavailable",
+      status: getValServiceStatus(routerRuntime.enabled, routerRuntime.candidates),
       requestsToday: dayTotals.requests, requestsMonth: monthTotals.requests,
       tokensToday: dayTotals.tokens, tokensMonth: monthTotals.tokens,
       successRate: dayTotals.requests ? Math.round(dayTotals.successes / Math.max(1, dayTotals.successes + dayTotals.failures) * 100) : null,
       failuresToday: dayTotals.failures, fallbacksToday: dayTotals.fallbacks,
       activeProviders: (providers.data || []).filter((item: Record<string, unknown>) => item.enabled).length,
-      freeModels: enabledModels.length, averageLatencyMs: dayTotals.requests ? Math.round(dayTotals.latency / dayTotals.requests) : null,
+      freeModels: readyFreeModels.length, averageLatencyMs: dayTotals.requests ? Math.round(dayTotals.latency / dayTotals.requests) : null,
       uniqueUsersToday: new Set((dayRows.data || []).filter((row: Record<string, unknown>) => Number(row.requests) > 0).map((row: Record<string, unknown>) => row.user_id)).size,
     },
     recentErrors: recentErrors.data,
