@@ -867,6 +867,15 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
       }
 
       if (view === "Contas") {
+        const institution = page.getByTestId("institution-card").first();
+        await expect(institution.getByText("Banco de teste", { exact: true })).toBeVisible();
+        await expect(institution.locator("[data-finance-icon]")).toHaveCount(1);
+        const accountRows = institution.getByTestId("institution-account-row");
+        await expect(accountRows).toHaveCount(2);
+        await expect(accountRows.getByText("Conta principal", { exact: true })).toBeVisible();
+        await expect(accountRows.getByText("Conta destino", { exact: true })).toBeVisible();
+        await expect(accountRows.locator("[data-finance-icon]")).toHaveCount(0);
+
         const addButton = page.getByRole("button", { name: "Adicionar conta ou instituição" });
         await expect(addButton).toBeVisible();
         await addButton.click();

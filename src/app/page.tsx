@@ -5166,10 +5166,8 @@ function Institutions({ data, save, toast }: any) {
   const [targetInstitution, setTargetInstitution] = useState("");
   const [extraAccount, setExtraAccount] = useState("");
   const [institutionIconId, setInstitutionIconId] = useState<FinanceIconId | "">("");
-  const [accountIconId, setAccountIconId] = useState<FinanceIconId | "">("");
   const [editingIconId, setEditingIconId] = useState<FinanceIconId | "">("");
-  const selectedInstitution = data.institutions.find((institution: Institution) => institution.id === targetInstitution);
-  const resetAdding = () => { setAdding(false); setN(""); setAccountName(""); setTargetInstitution(""); setExtraAccount(""); setInstitutionIconId(""); setAccountIconId(""); };
+  const resetAdding = () => { setAdding(false); setN(""); setAccountName(""); setTargetInstitution(""); setExtraAccount(""); setInstitutionIconId(""); };
   const addAccount = () => {
     if (!targetInstitution || !extraAccount.trim()) return;
     const institutions = data.institutions.map((institution: Institution) =>
@@ -5182,7 +5180,6 @@ function Institutions({ data, save, toast }: any) {
                 id: crypto.randomUUID(),
                 name: extraAccount.trim(),
                 balance: 0,
-                ...(accountIconId ? { iconId: accountIconId } : {}),
               },
             ],
           }
@@ -5191,7 +5188,6 @@ function Institutions({ data, save, toast }: any) {
     save({ ...data, institutions });
     toast("Conta adicionada com sucesso.");
     setExtraAccount("");
-    setAccountIconId("");
     setTargetInstitution("");
     setAdding(false);
   };
@@ -5200,7 +5196,7 @@ function Institutions({ data, save, toast }: any) {
     const institutions = data.institutions.map((institution: Institution) => {
       if (institution.id !== editing.institution.id) return institution;
       if (!editing.account) return { ...institution, name: n.trim(), iconId: editingIconId || undefined };
-      return { ...institution, accounts: institution.accounts.map((account: any) => account.id === editing.account.id ? { ...account, name: n.trim(), iconId: editingIconId || undefined } : account) };
+      return { ...institution, accounts: institution.accounts.map((account: any) => account.id === editing.account.id ? { ...account, name: n.trim() } : account) };
     });
     save({ ...data, institutions }); toast(editing.account ? "Conta atualizada com sucesso." : "Instituição atualizada com sucesso."); setEditing(null); setN(""); setEditingIconId("");
   };
@@ -5213,17 +5209,15 @@ function Institutions({ data, save, toast }: any) {
         addLabel="Adicionar conta ou instituição"
       />
       <p className="muted mt-2 text-sm">
-        Instituições agrupam suas contas e cartões.
+        Cada banco aparece com seu ícone; as contas ficam identificadas pelo nome.
       </p>
       {data.institutions.length ? (
         <div className="mt-6 space-y-3">
           {data.institutions.map((i: Institution) => (
-            <div className="panel rounded-2xl p-4" key={i.id}>
+            <div className="panel rounded-2xl p-4" data-testid="institution-card" key={i.id}>
               <div className="flex items-start justify-between gap-3"><span className="flex min-w-0 items-center gap-3"><FinanceIconBadge iconId={resolveInstitutionIconId(i)} size={40}/><b className="min-w-0 truncate">{i.name}</b></span><ItemActions className="mt-0 shrink-0" label={`a instituição ${i.name}`} onEdit={() => { setEditing({ institution: i }); setN(i.name); setEditingIconId(i.iconId || ""); }} onDelete={() => setDeleting({ institution: i })} /></div>
-              <p className="muted mt-1 text-sm">
-                {i.accounts.map((x) => x.name).join(", ") || "Sem conta"}
-              </p>
-              {i.accounts.length > 0 && <div className="mt-3 divide-y divide-[var(--border)]">{i.accounts.map((account: any) => <div key={account.id} className="flex items-center justify-between gap-3 py-2"><span className="flex min-w-0 items-center gap-3"><FinanceIconBadge iconId={account.iconId || resolveInstitutionIconId(i)} size={32}/><span className="min-w-0"><b className="block truncate text-sm">{account.name}</b><small className="muted">Saldo inicial: {formatBRL(account.balance || 0)}</small></span></span><ItemActions className="mt-0 shrink-0" label={`a conta ${account.name}`} onEdit={() => { setEditing({ institution: i, account }); setN(account.name); setEditingIconId(account.iconId || ""); }} onDelete={() => setDeleting({ institution: i, account })} /></div>)}</div>}
+              {i.accounts.length === 0 && <p className="muted mt-2 text-sm">Sem conta</p>}
+              {i.accounts.length > 0 && <div className="mt-3 divide-y divide-[var(--border)]">{i.accounts.map((account: any) => <div data-testid="institution-account-row" key={account.id} className="flex items-center justify-between gap-3 py-2"><span className="flex min-w-0 items-center"><span className="min-w-0"><b className="block truncate text-sm">{account.name}</b><small className="muted">Saldo inicial: {formatBRL(account.balance || 0)}</small></span></span><ItemActions className="mt-0 shrink-0" label={`a conta ${account.name}`} onEdit={() => { setEditing({ institution: i, account }); setN(account.name); setEditingIconId(""); }} onDelete={() => setDeleting({ institution: i, account })} /></div>)}</div>}
             </div>
           ))}
         </div>
@@ -5296,7 +5290,7 @@ function Institutions({ data, save, toast }: any) {
                 </b>
                 <select
                   value={targetInstitution}
-                  onChange={(event) => { setTargetInstitution(event.target.value); setAccountIconId(""); }}
+                  onChange={(event) => setTargetInstitution(event.target.value)}
                   className="field"
                 >
                   <option value="">Escolha a instituição</option>
@@ -5312,7 +5306,6 @@ function Institutions({ data, save, toast }: any) {
                   onChange={(event) => setExtraAccount(event.target.value)}
                   placeholder="Ex.: Conta digital, carteira"
                 />
-                {selectedInstitution && <FinanceIconPicker label="Símbolo da conta" value={accountIconId} onChange={setAccountIconId} autoIconId={resolveInstitutionIconId(selectedInstitution)} autoLabel="Usar banco" />}
                 <button
                   onClick={addAccount}
                   className="primary h-11 w-full rounded-xl text-sm"
@@ -5324,7 +5317,7 @@ function Institutions({ data, save, toast }: any) {
           </section>
         </Sheet>
       )}
-      {editing && <Sheet close={() => { setEditing(null); setN(""); setEditingIconId(""); }}><section className="space-y-3"><b className="text-lg">Editar {editing.account ? "conta" : "instituição"}</b><input autoFocus className="field" value={n} onChange={(event) => setN(event.target.value)} placeholder={editing.account ? "Nome da conta" : "Nome da instituição"}/><FinanceIconPicker label={`Símbolo da ${editing.account ? "conta" : "instituição"}`} value={editingIconId} onChange={setEditingIconId} autoIconId={editing.account ? resolveInstitutionIconId(editing.institution) : inferBankIconId(n) || "bank"} autoLabel="Automático"/><button onClick={saveEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
+      {editing && <Sheet close={() => { setEditing(null); setN(""); setEditingIconId(""); }}><section className="space-y-3"><b className="text-lg">Editar {editing.account ? "conta" : "instituição"}</b><input autoFocus className="field" value={n} onChange={(event) => setN(event.target.value)} placeholder={editing.account ? "Nome da conta" : "Nome da instituição"}/>{!editing.account && <FinanceIconPicker label="Símbolo da instituição" value={editingIconId} onChange={setEditingIconId} autoIconId={inferBankIconId(n) || "bank"} autoLabel="Automático"/>}<button onClick={saveEdit} className="primary h-11 w-full rounded-xl text-sm">Salvar alterações</button></section></Sheet>}
       {deleting && <DeleteConfirm title={`Excluir ${deleting.account ? "conta" : "instituição"}?`} description={deleting.account ? `A conta “${deleting.account.name}” será removida. Confirme somente se não houver lançamentos que dependam dela.` : `A instituição “${deleting.institution.name}”, suas contas e cartões serão removidos da sua organização. Lançamentos históricos permanecem no extrato.`} close={() => setDeleting(null)} confirm={() => { const institutions = data.institutions.flatMap((institution: Institution) => { if (institution.id !== deleting.institution.id) return [institution]; if (!deleting.account) return []; return [{ ...institution, accounts: institution.accounts.filter((account: any) => account.id !== deleting.account.id) }]; }); save({ ...data, institutions }); toast(deleting.account ? "Conta excluída." : "Instituição excluída."); setDeleting(null); }} />}
     </section>
   );
