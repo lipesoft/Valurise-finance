@@ -8,6 +8,9 @@ const authEnvNames = [
   "E2E_TEST_PASSWORD",
 ] as const;
 const authE2EConfigured = authEnvNames.every((name) => Boolean(process.env[name]));
+const requestedPort = Number(process.env.PLAYWRIGHT_PORT);
+const appPort = Number.isInteger(requestedPort) && requestedPort >= 1024 && requestedPort <= 65535 ? requestedPort : 3000;
+const appUrl = `http://127.0.0.1:${appPort}`;
 
 const inheritedEnv = Object.fromEntries(
   Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
@@ -38,7 +41,7 @@ export default defineConfig({
   reporter: [["list"], ["html", { open: "never" }]],
   outputDir: "./test-results",
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: appUrl,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "on-first-retry",
@@ -51,8 +54,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev -- --hostname 127.0.0.1 --port 3000",
-    url: "http://127.0.0.1:3000",
+    command: `npm run dev -- --hostname 127.0.0.1 --port ${appPort}`,
+    url: appUrl,
     // Do not attach to a developer's server, which may be configured for a live database.
     reuseExistingServer: false,
     timeout: 120_000,

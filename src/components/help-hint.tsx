@@ -80,9 +80,9 @@ export function HelpHint({ label, children }: HelpHintProps) {
         aria-controls={open ? id : undefined}
         title={`Como funciona: ${label}`}
         onClick={toggle}
-        className="muted grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[var(--panel2)] transition-colors hover:text-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        className="muted grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-transparent transition-colors hover:bg-[var(--panel2)] hover:text-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
       >
-        <CircleHelp aria-hidden="true" size={17} />
+        <CircleHelp aria-hidden="true" size={15} />
       </button>
       {open && position && typeof document !== "undefined" && createPortal(
         <div

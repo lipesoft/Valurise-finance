@@ -2,7 +2,7 @@ import "server-only";
 
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
-import { indexValModelQuotaUsage, isFreeModelCatalogFresh, providerCircuitDecision, providerQuotaUtilizationPercent, selectFreeModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
+import { indexValModelQuotaUsage, isFreeModelCatalogFresh, isProviderQuotaCoolingDown, providerCircuitDecision, providerQuotaUtilizationPercent, selectFreeModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
 
 export type RoutedModel = ValModelCandidate & { apiKey: string; displayName: string; requiresProbe?: boolean; requiresProviderProbe?: boolean };
 export type ValRouterRuntime = {
@@ -11,22 +11,6 @@ export type ValRouterRuntime = {
   candidates: RoutedModel[];
   error?: string;
 };
-
-function quotaResetAt(value: string | undefined, observedAt: string | null) {
-  const base = observedAt ? Date.parse(observedAt) : Date.now();
-  if (!Number.isFinite(base)) return Date.now() + 60_000;
-  if (!value) return base + 60_000;
-  const numeric = Number(value);
-  if (Number.isFinite(numeric)) return numeric > 1_000_000_000 ? numeric * 1000 : base + numeric * 1000;
-  const date = Date.parse(value);
-  if (Number.isFinite(date)) return date;
-  const duration = value.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/i);
-  if (duration) {
-    const multiplier = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[duration[2].toLowerCase() as "ms" | "s" | "m" | "h"];
-    return base + Number(duration[1]) * multiplier;
-  }
-  return base + 60_000;
-}
 
 export async function loadValRouterRuntime(requirements: ValModelRequirements): Promise<ValRouterRuntime> {
   const admin = getSupabaseAdminClient();
@@ -97,10 +81,10 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
     const providerUsagePercent = providerQuotaUtilizationPercent(quota);
     let providerQuotaRemaining = providerUsagePercent === null ? null : Math.max(0, 1 - providerUsagePercent / 100);
     const hardQuotaPercent = Number(settings.hard_quota_percent || 98);
+    const quotaObservedAt = provider.last_health_check || provider.updated_at;
+    const isHardQuota = providerUsagePercent !== null && providerUsagePercent >= hardQuotaPercent;
+    if (isProviderQuotaCoolingDown(quota, quotaObservedAt ? String(quotaObservedAt) : null, now.getTime(), isHardQuota)) continue;
     if (providerUsagePercent !== null && providerUsagePercent >= hardQuotaPercent) {
-      const reset = quota["x-ratelimit-reset-tokens"] ?? quota["x-ratelimit-reset-requests"] ?? quota["x-ratelimit-reset"] ?? quota["retry-after"];
-      const quotaObservedAt = provider.last_health_check || provider.updated_at;
-      if (quotaResetAt(reset, quotaObservedAt ? String(quotaObservedAt) : null) > now.getTime()) continue;
       providerQuotaRemaining = null;
     }
     const quotaRemainingRatio = Math.min(
@@ -111,12 +95,6 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
     );
     const hardLimitRemaining = 1 - hardQuotaPercent / 100;
     if (quotaRemainingRatio <= hardLimitRemaining) continue;
-    const remaining = Number(quota["x-ratelimit-remaining-tokens"] ?? quota["x-ratelimit-remaining-requests"] ?? quota["x-ratelimit-remaining"] ?? "");
-    if (Number.isFinite(remaining) && remaining <= 0) {
-      const reset = quota["x-ratelimit-reset-tokens"] ?? quota["x-ratelimit-reset-requests"] ?? quota["x-ratelimit-reset"] ?? quota["retry-after"];
-      const quotaObservedAt = provider.last_health_check || provider.updated_at;
-      if (quotaResetAt(reset, quotaObservedAt ? String(quotaObservedAt) : null) > now.getTime()) continue;
-    }
     rows.push({
       provider: providerId,
       modelId: String(row.model_id),

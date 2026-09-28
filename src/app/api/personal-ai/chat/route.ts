@@ -300,8 +300,8 @@ export async function POST(request: NextRequest) {
         const failure = classifyAIError(error, candidate.provider, candidate.modelId);
         const latencyMs = Date.now() - attemptStartedAt;
         await Promise.all([
-          recordValAiAttempt({ requestId, userId: user.id, workspaceId: workspace.id, taskType, attempt, provider: candidate.provider, model: candidate.modelId, status: "FAILED", latencyMs, errorCategory: failure.category, providerCode: failure.providerCode, httpStatus: failure.httpStatus, providerRequestId: failure.requestId }),
-          recordValAiModelHealth({ provider: candidate.provider, model: candidate.modelId, ok: false, latencyMs, category: failure.category, providerCode: failure.providerCode }),
+          recordValAiAttempt({ requestId, userId: user.id, workspaceId: workspace.id, taskType, attempt, provider: candidate.provider, model: candidate.modelId, status: "FAILED", latencyMs, errorCategory: failure.category, providerCode: failure.providerCode, httpStatus: failure.httpStatus, providerRequestId: failure.requestId, quotaHeaders: failure.quotaHeaders }),
+          recordValAiModelHealth({ provider: candidate.provider, model: candidate.modelId, ok: false, latencyMs, category: failure.category, providerCode: failure.providerCode, quotaHeaders: failure.quotaHeaders }),
         ]);
         if (createdProposals.length) throw Object.assign(failure, { noFallback: true });
         throw failure;

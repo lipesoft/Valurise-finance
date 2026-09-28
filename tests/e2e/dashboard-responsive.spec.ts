@@ -243,6 +243,10 @@ test("Ajustes mantêm as explicações longas acessíveis pelo botão de ajuda e
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await expect(backupHelp).toBeVisible();
+    const helpTriggerBounds = await backupHelp.boundingBox();
+    expect(helpTriggerBounds).not.toBeNull();
+    expect(helpTriggerBounds!.width).toBeLessThanOrEqual(34);
+    expect(helpTriggerBounds!.height).toBeLessThanOrEqual(34);
     await backupHelp.click();
     await expect(helpRegion).toContainText(backupText);
     const helpBounds = await helpRegion.boundingBox();
@@ -262,6 +266,30 @@ test("Ajustes mantêm as explicações longas acessíveis pelo botão de ajuda e
   await expect(aiHelpRegion).toHaveCount(0);
   await expect(aiHelpButton).toBeFocused();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("atualiza a disponibilidade da Val depois de uma pausa temporária do serviço", async ({ page }) => {
+  await installMockSession(page);
+  let checks = 0;
+  let serviceAvailable = false;
+  await page.route("**/api/personal-ai/connection", async (route) => {
+    checks += 1;
+    return route.fulfill({ status: 200, json: { connection: {
+      available: serviceAvailable,
+      insights_enabled: false,
+      actions_enabled: false,
+      actions_allowed: true,
+      consentRenewalRequired: false,
+    } } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await expect(page.getByRole("status").getByText("Val temporariamente indisponível")).toBeVisible();
+  serviceAvailable = true;
+  await page.getByRole("button", { name: "Verificar agora" }).click();
+  await expect(page.getByRole("status").getByText("Val disponível")).toBeVisible();
+  expect(checks).toBeGreaterThanOrEqual(2);
 });
 
 test("splash acompanha a sincronização real e expande a marca suavemente na entrada", async ({ page }) => {

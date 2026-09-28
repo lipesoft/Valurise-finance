@@ -13,6 +13,7 @@ type ValUsage = {
 export function ValAISettings({ toast, workspaceId }: { toast: (text: string) => void; workspaceId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
   const [available, setAvailable] = useState(false);
   const [insightsEnabled, setInsightsEnabled] = useState(false);
   const [actionsEnabled, setActionsEnabled] = useState(false);
@@ -26,25 +27,39 @@ export function ValAISettings({ toast, workspaceId }: { toast: (text: string) =>
     return token ? { Authorization: `Bearer ${token}`, "X-Valurise-Workspace-Id": workspaceId } : null;
   }, [workspaceId]);
 
+  const refreshAvailability = useCallback(async (requestHeaders?: Record<string, string>) => {
+    const authHeaders = requestHeaders || await headers();
+    if (!authHeaders) return null;
+    setCheckingAvailability(true);
+    try {
+      const response = await fetch("/api/personal-ai/connection", { headers: authHeaders, cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok || !result.connection) return null;
+      setAvailable(Boolean(result.connection.available));
+      setInsightsEnabled(Boolean(result.connection.insights_enabled));
+      setActionsEnabled(Boolean(result.connection.actions_enabled));
+      setActionsAllowed(Boolean(result.connection.actions_allowed));
+      setRenewalRequired(Boolean(result.connection.consentRenewalRequired));
+      return Boolean(result.connection.available);
+    } catch {
+      return null;
+    } finally {
+      setCheckingAvailability(false);
+    }
+  }, [headers]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const requestHeaders = await headers();
         if (!requestHeaders) return;
-        const [connectionResponse, usageResponse] = await Promise.all([
-          fetch("/api/personal-ai/connection", { headers: requestHeaders, cache: "no-store" }),
+        const [, usageResponse] = await Promise.all([
+          refreshAvailability(requestHeaders),
           fetch("/api/personal-ai/usage", { headers: requestHeaders, cache: "no-store" }),
         ]);
-        const [connectionBody, usageBody] = await Promise.all([connectionResponse.json(), usageResponse.json()]);
+        const usageBody = await usageResponse.json();
         if (cancelled) return;
-        if (connectionResponse.ok && connectionBody.connection) {
-          setAvailable(Boolean(connectionBody.connection.available));
-          setInsightsEnabled(Boolean(connectionBody.connection.insights_enabled));
-          setActionsEnabled(Boolean(connectionBody.connection.actions_enabled));
-          setActionsAllowed(Boolean(connectionBody.connection.actions_allowed));
-          setRenewalRequired(Boolean(connectionBody.connection.consentRenewalRequired));
-        }
         if (usageResponse.ok && usageBody.usage) setUsage(usageBody.usage);
       } catch {
         if (!cancelled) setAvailable(false);
@@ -53,7 +68,22 @@ export function ValAISettings({ toast, workspaceId }: { toast: (text: string) =>
       }
     })();
     return () => { cancelled = true; };
-  }, [headers]);
+  }, [headers, refreshAvailability]);
+
+  useEffect(() => {
+    if (loading || available) return;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "hidden" && !checkingAvailability) void refreshAvailability();
+    };
+    const interval = window.setInterval(refreshWhenVisible, 15_000);
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [available, checkingAvailability, loading, refreshAvailability]);
 
   const save = async () => {
     const requestHeaders = await headers();
@@ -94,9 +124,10 @@ export function ValAISettings({ toast, workspaceId }: { toast: (text: string) =>
       </div>
     </div>
 
-    <div className="mt-4 flex items-center gap-2 rounded-xl bg-[var(--panel2)] px-3 py-2.5 text-sm" role="status" aria-live="polite">
-      <span aria-hidden="true" className={`h-2.5 w-2.5 rounded-full ${loading ? "bg-[var(--muted)]" : available ? "bg-[var(--accent)]" : "bg-[var(--danger)]"}`} />
-      <span>{loading ? "Verificando disponibilidade…" : available ? "Val disponível" : "Val temporariamente indisponível"}</span>
+    <div className="mt-4 flex min-h-11 items-center gap-2 rounded-xl bg-[var(--panel2)] px-3 py-2.5 text-sm">
+      <span aria-hidden="true" className={`h-2.5 w-2.5 shrink-0 rounded-full ${loading ? "bg-[var(--muted)]" : available ? "bg-[var(--accent)]" : "bg-[var(--danger)]"}`} />
+      <span role="status" aria-live="polite" className="min-w-0">{loading ? "Verificando disponibilidade…" : available ? "Val disponível" : "Val temporariamente indisponível"}</span>
+      {!loading && !available && <button type="button" disabled={checkingAvailability} onClick={() => void refreshAvailability()} className="ml-auto shrink-0 rounded-lg px-2 py-1 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel)] disabled:opacity-60">{checkingAvailability ? "Verificando…" : "Verificar agora"}</button>}
     </div>
 
     {renewalRequired && <p role="status" className="mt-3 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">Atualizamos as informações de privacidade da Val. Revise o consentimento abaixo e salve novamente para continuar compartilhando contexto financeiro.</p>}
@@ -114,7 +145,7 @@ export function ValAISettings({ toast, workspaceId }: { toast: (text: string) =>
 
     <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="rounded-xl border border-[var(--border)] px-3 py-2.5">
-        <div className="flex items-center gap-2"><ShieldCheck size={15} className="text-[var(--accent)]"/><b className="text-xs">Uso hoje</b><HelpHint label="Limite de uso"><p>O limite é definido pelo Valurise e renovado automaticamente. Métricas internas de tokens servem somente para segurança e controle operacional.</p></HelpHint></div>
+        <div className="flex items-center gap-2"><ShieldCheck size={15} className="text-[var(--accent)]"/><b className="text-xs">Uso hoje</b><HelpHint label="Limite de uso"><p>O limite de consultas da Val é definido pelo Valurise e renovado automaticamente; tokens são medidos separadamente para controle operacional.</p><p>Mesmo com consultas disponíveis, a Val pode aguardar a renovação de um limite temporário do serviço. A disponibilidade é atualizada automaticamente e a Val nunca troca para um modelo pago.</p></HelpHint></div>
         <p className="muted mt-1 text-xs">{usage ? `${remaining} de ${dailyLimit} consultas disponíveis` : "O limite será exibido quando o serviço estiver configurado."}</p>
         {usage && <p className="muted mt-1 text-[11px]">Neste mês: {usage.month.requests.toLocaleString("pt-BR")} consultas</p>}
       </div>

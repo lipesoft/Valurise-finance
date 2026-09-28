@@ -50,7 +50,12 @@ Graphify grava a saída gerada em `graphify-out/`, que fica fora do Git. Após m
 
 O servidor Playwright substitui as variáveis públicas e secretas do Supabase por valores fictícios locais por padrão. Os E2E automatizados interceptam as rotas de login, cadastro e recuperação que exercitariam serviços externos. O endereço de e-mail `.invalid` usado nos testes não é entregável. A configuração local não lê o `.env.local` como fonte de credenciais para o servidor E2E.
 
-O runner sempre inicia seu próprio servidor local e não reutiliza uma instância que possa estar ligada a dados reais. Se a porta 3000 estiver ocupada, pare o servidor de desenvolvimento antes de iniciar os E2E.
+O runner sempre inicia seu próprio servidor local e não reutiliza uma instância que possa estar ligada a dados reais. Se a porta 3000 estiver ocupada por outro projeto, escolha uma porta livre sem encerrar o processo existente:
+
+```powershell
+$env:PLAYWRIGHT_PORT = "3010"
+npm run test:e2e
+```
 
 O teste `authenticated-login.spec.ts` é ignorado por padrão. Para executá-lo, configure no ambiente do processo (não em arquivos versionados) um projeto Supabase **dedicado, não produtivo**, com um usuário aprovado e ativo:
 

@@ -70,6 +70,30 @@ describe("diagnóstico seguro dos provedores de IA", () => {
     expect(toolsUnsupported.category).toBe("TOOL_CALL_UNSUPPORTED");
   });
 
+  it("preserva somente metadados seguros de cota e reconhece o tempo de recuperação de 429", () => {
+    const fromHeader = classifyAIError(Object.assign(new Error("Provider request failed"), {
+      statusCode: 429,
+      responseHeaders: { "retry-after": "9.5", authorization: "Bearer segredo-que-nao-deve-ser-salvo" },
+    }), "groq", "qwen/qwen3.8-27b");
+    const fromMessage = classifyAIError(Object.assign(new Error("Provider request failed"), {
+      statusCode: 429,
+      responseBody: JSON.stringify({ error: { message: "Rate limit reached. Please try again in 9.257142857s." } }),
+    }), "groq", "qwen/qwen3.8-27b");
+    const fromDateHeader = classifyAIError(Object.assign(new Error("Provider request failed"), {
+      statusCode: 429,
+      responseHeaders: { "retry-after": new Date(Date.now() + 9500).toUTCString() },
+    }), "groq", "qwen/qwen3.8-27b");
+
+    expect(fromHeader.retryAfterMs).toBe(9500);
+    expect(fromHeader.quotaHeaders).toEqual({ "retry-after": "9.5" });
+    expect(JSON.stringify(fromHeader.quotaHeaders)).not.toContain("segredo-que-nao-deve-ser-salvo");
+    expect(fromMessage.retryAfterMs).toBe(9257);
+    expect(fromMessage.quotaHeaders["retry-after"]).toBe("9.3");
+    expect(fromDateHeader.retryAfterMs).toBeGreaterThan(8000);
+    expect(fromDateHeader.retryAfterMs).toBeLessThanOrEqual(10_000);
+    expect(fromDateHeader.quotaHeaders["retry-after"]).toMatch(/^\d+(\.\d+)?$/);
+  });
+
   it("reconhece indisponibilidade do upstream quando um gateway devolve HTTP 200", () => {
     const upstreamFailure = classifyAIError(Object.assign(new Error("Provider request failed"), {
       statusCode: 200,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyValTask, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, providerCircuitDecision, providerQuotaUtilizationPercent, runFreeModelCandidates, selectFreeModels, type ValModelCandidate } from "./policy";
+import { classifyValTask, hasKnownZeroProviderQuota, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, isProviderQuotaCoolingDown, providerCircuitDecision, providerQuotaUtilizationPercent, runFreeModelCandidates, selectFreeModels, type ValModelCandidate } from "./policy";
 
 const model = (overrides: Partial<ValModelCandidate> = {}): ValModelCandidate => ({
   provider: "groq", modelId: "openai/gpt-oss-20b", isFree: true, freeVerified: true,
@@ -33,6 +33,24 @@ describe("Val FreeModelPolicy", () => {
     expect(providerQuotaUtilizationPercent({ "x-ratelimit-limit-tokens": "1000", "x-ratelimit-remaining-tokens": "100", "x-ratelimit-limit-requests": "10", "x-ratelimit-remaining-requests": "3" })).toBe(90);
     expect(providerQuotaUtilizationPercent({ "x-ratelimit-limit": "100", "x-ratelimit-remaining": "0" })).toBe(100);
     expect(providerQuotaUtilizationPercent({ "x-ratelimit-limit-tokens": "unknown", "x-ratelimit-remaining-tokens": "3" })).toBeNull();
+  });
+
+  it("trata cota ausente como desconhecida, sem bloqueá-la como se fosse zero", () => {
+    expect(hasKnownZeroProviderQuota({})).toBe(false);
+    expect(hasKnownZeroProviderQuota({ "x-ratelimit-remaining-tokens": "" })).toBe(false);
+    expect(hasKnownZeroProviderQuota({ "x-ratelimit-remaining-tokens": "0" })).toBe(true);
+    expect(hasKnownZeroProviderQuota({ "x-ratelimit-remaining-requests": "0" })).toBe(true);
+    expect(hasKnownZeroProviderQuota({ "x-ratelimit-remaining-tokens": "12", "x-ratelimit-remaining-requests": "0" })).toBe(true);
+    expect(hasKnownZeroProviderQuota({ "x-ratelimit-remaining": "12" })).toBe(false);
+  });
+
+  it("respeita o tempo explícito de recuperação sem inventar pausa para metadados ausentes", () => {
+    const now = Date.parse("2026-09-28T12:00:00.000Z");
+    const observedAt = new Date(now).toISOString();
+    expect(isProviderQuotaCoolingDown({}, observedAt, now)).toBe(false);
+    expect(isProviderQuotaCoolingDown({ "retry-after": "9.3" }, observedAt, now)).toBe(true);
+    expect(isProviderQuotaCoolingDown({ "retry-after": "9.3" }, observedAt, now + 10_000)).toBe(false);
+    expect(isProviderQuotaCoolingDown({ "x-ratelimit-remaining-tokens": "0" }, observedAt, now)).toBe(true);
   });
 
   it("conta cada tentativa do provider, inclusive fallback, para as cotas por modelo", () => {

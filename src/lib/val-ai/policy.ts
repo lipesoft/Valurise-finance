@@ -148,6 +148,41 @@ export function providerQuotaUtilizationPercent(headers: Record<string, string>)
   return values.length ? Math.max(...values) : null;
 }
 
+/** Missing provider quota headers mean “unknown”, not zero remaining. */
+export function hasKnownZeroProviderQuota(headers: Record<string, string>) {
+  return [headers["x-ratelimit-remaining-tokens"], headers["x-ratelimit-remaining-requests"], headers["x-ratelimit-remaining"]]
+    .some((raw) => {
+      if (raw === undefined || raw.trim() === "") return false;
+      const remaining = Number(raw);
+      return Number.isFinite(remaining) && remaining <= 0;
+    });
+}
+
+function quotaResetAt(value: string | undefined, observedAt: string | null, now: number) {
+  const base = observedAt ? Date.parse(observedAt) : now;
+  if (!Number.isFinite(base)) return now + 60_000;
+  if (!value) return base + 60_000;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric > 1_000_000_000 ? numeric * 1000 : base + numeric * 1000;
+  const date = Date.parse(value);
+  if (Number.isFinite(date)) return date;
+  const duration = value.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/i);
+  if (duration) {
+    const multiplier = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[duration[2].toLowerCase() as "ms" | "s" | "m" | "h"];
+    return base + Number(duration[1]) * multiplier;
+  }
+  return base + 60_000;
+}
+
+export function isProviderQuotaCoolingDown(headers: Record<string, string>, observedAt: string | null, now = Date.now(), force = false) {
+  if (!force && !headers["retry-after"] && !hasKnownZeroProviderQuota(headers)) return false;
+  const reset = headers["x-ratelimit-reset-tokens"]
+    ?? headers["x-ratelimit-reset-requests"]
+    ?? headers["x-ratelimit-reset"]
+    ?? headers["retry-after"];
+  return quotaResetAt(reset, observedAt, now) > now;
+}
+
 export function classifyValTask(text: string, needsFinancialData: boolean, requestsAction: boolean) {
   if (requestsAction) return "ACTION_PROPOSAL" as const;
   if (needsFinancialData) return "TOOL_CALL" as const;

@@ -53,6 +53,8 @@ export class AIProviderError extends Error {
   readonly providerMessage: string | null;
   readonly requestId: string | null;
   readonly retryable: boolean;
+  readonly retryAfterMs: number | null;
+  readonly quotaHeaders: Record<string, string>;
 
   constructor(args: {
     provider: AIProvider;
@@ -62,6 +64,8 @@ export class AIProviderError extends Error {
     providerCode?: string | null;
     providerMessage?: string | null;
     requestId?: string | null;
+    retryAfterMs?: number | null;
+    quotaHeaders?: Record<string, string>;
   }) {
     super(messages[args.category](AI_PROVIDER_METADATA[args.provider].label));
     this.name = "AIProviderError";
@@ -73,7 +77,64 @@ export class AIProviderError extends Error {
     this.providerMessage = safeProviderMessage(args.providerMessage);
     this.requestId = safeIdentifier(args.requestId);
     this.retryable = ["RATE_LIMITED", "PROVIDER_OVERLOADED", "PROVIDER_UNAVAILABLE", "NETWORK_ERROR", "TIMEOUT"].includes(args.category);
+    this.retryAfterMs = Number.isFinite(args.retryAfterMs) && Number(args.retryAfterMs) > 0
+      ? Math.min(24 * 60 * 60 * 1000, Math.round(Number(args.retryAfterMs)))
+      : null;
+    this.quotaHeaders = args.quotaHeaders || {};
   }
+}
+
+const SAFE_QUOTA_HEADERS = [
+  "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests",
+  "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens",
+  "retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+] as const;
+
+function safeQuotaHeaders(headers: unknown) {
+  const values = new Map<string, unknown>();
+  if (typeof Headers !== "undefined" && headers instanceof Headers) {
+    for (const name of SAFE_QUOTA_HEADERS) values.set(name, headers.get(name));
+  } else if (headers && typeof headers === "object") {
+    for (const [name, value] of Object.entries(headers)) values.set(name.toLowerCase(), value);
+  }
+  return Object.fromEntries(SAFE_QUOTA_HEADERS.flatMap((name) => {
+    const value = values.get(name);
+    if (name === "retry-after" && typeof value === "string" && value.length <= 80) {
+      const retryAfterMs = parseRetryAfterMs(value);
+      return retryAfterMs !== null
+        ? [[name, String(Math.ceil(retryAfterMs / 100) / 10)]]
+        : [];
+    }
+    return typeof value === "string" && value.length <= 80 && /^[0-9][A-Za-z0-9 .:+-]*$/.test(value)
+      ? [[name, value]]
+      : [];
+  }));
+}
+
+function parseRetryAfterMs(value: string | undefined, now = Date.now()) {
+  if (!value) return null;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric >= 0) {
+    // Retry-After is expressed in seconds; provider reset headers may be epoch seconds.
+    return numeric > 1_000_000_000 ? Math.max(0, numeric * 1000 - now) : numeric * 1000;
+  }
+  const duration = value.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/i);
+  if (duration) {
+    const multiplier = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[duration[2].toLowerCase() as "ms" | "s" | "m" | "h"];
+    return Number(duration[1]) * multiplier;
+  }
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - now) : null;
+}
+
+function retryAfterFromProviderMessage(message: string) {
+  const match = message.match(/(?:try again|retry(?: after)?|reset)(?:\s+in)?\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|seconds?|m|min|minutes?|h|hours?)/i);
+  if (!match) return null;
+  const unit = match[2].toLowerCase();
+  const multiplier = unit.startsWith("ms") || unit.startsWith("millisecond") ? 1
+    : unit === "m" || unit.startsWith("min") ? 60_000
+      : unit === "h" || unit.startsWith("hour") ? 3_600_000 : 1000;
+  return Number(match[1]) * multiplier;
 }
 
 function safeIdentifier(value: unknown) {
@@ -141,9 +202,19 @@ export function classifyAIError(error: unknown, provider: AIProvider, model: str
   const code = details.reason || details.status || details.code || rawCode;
   const codeText = `${rawCode} ${details.code} ${details.status} ${details.reason} ${details.quota}`.toLowerCase();
   const message = `${String(value.message || "")} ${details.text} ${codeText}`.toLowerCase();
-  const headers = value.responseHeaders as Record<string, string> | undefined;
-  const headerEntries = Object.entries(headers || {}).map(([name, value]) => [name.toLowerCase(), value] as const);
+  const rawHeaders = value.responseHeaders;
+  const headers = safeQuotaHeaders(rawHeaders);
+  const headerEntries = rawHeaders instanceof Headers
+    ? [...rawHeaders.entries()].map(([name, value]) => [name.toLowerCase(), value] as const)
+    : Object.entries(rawHeaders && typeof rawHeaders === "object" ? rawHeaders : {}).map(([name, value]) => [name.toLowerCase(), String(value)] as const);
   const requestId = headerEntries.find(([name]) => ["x-request-id", "request-id", "x-goog-request-id"].includes(name))?.[1];
+  const resetHeader = headers["retry-after"] || headers["x-ratelimit-reset-tokens"] || headers["x-ratelimit-reset-requests"] || headers["x-ratelimit-reset"];
+  const retryAfterMs = parseRetryAfterMs(resetHeader)
+    ?? retryAfterFromProviderMessage(details.text);
+  if (retryAfterMs && !headers["retry-after"] && !headers["x-ratelimit-reset-tokens"] && !headers["x-ratelimit-reset-requests"] && !headers["x-ratelimit-reset"]) {
+    // Groq commonly reports its reset in the structured error message instead of a header.
+    headers["retry-after"] = String(Math.ceil(retryAfterMs / 100) / 10);
+  }
   let category: AIErrorCategory = "UNKNOWN_PROVIDER_ERROR";
 
   if (/toolchoiceviolationerror/i.test(String(value.name || ""))
@@ -168,7 +239,7 @@ export function classifyAIError(error: unknown, provider: AIProvider, model: str
   else if (status === 408) category = "TIMEOUT";
   else if (status && status >= 500) category = /overload|capacity/.test(message) ? "PROVIDER_OVERLOADED" : "PROVIDER_UNAVAILABLE";
 
-  return new AIProviderError({ provider, model, category, httpStatus: status, providerCode: code, providerMessage: details.text || undefined, requestId });
+  return new AIProviderError({ provider, model, category, httpStatus: status, providerCode: code, providerMessage: details.text || undefined, requestId, retryAfterMs, quotaHeaders: headers });
 }
 
 export function logAIError(error: AIProviderError, latencyMs: number) {
