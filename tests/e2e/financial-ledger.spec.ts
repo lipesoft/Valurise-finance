@@ -379,6 +379,22 @@ test("banco selecionado aplica sua marca SVG no cartão e permite personalizar �
   await expect(card.locator('[data-finance-icon="bank-nubank"]')).toBeVisible();
 });
 
+test("apelido de cartão é opcional e não duplica o tipo Crédito", async ({ page }) => {
+  await loginWithFinancialSeed(page);
+  await page.getByRole("button", { name: "Cartões", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar cartão" }).click();
+  await page.getByLabel("Instituição do cartão").selectOption({ label: "Banco Teste" });
+  await page.getByPlaceholder("Limite").fill("600,00");
+  await page.getByRole("button", { name: "Adicionar cartão", exact: true }).last().click();
+
+  await expect(page.getByText("Crédito · limite R$ 600,00", { exact: true })).toBeVisible();
+  await expect(page.getByText("Crédito · crédito · limite R$ 600,00", { exact: true })).toHaveCount(0);
+
+  const storedData = await page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "{}"),
+    `valurise:v2:${user.id}:workspace:${personalWorkspaceId}:data`);
+  expect(storedData.institutions[0].cards.at(-1).name).toBeUndefined();
+});
+
 test("ícone escolhido para uma categoria aparece no extrato sem alterar os lançamentos", async ({ page }) => {
   const now = new Date().toISOString();
   await loginWithFinancialSeed(page, [], { transactions: [{

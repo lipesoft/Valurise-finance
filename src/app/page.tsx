@@ -59,7 +59,12 @@ import {
   recurringBillDueDay,
   setRecurringBillPaidInMonth,
 } from "@/lib/recurring-bills";
-import { bestPurchaseDay } from "@/lib/cards";
+import {
+  bestPurchaseDay,
+  cardAccountLabel,
+  cardDisplayLabel,
+  normalizeCardNickname,
+} from "@/lib/cards";
 import {
   AnimatedCard,
   AnimatedNumber,
@@ -118,7 +123,7 @@ type Institution = {
   accounts: { id: string; name: string; balance: number; iconId?: FinanceIconId }[];
   cards: {
     id: string;
-    name: string;
+    name?: string;
     limit: number;
     iconId?: FinanceIconId;
     closingDay?: string;
@@ -4268,7 +4273,7 @@ function CardInvoicePreview({ data, tx }: any) {
       </div>
       <div className="mt-3 divide-y divide-[var(--border)]">
         {cards.map(({ institution, card }: any) => {
-          const label = `${institution.name} • ${card.name || "Crédito"}`;
+          const label = `${institution.name} • ${cardAccountLabel(card.name)}`;
           const current = tx
             .filter(
               (item: FinanceTransaction) =>
@@ -4300,7 +4305,7 @@ function CardInvoicePreview({ data, tx }: any) {
             <div className="py-3" key={card.id}>
               <div className="flex justify-between text-sm">
                 <span>
-                  {institution.name} · {card.name}
+                  {institution.name} · {cardDisplayLabel(card.name)}
                 </span>
                 <b>{formatBRL(current)} / {formatBRL(card.limit)}</b>
               </div>
@@ -4595,7 +4600,7 @@ function Launcher({ data, workspace, close, saved, createCategory, createInvestm
     })),
     ...i.cards.map((c) => ({
       id: `card:${i.id}:${c.id}`,
-      label: `${i.name} • ${c.name || "Crédito"}`,
+      label: `${i.name} • ${cardAccountLabel(c.name)}`,
       kind: "card" as const,
     })),
   ]);
@@ -5323,13 +5328,13 @@ function Cards({ data, save, toast }: any) {
             ...institution,
             cards: editing ? institution.cards.map((card: any) => card.id === editing.card.id ? {
                 ...card,
-                name: nickname.trim() || "Crédito",
+                name: normalizeCardNickname(nickname),
                 iconId: iconId || undefined,
                 limit: Math.round(Number(limit.replace(",", ".")) * 100),
                 closingDay: closingDay || undefined,
                 dueDay: dueDay || undefined,
                 bestPurchaseDay: bestPurchaseDay(closingDay)?.toString(),
-              } : card) : [...institution.cards, { id: crypto.randomUUID(), name: nickname.trim() || "Crédito", limit: Math.round(Number(limit.replace(",", ".")) * 100), iconId: iconId || undefined, closingDay: closingDay || undefined, dueDay: dueDay || undefined, bestPurchaseDay: bestPurchaseDay(closingDay)?.toString() }],
+              } : card) : [...institution.cards, { id: crypto.randomUUID(), name: normalizeCardNickname(nickname), limit: Math.round(Number(limit.replace(",", ".")) * 100), iconId: iconId || undefined, closingDay: closingDay || undefined, dueDay: dueDay || undefined, bestPurchaseDay: bestPurchaseDay(closingDay)?.toString() }],
           }
         : institution,
     );
@@ -5337,7 +5342,7 @@ function Cards({ data, save, toast }: any) {
     toast(editing ? "Cartão atualizado com sucesso." : "Cartão criado com sucesso.");
     resetForm();
   };
-  const startEdit = ({ institution, card }: { institution: Institution; card: any }) => { setEditing({ institution, card }); setInstitutionId(institution.id); setNickname(card.name); setLimit(centsInput(card.limit)); setClosingDay(card.closingDay || ""); setDueDay(card.dueDay || ""); setIconId(card.iconId || ""); setAdding(true); };
+  const startEdit = ({ institution, card }: { institution: Institution; card: any }) => { setEditing({ institution, card }); setInstitutionId(institution.id); setNickname(normalizeCardNickname(card.name) || ""); setLimit(centsInput(card.limit)); setClosingDay(card.closingDay || ""); setDueDay(card.dueDay || ""); setIconId(card.iconId || ""); setAdding(true); };
 
   const cards = data.institutions.flatMap((institution: Institution) =>
     institution.cards.map((card) => ({ institution, card })),
@@ -5357,7 +5362,7 @@ function Cards({ data, save, toast }: any) {
         <div className="mt-5 space-y-3">
           {cards.map(({ institution, card }) => (
             <article className="panel rounded-2xl p-4" key={card.id}>
-              <div className="flex items-center gap-3"><FinanceIconBadge iconId={card.iconId || resolveInstitutionIconId(institution)} size={42}/><span className="min-w-0"><b className="block truncate">{institution.name}</b><p className="muted mt-1 text-sm">{card.name} · crédito · limite {formatBRL(card.limit)}</p></span></div>
+              <div className="flex items-center gap-3"><FinanceIconBadge iconId={card.iconId || resolveInstitutionIconId(institution)} size={42}/><span className="min-w-0"><b className="block truncate">{institution.name}</b><p className="muted mt-1 text-sm">{cardDisplayLabel(card.name)} · limite {formatBRL(card.limit)}</p></span></div>
               {(card.closingDay || card.dueDay) && (
                 <p className="muted mt-1 text-xs">
                   Fecha dia {card.closingDay || "—"} · vence dia{" "}
@@ -5369,7 +5374,7 @@ function Cards({ data, save, toast }: any) {
                   Melhor dia para comprar: dia {card.bestPurchaseDay}
                 </p>
               )}
-              <ItemActions label={`o cartão ${card.name}`} onEdit={() => startEdit({ institution, card })} onDelete={() => setDeleting({ institution, card })} />
+              <ItemActions label={`o cartão ${cardDisplayLabel(card.name)}`} onEdit={() => startEdit({ institution, card })} onDelete={() => setDeleting({ institution, card })} />
             </article>
           ))}
         </div>
@@ -5436,7 +5441,7 @@ function Cards({ data, save, toast }: any) {
           </p>
         )
       )}
-      {deleting && <DeleteConfirm title="Excluir cartão?" description={`O cartão “${deleting.card.name}” será removido de ${deleting.institution.name}. Compras já registradas no extrato não serão apagadas.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, institutions: data.institutions.map((institution: Institution) => institution.id === deleting.institution.id ? { ...institution, cards: institution.cards.filter((card: any) => card.id !== deleting.card.id) } : institution) }); toast("Cartão excluído."); setDeleting(null); }} />}
+      {deleting && <DeleteConfirm title="Excluir cartão?" description={`O cartão “${cardDisplayLabel(deleting.card.name)}” será removido de ${deleting.institution.name}. Compras já registradas no extrato não serão apagadas.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, institutions: data.institutions.map((institution: Institution) => institution.id === deleting.institution.id ? { ...institution, cards: institution.cards.filter((card: any) => card.id !== deleting.card.id) } : institution) }); toast("Cartão excluído."); setDeleting(null); }} />}
     </section>
   );
 }
