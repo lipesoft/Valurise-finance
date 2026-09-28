@@ -498,7 +498,8 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   await page.getByRole("button", { name: "Provedores" }).click();
   await expect(keyInput).toBeVisible();
   await keyInput.fill(keySentinel);
-  await page.getByRole("button", { name: "Guardar chave" }).first().click();
+  await page.getByRole("button", { name: "Salvar chave protegida" }).first().click();
+  await expect(page.getByText("Salvar a chave apenas a guarda criptografada. Isso não ativa o provider nem libera a Val para os usuários.").first()).toBeVisible();
   await expect(keyInput).toHaveValue("");
   expect(adminActions[0]).toMatchObject({ action: "save_key", provider: "groq", apiKey: keySentinel });
 
@@ -515,6 +516,7 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   expect(visibleText).not.toContain(keySentinel);
   expect(JSON.stringify(await page.evaluate(() => localStorage))).not.toContain(keySentinel);
   await page.getByRole("button", { name: "Cotas e limites" }).click();
+  await expect(page.getByText(/Para disponibilizar a Val aos usuários, habilite Val, roteador/)).toBeVisible();
   await expect(page.getByRole("spinbutton", { name: "Falhas para abrir circuito" })).toHaveValue("3");
   await page.getByRole("button", { name: "Salvar limites e controles" }).click();
   expect(adminActions.at(-1)).toMatchObject({ action: "save_limits", circuitFailureThreshold: 3, circuitCooldownSeconds: 120 });

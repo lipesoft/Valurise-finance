@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateText, tool } from "ai";
 import { z } from "zod";
 import { createValModel } from "@/lib/val-ai/adapter";
+import { getValHealthCheckPrompt, VAL_HEALTH_CHECK_TOOL_DESCRIPTION, VAL_HEALTH_CHECK_TOOL_NAME } from "@/lib/val-ai/health-check";
 import { discoverFreeModelCatalog, readSafeQuotaHeaders } from "@/lib/val-ai/provider-catalog";
 import { verifyCurrentFreeCatalogEntry } from "@/lib/val-ai/catalog-policy";
 import { isApprovedFreeModel, isFreeModelCatalogFresh, type ValModelCandidate, type ValProvider } from "@/lib/val-ai/policy";
@@ -294,19 +295,20 @@ export async function POST(request: NextRequest) {
         return responseError("O catálogo atual não confirma este modelo como gratuito. Nenhum teste de geração foi enviado.", 409, "MODEL_FREE_STATUS_CHANGED");
       }
       const candidate = adminCandidate(action.provider, current.model);
-      if (!isApprovedFreeModel(candidate)) return responseError("A política gratuita bloqueou o teste deste modelo.", 409, "FREE_MODEL_POLICY_BLOCKED");
-      const model = createValModel({ ...candidate, apiKey, displayName: String(current.model.display_name) });
+      const requiresTools = current.model.supports_tools === true;
+      if (!isApprovedFreeModel(candidate, { tools: requiresTools })) return responseError("A política gratuita ou a capacidade de ferramentas bloqueou o teste deste modelo.", 409, "FREE_MODEL_POLICY_BLOCKED");
+      const model = createValModel({ ...candidate, apiKey, displayName: String(current.model.display_name) }, requiresTools);
       const startedAt = Date.now();
       let result;
       try {
         result = await generateText({
           model,
-          prompt: "Responda somente: OK",
-          ...(current.model.supports_tools === true ? { tools: { getHealthCheckValue: tool({ description: "Retorna um sinal fictício local de saúde, sem dados e sem efeitos colaterais.", inputSchema: z.object({}).strict(), execute: async () => ({ ok: true }) }) }, toolChoice: "required" as const } : {}),
-          maxOutputTokens: 8, temperature: 0, maxRetries: 0, timeout: 12_000, abortSignal: AbortSignal.timeout(13_000),
+          prompt: getValHealthCheckPrompt(requiresTools),
+          ...(requiresTools ? { tools: { [VAL_HEALTH_CHECK_TOOL_NAME]: tool({ description: VAL_HEALTH_CHECK_TOOL_DESCRIPTION, inputSchema: z.object({}).strict(), execute: async () => ({ ok: true }) }) }, toolChoice: "required" as const } : {}),
+          maxOutputTokens: requiresTools ? 32 : 8, temperature: 0, maxRetries: 0, timeout: 12_000, abortSignal: AbortSignal.timeout(13_000),
         });
         if (!result.text.trim()) throw new Error("EMPTY_RESPONSE");
-        if (current.model.supports_tools === true && !result.steps.flatMap((step) => step.toolCalls).some((call) => call.toolName === "getHealthCheckValue")) throw new Error("TOOL_CALL_UNSUPPORTED");
+        if (requiresTools && !result.steps.flatMap((step) => step.toolCalls).some((call) => call.toolName === VAL_HEALTH_CHECK_TOOL_NAME)) throw new Error("TOOL_CALL_UNSUPPORTED");
       } catch (error) {
         const failure = error instanceof Error && error.message === "TOOL_CALL_UNSUPPORTED"
           ? { category: "TOOL_CALL_UNSUPPORTED", httpStatus: null, providerCode: "TOOL_CALL_NOT_CONFIRMED", providerMessage: null, requestId: null }
@@ -320,9 +322,9 @@ export async function POST(request: NextRequest) {
       const quotaHeaders = readSafeQuotaHeaders(new Headers(result.response.headers));
       const { error: healthError } = await admin.rpc("record_val_ai_model_result", { p_provider_id: action.provider, p_model_id: action.modelId, p_success: true, p_latency_ms: latencyMs, p_error_category: null, p_error_code: null, p_quota_headers: quotaHeaders });
       if (healthError) throw new Error("O teste respondeu, mas não foi possível atualizar o estado de saúde.");
-      auditMetadata = { requestId, latencyMs, toolCallValidated: current.model.supports_tools === true, usageAvailable: result.usage.totalTokens !== undefined };
+      auditMetadata = { requestId, latencyMs, toolCallValidated: requiresTools, usageAvailable: result.usage.totalTokens !== undefined };
       await audit(master.id, auditAction, "completed", action.provider, auditMetadata, action.modelId);
-      return NextResponse.json({ ok: true, requestId, provider: action.provider, model: action.modelId, latencyMs, toolCallValidated: current.model.supports_tools === true, usage: { inputTokens: result.usage.inputTokens ?? null, outputTokens: result.usage.outputTokens ?? null }, quotaHeaders }, { headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json({ ok: true, requestId, provider: action.provider, model: action.modelId, latencyMs, toolCallValidated: requiresTools, usage: { inputTokens: result.usage.inputTokens ?? null, outputTokens: result.usage.outputTokens ?? null }, quotaHeaders }, { headers: { "Cache-Control": "no-store" } });
     } else if (action.action === "save_limits") {
       const { error } = await admin.from("val_ai_runtime_settings").upsert({
         id: 1, daily_requests: action.dailyRequests, monthly_requests: action.monthlyRequests,
