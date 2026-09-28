@@ -20,7 +20,6 @@ import {
   Eye,
   EyeOff,
   Home,
-  CircleHelp,
   Landmark,
   LockKeyhole,
   LogOut,
@@ -83,6 +82,7 @@ import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
+import { HelpHint } from "@/components/help-hint";
 import { WorkspaceDashboardHeader } from "@/components/dashboard/workspace-dashboard-header";
 import { MasterAdminPanel } from "@/components/master-admin-panel";
 import { MasterNotifications } from "@/components/master-notifications";
@@ -3019,17 +3019,10 @@ function SectionTitle({
   onAdd?: () => void;
   addLabel?: string;
 }) {
-  const [open, setOpen] = useState(false);
   return (
     <div className="relative flex items-center gap-2">
       <h1 className="text-2xl font-semibold">{title}</h1>
-      <button
-        aria-label={`Como funciona ${title}`}
-        onClick={() => setOpen(!open)}
-        className="muted grid h-11 w-11 place-items-center rounded-full bg-[var(--panel2)] hover:text-[var(--accent)]"
-      >
-        <CircleHelp size={17} />
-      </button>
+      <HelpHint label={`Sobre ${title}`}>{help}</HelpHint>
       {onAdd && (
         <button
           aria-label={addLabel}
@@ -3038,22 +3031,6 @@ function SectionTitle({
         >
           <Plus size={18} />
         </button>
-      )}
-      {open && (
-        <div
-          role="status"
-          className="panel absolute left-0 top-11 z-30 w-[min(340px,calc(100vw-2rem))] rounded-2xl p-4 shadow-2xl"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <b className="text-sm">Como funciona</b>
-              <p className="muted mt-1 text-sm leading-6">{help}</p>
-            </div>
-            <button aria-label="Fechar ajuda" onClick={() => setOpen(false)}>
-              <X size={16} />
-            </button>
-          </div>
-        </div>
       )}
     </div>
   );
@@ -3772,7 +3749,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
           </section>
         </Sheet>
       )}
-      {allowSharing && sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><b className="text-lg">Compartilhar meta</b><p className="muted text-sm leading-6">Convide outra pessoa pelo ID VALURISE. Depois de aceitar, os participantes verão o nome exibido na sua conta e o progresso desta meta; seus demais dados continuam privados.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
+      {allowSharing && sharingGoal && <Sheet close={() => setSharingGoal(null)}><section className="space-y-3"><div className="flex items-center gap-2"><b className="text-lg">Compartilhar meta</b><HelpHint label="Privacidade do compartilhamento"><p>Convide outra pessoa pelo ID VALURISE. Depois que ela aceitar, os participantes verão o nome exibido na sua conta e o progresso desta meta.</p><p>Os demais dados financeiros continuam privados.</p></HelpHint></div><p className="muted text-sm">Compartilhe somente esta meta com outra pessoa.</p><div className="rounded-xl bg-[var(--panel2)] p-3"><b className="text-sm">{sharingGoal.name}</b><p className="muted mt-1 text-xs">{formatBRL(sharingGoal.currentCents)} de {formatBRL(sharingGoal.targetCents)}</p></div><input autoFocus value={recipientId} onChange={(event) => setRecipientId(event.target.value)} className="field" placeholder="ID VALURISE da pessoa" autoCapitalize="characters"/><button disabled={sharing || !recipientId.trim()} onClick={() => void share()} className="primary h-11 w-full rounded-xl text-sm">{sharing ? "Enviando…" : "Enviar convite"}</button></section></Sheet>}
       {deleting && <DeleteConfirm
         title={deleting.sharedGoalId ? "Excluir meta compartilhada?" : "Excluir meta?"}
         description={deleting.sharedGoalId
@@ -4000,9 +3977,9 @@ function Planning({ data, tx, month, save, toast }: any) {
               inputMode="numeric"
               placeholder="Dia de vencimento"
             />
-            <label className="block space-y-1.5 text-sm">
-              <span>Repetição</span>
-              <select className="field" value={frequency} onChange={(event) => {
+            <div className="space-y-1.5 text-sm">
+              <div className="flex items-center gap-2"><label htmlFor="recurring-bill-frequency">Repetição</label><HelpHint label="Repetição dos compromissos">A repetição cria lembretes nos meses seguintes. Ela não registra despesas nem debita sua conta; lance o pagamento no extrato quando acontecer.</HelpHint></div>
+              <select id="recurring-bill-frequency" className="field" value={frequency} onChange={(event) => {
                 const nextFrequency = event.target.value as "once" | "monthly" | "yearly";
                 setFrequency(nextFrequency);
                 if (!startMonth && nextFrequency !== "monthly") setStartMonth(currentMonth);
@@ -4012,7 +3989,7 @@ function Planning({ data, tx, month, save, toast }: any) {
                 <option value="monthly">Todo mês</option>
                 <option value="yearly">Todo ano</option>
               </select>
-            </label>
+            </div>
             <label className="block space-y-1.5 text-sm">
               <span>{frequency === "once" ? "Mês do vencimento" : "Começar em"}</span>
               <input className="field" type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} />
@@ -4035,7 +4012,6 @@ function Planning({ data, tx, month, save, toast }: any) {
             >
               {editing ? "Salvar alterações" : "Adicionar ao planejamento"}
             </button>
-            <p className="muted text-xs leading-5">A repetição cria lembretes nos meses seguintes; ela não registra uma despesa nem debita sua conta automaticamente. Registre o pagamento no extrato quando acontecer.</p>
           </section>
         </Sheet>
       )}
@@ -4048,6 +4024,7 @@ function PlanningCheckRow({
   onChange,
   label,
   description,
+  help,
   marker,
   disabled = false,
   ariaLabel,
@@ -4057,13 +4034,15 @@ function PlanningCheckRow({
   onChange: (checked: boolean) => void;
   label: string;
   description?: string;
+  help?: ReactNode;
   marker?: number;
   disabled?: boolean;
   ariaLabel?: string;
   className?: string;
 }) {
   return (
-    <label className={`group flex min-h-14 cursor-pointer items-center gap-3 rounded-xl p-3 text-left text-sm transition-colors ${checked ? "bg-[var(--accent)]/10" : "hover:bg-[var(--panel2)]"} ${disabled ? "cursor-not-allowed opacity-55" : ""} ${className}`}>
+    <div className={`group flex min-h-14 items-center gap-3 rounded-xl p-3 text-left text-sm transition-colors ${checked ? "bg-[var(--accent)]/10" : "hover:bg-[var(--panel2)]"} ${disabled ? "opacity-55" : ""} ${className}`}>
+      <label className={`flex min-w-0 flex-1 items-center gap-3 ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`}>
       <input
         type="checkbox"
         className="peer sr-only"
@@ -4083,7 +4062,9 @@ function PlanningCheckRow({
         {description && <small className="muted mt-0.5 block leading-4">{description}</small>}
       </span>
       {checked && <span className="text-xs font-medium text-[var(--accent)]">Feito</span>}
-    </label>
+      </label>
+      {help && <HelpHint label={`Sobre ${label}`}>{help}</HelpHint>}
+    </div>
   );
 }
 
@@ -6104,15 +6085,12 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
         title="Configurações"
-        help="Ajuste a aparência da aplicação e, nas próximas versões, suas preferências financeiras e dados de conta."
+        help="Personalize a aparência, gerencie seus dados e configure privacidade e a assistente Val."
       />
       {businessWorkspace && <BusinessFinanceSettings workspaceId={workspaceId} toast={toast} />}
       <Theme value={theme} change={setTheme} />
       <section className="panel mt-6 rounded-2xl p-5">
-        <b>Seus dados</b>
-        <p className="muted mt-1 text-sm leading-6">
-          Baixe uma cópia dos dados financeiros desta conta e restaure-a quando precisar. A restauração substitui os dados financeiros atuais; conta, acesso e preferências não são alterados.
-        </p>
+        <div className="flex items-center gap-2"><b>Seus dados</b><HelpHint label="Backup e importação"><p>Exporte uma cópia dos dados financeiros ou restaure um arquivo JSON. Restaurar substitui os dados financeiros atuais, mas não altera sua conta, acesso ou preferências.</p><p>O aviso de confirmação mostrará os dados que serão substituídos antes da restauração.</p></HelpHint></div>
         <div className="mt-4 flex flex-wrap gap-2">
           <button
             onClick={exportBackup}
@@ -6145,12 +6123,7 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
         {backupError && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{backupError}</p>}
       </section>
       <section className="panel mt-4 rounded-2xl p-5">
-        <b>Privacidade</b>
-        <p className="muted mt-1 text-sm">
-          {syncEnabled
-            ? "A sincronização segura está disponível para sessões autenticadas pelo Supabase."
-            : "A sincronização entre dispositivos será ativada ao configurar as credenciais do Supabase. Até lá, use o backup JSON antes de trocar de dispositivo."}
-        </p>
+        <div className="flex items-center gap-2"><b>Privacidade</b><HelpHint label="Privacidade e sincronização"><p>{syncEnabled ? "A sincronização segura está disponível para sessões autenticadas." : "A sincronização entre dispositivos ainda não está disponível nesta sessão; use o backup JSON antes de trocar de dispositivo."}</p><p>Consulte a Política de Privacidade, os Termos de Uso e as informações sobre cookies nos links abaixo. Você pode alterar sua escolha sobre armazenamento opcional a qualquer momento.</p></HelpHint></div>
         <LegalPreferences toast={toast} />
       </section>
       <AccountDeletion logout={logout} localStoragePrefix={localStoragePrefix} />
@@ -6185,7 +6158,7 @@ function AccountDeletion({ logout, localStoragePrefix }: { logout: () => void; l
     logout();
     window.location.reload();
   };
-  return <section className="panel mt-4 rounded-2xl p-5"><b>Remover minha conta</b><p className="muted mt-1 text-sm leading-6">Sua conta será desativada e movida para a lixeira. Os dados não serão apagados agora; o Master poderá restaurar ou excluir definitivamente a conta depois. Exporte um backup se quiser guardar uma cópia.</p><button onClick={() => { setError(""); setOpen(true); }} className="mt-4 min-h-11 rounded-xl border border-[var(--danger)]/40 px-4 text-sm text-[var(--danger)]">Solicitar remoção</button>{open && <Sheet close={() => { if (!busy) setOpen(false); }}><section className="space-y-4"><div><b className="text-lg">Mover conta para a lixeira?</b><p className="muted mt-2 text-sm leading-6">Você perderá o acesso imediatamente. Os dados serão mantidos até que o Master decida restaurar ou excluir a conta definitivamente.</p></div><label className="block text-sm">Confirme sua senha<input autoComplete="current-password" type="password" className="field mt-2" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="block text-sm">Digite EXCLUIR para confirmar<input className="field mt-2" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>{error && <p role="alert" className="text-sm text-[var(--danger)]">{error}</p>}<button disabled={busy || !password || confirmation !== "EXCLUIR"} onClick={() => void submit()} className="min-h-11 w-full rounded-xl bg-[var(--danger)] px-4 text-sm font-semibold text-[#271313] disabled:opacity-50">{busy ? "Removendo…" : "Mover para a lixeira"}</button></section></Sheet>}</section>;
+  return <section className="panel mt-4 rounded-2xl p-5"><div className="flex items-center gap-2"><b>Remover minha conta</b><HelpHint label="O que acontece ao remover a conta"><p>A conta será desativada e movida para a lixeira. Os dados não são apagados imediatamente; o Master poderá restaurar a conta ou excluí-la definitivamente.</p><p>Exporte um backup antes, caso queira guardar uma cópia.</p></HelpHint></div><p className="muted mt-1 text-sm">O acesso será encerrado e os dados não serão apagados imediatamente.</p><button onClick={() => { setError(""); setOpen(true); }} className="mt-4 min-h-11 rounded-xl border border-[var(--danger)]/40 px-4 text-sm text-[var(--danger)]">Solicitar remoção</button>{open && <Sheet close={() => { if (!busy) setOpen(false); }}><section className="space-y-4"><div><b className="text-lg">Mover conta para a lixeira?</b><p className="muted mt-2 text-sm leading-6">Você perderá o acesso imediatamente. Os dados serão mantidos até que o Master decida restaurar ou excluir a conta definitivamente.</p></div><label className="block text-sm">Confirme sua senha<input autoComplete="current-password" type="password" className="field mt-2" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label className="block text-sm">Digite EXCLUIR para confirmar<input className="field mt-2" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>{error && <p role="alert" className="text-sm text-[var(--danger)]">{error}</p>}<button disabled={busy || !password || confirmation !== "EXCLUIR"} onClick={() => void submit()} className="min-h-11 w-full rounded-xl bg-[var(--danger)] px-4 text-sm font-semibold text-[#271313] disabled:opacity-50">{busy ? "Removendo…" : "Mover para a lixeira"}</button></section></Sheet>}</section>;
 }
 type PersonalAIProvider = AIProvider;
 type PersonalAIModelOption = AIModelOption;
@@ -6431,18 +6404,18 @@ function PersonalAISettings({ toast, workspaceId }: { toast: (text: string) => v
     <section className="panel mt-4 rounded-2xl p-5">
       <div className="flex items-start gap-3">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
-        <div><b className="block">Val · assistente financeira</b><p className="muted mt-1 text-sm">Clareza para decidir hoje. Constância para prosperar amanhã. Conecte OpenAI, Gemini, DeepSeek, Groq ou OpenRouter usando sua própria conta.</p></div>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><b className="block">Val · assistente financeira</b><HelpHint label="Privacidade e ações da Val"><p>A chave é enviada ao servidor e criptografada antes de ser salva. Ela nunca volta ao navegador nem é enviada à Val como contexto.</p><p>O teste envia uma pergunta mínima sem dados financeiros. Groq e OpenRouter também recebem uma solicitação fictícia de ferramenta, sem dados nem efeitos colaterais; isso pode consumir tokens do provedor.</p><p>O contexto financeiro só é consultado com sua permissão. Se autorizar propostas de receita ou despesa, a Val ainda exigirá sua confirmação explícita antes de registrar qualquer dado. O servidor valida essa aprovação novamente.</p><p>Desconectar a IA revoga o consentimento e cancela propostas pendentes.</p></HelpHint></div><p className="muted mt-1 text-sm">Clareza para decidir hoje. Configure um provedor para conversar com a Val.</p></div>
       </div>
       <div className="mt-5 grid gap-3">
-        <label className="text-sm">Provedor
-          <select value={provider} onChange={(event) => {
+        <div><div className="mb-1 flex items-center gap-2"><label htmlFor="personal-ai-provider" className="text-sm">Provedor</label><HelpHint label={`Sobre ${AI_PROVIDER_METADATA[provider].label}`}>{providerHelp}</HelpHint></div>
+          <select id="personal-ai-provider" value={provider} onChange={(event) => {
             const next = event.target.value as PersonalAIProvider;
             const initialModels = getInitialAIModelOptions(next);
             setProvider(next); setModel(defaultAIModel[next]); setModels(initialModels); setCustomModel(false); setTestStatus(null);
           }} className="field mt-1">
             {AI_PROVIDERS.map((item) => <option key={item} value={item}>{AI_PROVIDER_METADATA[item].label}</option>)}
           </select>
-        </label>
+        </div>
         {provider === "gemini" ? <label className="text-sm">Modelo Gemini
           <select value={model} onChange={(event) => { setModel(event.target.value); setCustomModel(false); setTestStatus(null); }} className="field mt-1">
             {GEMINI_SUPPORTED_MODELS.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.tier === "recommended" ? "Recomendado" : "Disponível"}</option>)}
@@ -6460,7 +6433,6 @@ function PersonalAISettings({ toast, workspaceId }: { toast: (text: string) => v
           <input value={model} onChange={(event) => { setModel(event.target.value); setTestStatus(null); }} className="field mt-1" placeholder={defaultAIModel[provider]} autoComplete="off" />
         </label>}
         {AI_PROVIDER_METADATA[provider].supportsDynamicCatalog && <button type="button" disabled={catalogBusy} onClick={() => void loadModels()} className="min-h-10 w-fit rounded-xl bg-[var(--panel2)] px-3 text-xs font-semibold disabled:opacity-60">{catalogBusy ? "Consultando catálogo…" : "Atualizar modelos disponíveis"}</button>}
-        <p className="muted -mt-1 text-xs leading-5">{providerHelp}</p>
         {connected && <p role="status" className={`rounded-xl px-3 py-2 text-xs leading-5 ${currentConfigValidated ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--text)]"}`}>
           {currentConfigValidated
             ? `Conexão validada para ${savedModel}${validatedAt ? ` · ${new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(validatedAt))}` : ""}.`
@@ -6474,7 +6446,8 @@ function PersonalAISettings({ toast, workspaceId }: { toast: (text: string) => v
           ariaLabel="Autorizar uso dos meus dados financeiros pela Val"
           onChange={(checked) => { setInsightsEnabled(checked); if (!checked) { setNotificationsEnabled(false); setActionsEnabled(false); } }}
           label="Compartilhar dados para análise financeira"
-          description={`Opcional: sua pergunta e os dados consultados serão enviados somente ao provedor escolhido (${AI_PROVIDER_METADATA[provider].label}), conforme a política dele.`}
+          description="Opcional · necessário para análises com seus dados."
+          help={<p>Sua pergunta e somente os dados necessários à consulta serão enviados ao provedor escolhido ({AI_PROVIDER_METADATA[provider].label}), conforme a política dele. A Valurise não envia esses dados para outros provedores.</p>}
           className="bg-[var(--panel2)]/50"
         />
         <PlanningCheckRow
@@ -6492,7 +6465,8 @@ function PersonalAISettings({ toast, workspaceId }: { toast: (text: string) => v
           disabled={!insightsEnabled}
           onChange={setActionsEnabled}
           label="Permitir ações financeiras com confirmação"
-          description="Opcional. A Val só poderá preparar propostas de receita ou despesa comum. Cada proposta mostra os dados exatos e exige que você toque em “Confirmar e registrar”. Você pode descartar ou desligar esta permissão; não permite transferências, cartões/parcelas, investimentos, metas, edição ou exclusão."
+          description="Opcional · cada lançamento exige sua confirmação."
+          help={<p>A Val pode preparar propostas de receitas e despesas comuns. Cada proposta mostra os dados exatos e só é registrada quando você toca em “Confirmar e registrar”. Você pode descartar a proposta ou desligar esta permissão. Ela não permite transferências, cartões ou parcelas, investimentos, metas, edição ou exclusão.</p>}
           className="bg-[var(--panel2)]/50"
         />
       </div>
@@ -6508,20 +6482,18 @@ function PersonalAISettings({ toast, workspaceId }: { toast: (text: string) => v
         </div>}
         {!testStatus.ok && testStatus.providerMessage && <p className="muted mt-2 break-words text-xs">Detalhe retornado pelo provedor: {testStatus.providerMessage}</p>}
       </div>}
-      <p className="muted mt-4 text-xs leading-5">A chave trafega ao servidor e é criptografada antes de ser salva; ela nunca volta ao navegador nem é enviada à Val como contexto. O teste envia uma pergunta mínima sem dados financeiros; Groq e OpenRouter também recebem uma solicitação de ferramenta fictícia, sem dados nem efeitos colaterais, para validar compatibilidade. Isso pode consumir alguns tokens do provedor escolhido. Sem a permissão acima, a Val não consulta informações financeiras. Com ela, ainda assim nada é gravado sem confirmação explícita no app; a aprovação é validada novamente no servidor. Desconectar revoga o consentimento e cancela propostas pendentes.</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <button disabled={busy || testBusy} onClick={() => void save()} className="primary min-h-11 rounded-xl px-4 py-2 text-sm font-semibold">{busy ? "Salvando…" : connected ? "Salvar configuração" : "Conectar Val"}</button>
         <button disabled={testBusy || catalogBusy} onClick={() => void testConnection()} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 py-2 text-sm font-semibold">{testBusy ? "Testando…" : "Testar conexão"}</button>
         {connected && <button disabled={busy || testBusy} onClick={() => void disconnect()} className="min-h-11 rounded-xl px-4 py-2 text-sm text-[var(--danger)] hover:bg-[var(--panel2)]">Remover IA</button>}
       </div>
       <div className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--panel2)] p-4">
-        <b className="text-sm">Uso da Val neste mês</b>
+        <div className="flex items-center gap-2"><b className="text-sm">Uso da Val neste mês</b><HelpHint label="Uso e cota"><p>O painel mede as solicitações e os tokens informados pelo provedor. Saldo e cota restante pertencem à sua conta no provedor e não são disponibilizados de forma consistente; por isso, a Valurise não estima esses valores.</p></HelpHint></div>
         {usage ? <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs"><span className="muted">Solicitações <b className="text-[var(--text)]">{usage.requests.toLocaleString("pt-BR")}</b></span><span className="muted">Tokens medidos <b className="text-[var(--text)]">{usage.totalTokens.toLocaleString("pt-BR")}</b></span></div> : <p className="muted mt-2 text-xs">O uso aparecerá depois de uma conversa ou teste de conexão.</p>}
-        <p className="muted mt-2 text-[11px] leading-4">Saldo de tokens e cota restante pertencem ao provedor e não são informados de forma consistente por estas APIs; a Valurise não inventa esse número.</p>
       </div>
     </section>
   );
 }
 function LegalPreferences({ toast }: { toast: (text: string) => void }) {
-  return <div className="mt-4 border-t border-[var(--border)] pt-4"><p className="muted text-xs leading-5">Consulte os documentos vigentes e altere sua escolha sobre armazenamento opcional a qualquer momento.</p><div className="mt-3 flex flex-wrap gap-3 text-xs text-[var(--accent)]"><a href="/privacidade">Política de Privacidade</a><a href="/termos">Termos de Uso</a><a href="/cookies">Cookies e armazenamento local</a></div><button onClick={() => { window.dispatchEvent(new Event("valurise:manage-cookie-consent")); toast("Preferências de cookies abertas."); }} className="mt-4 min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-xs font-medium">Gerenciar cookies</button></div>;
+  return <div className="mt-4 border-t border-[var(--border)] pt-4"><div className="flex flex-wrap gap-3 text-xs text-[var(--accent)]"><a href="/privacidade">Política de Privacidade</a><a href="/termos">Termos de Uso</a><a href="/cookies">Cookies e armazenamento local</a></div><button onClick={() => { window.dispatchEvent(new Event("valurise:manage-cookie-consent")); toast("Preferências de cookies abertas."); }} className="mt-4 min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-xs font-medium">Gerenciar cookies</button></div>;
 }

@@ -193,6 +193,10 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   await dialog.getByRole("button", { name: "Criar empresa" }).click();
   await page.getByRole("button", { name: "Completar perfil financeiro" }).click();
   await expect(page.getByRole("heading", { name: "Perfil financeiro da empresa" })).toBeVisible();
+  await expect(page.getByText("Não precisa ter os números exatos agora.")).toHaveCount(0);
+  await page.getByRole("button", { name: "Ajuda: Valores informados e estimativas" }).click();
+  await expect(page.getByRole("region", { name: "Valores informados e estimativas" })).toContainText("Valores aproximados serão identificados como estimativas");
+  await page.getByRole("button", { name: "Ajuda: Valores informados e estimativas" }).click();
   await page.getByLabel("Faturamento médio mensal").fill("5000,00");
   await page.getByLabel("Custos diretos médios").fill("1000,00");
   await page.getByLabel("Despesas fixas médias").fill("500,00");
@@ -216,6 +220,47 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
+});
+
+test("Ajustes mantêm as explicações longas acessíveis pelo botão de ajuda em telas móveis", async ({ page }) => {
+  await installMockSession(page);
+  await page.setViewportSize({ width: 375, height: 844 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Abrir menu" }).click();
+  const menu = page.getByRole("dialog", { name: "Menu principal" });
+  await menu.getByRole("button", { name: "Ajustes" }).click();
+  await expect(page.getByRole("heading", { name: "Configurações" })).toBeVisible();
+  await expect(page.getByText("Exporte uma cópia dos dados financeiros ou restaure um arquivo JSON.")).toHaveCount(0);
+  await expect(page.getByText("A chave é enviada ao servidor e criptografada antes de ser salva.")).toHaveCount(0);
+
+  const backupHelp = page.getByRole("button", { name: "Ajuda: Backup e importação" });
+  const backupText = "Exporte uma cópia dos dados financeiros ou restaure um arquivo JSON.";
+  const helpRegion = page.getByRole("region", { name: "Backup e importação" });
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(backupHelp).toBeVisible();
+    await backupHelp.click();
+    await expect(helpRegion).toContainText(backupText);
+    const helpBounds = await helpRegion.boundingBox();
+    expect(helpBounds).not.toBeNull();
+    expect(helpBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(helpBounds!.x + helpBounds!.width).toBeLessThanOrEqual(width + 1);
+    await backupHelp.click();
+    await expect(helpRegion).toHaveCount(0);
+  }
+
+  const aiHelpButton = page.getByRole("button", { name: "Ajuda: Privacidade e ações da Val" });
+  await aiHelpButton.focus();
+  await page.keyboard.press("Enter");
+  const aiHelpRegion = page.getByRole("region", { name: "Privacidade e ações da Val" });
+  await expect(aiHelpRegion).toContainText("O teste envia uma pergunta mínima sem dados financeiros.");
+  await page.keyboard.press("Escape");
+  await expect(aiHelpRegion).toHaveCount(0);
+  await expect(aiHelpButton).toBeFocused();
+  await page.getByRole("button", { name: "Ajuda: Sobre OpenAI" }).click();
+  await expect(page.getByRole("region", { name: "Sobre OpenAI" })).toContainText("O catálogo indica compatibilidade de texto");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("splash acompanha a sincronização real e expande a marca suavemente na entrada", async ({ page }) => {
@@ -899,7 +944,7 @@ test("planejamento cria, edita e exclui uma conta recorrente", async ({ page }) 
   await page.getByPlaceholder("Valor previsto").fill("89,90");
   await page.getByPlaceholder("Dia de vencimento").fill("28");
   await page.getByPlaceholder("Categoria (opcional)").fill("Moradia");
-  await page.getByLabel("Repetição").selectOption("monthly");
+  await page.getByLabel("Repetição", { exact: true }).selectOption("monthly");
   await page.getByRole("button", { name: "Adicionar ao planejamento" }).click();
   await expect(page.getByText("Internet QA", { exact: false }).first()).toBeVisible();
 
@@ -925,7 +970,7 @@ test("planejamento cria, edita e exclui uma conta recorrente", async ({ page }) 
   await page.getByPlaceholder("Ex.: Internet, aluguel, Netflix").fill("Seguro QA avulso");
   await page.getByPlaceholder("Valor previsto").fill("50,00");
   await page.getByPlaceholder("Dia de vencimento").fill("15");
-  await page.getByLabel("Repetição").selectOption("once");
+  await page.getByLabel("Repetição", { exact: true }).selectOption("once");
   await page.getByRole("button", { name: "Adicionar ao planejamento" }).click();
   await expect(page.getByText("Seguro QA avulso", { exact: false }).first()).toBeVisible();
   await page.getByRole("button", { name: "Próximo mês" }).click();

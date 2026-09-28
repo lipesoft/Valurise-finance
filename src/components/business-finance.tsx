@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowDownLeft, ArrowUpRight, Building2, Info, Save } from "lucide-react";
 import { accountBalance, formatBRL, type FinanceTransaction } from "@/lib/finance";
+import { HelpHint } from "@/components/help-hint";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   BUSINESS_ASSUMPTION_KEYS,
@@ -170,7 +171,7 @@ export function BusinessFinanceDashboard({
         <p className="muted text-[11px] leading-5">Saldo derivado dos saldos das contas e dos lançamentos registrados; transferências não alteram o caixa total. Valores informados não substituem o extrato.</p>
       </div></section>
     </div>
-    <footer className="muted mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-[10px]"><span className="inline-flex items-center gap-1"><Info size={12}/> Estimativas não substituem os valores registrados; projeções usam somente as contas a receber e pagar informadas.</span><span>Para configurar os valores, abra Perfil financeiro nas Configurações.</span></footer>
+    <footer className="muted mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-[10px]"><span className="inline-flex items-center gap-1"><Info size={12}/> Estimativas não substituem os valores registrados.</span><span>Para configurar os valores, abra Perfil financeiro nas Configurações.</span><HelpHint label="Estimativas e projeções"><p>As projeções usam somente as contas a receber e a pagar informadas. Elas são referências gerenciais e não substituem os lançamentos.</p></HelpHint></footer>
   </section>;
 }
 
@@ -260,7 +261,7 @@ export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: s
   if (loading) return <section className="panel mt-5 rounded-2xl p-5"><p className="muted text-sm">Carregando o perfil da empresa…</p></section>;
 
   return <section className="mx-auto max-w-4xl px-4 pt-5 lg:px-10">
-    <header><p className="muted text-xs">Configurações · Empresa</p><h2 className="mt-1 text-2xl font-semibold tracking-tight">Perfil financeiro da empresa</h2><p className="muted mt-2 max-w-2xl text-sm leading-6">Não precisa ter os números exatos agora. Você poderá informar valores aproximados e ajustá-los depois. Valores aproximados serão identificados como estimativas no Valurise.</p></header>
+    <header><p className="muted text-xs">Configurações · Empresa</p><div className="mt-1 flex flex-wrap items-center gap-2"><h2 className="text-2xl font-semibold tracking-tight">Perfil financeiro da empresa</h2><HelpHint label="Valores informados e estimativas"><p>Você pode informar valores exatos ou aproximados e ajustá-los depois. Valores aproximados serão identificados como estimativas no Valurise.</p></HelpHint></div><p className="muted mt-2 max-w-2xl text-sm">Informe referências gerenciais da empresa; os valores realizados vêm dos lançamentos.</p></header>
     {error && <p role="alert" className="mt-4 rounded-xl border border-[var(--danger)]/35 bg-[var(--danger)]/10 p-3 text-sm leading-5 text-[var(--danger)]">{error}</p>}
     <section className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">Dados da empresa</h3><p className="muted mt-1 text-xs">Informações cadastrais e gerenciais opcionais.</p></div><span className="rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px]">{profile.trade_name || "Empresa"}</span></div>
       <div className="muted mt-4 grid gap-3 rounded-xl bg-[var(--panel2)] p-3 text-xs sm:grid-cols-2"><p><span className="block opacity-70">Razão social</span><b className="mt-1 block text-[var(--fg)]">{profile.legal_name || "Não informada"}</b></p><p><span className="block opacity-70">CNPJ</span><b className="mt-1 block text-[var(--fg)]">{profile.cnpj || "Não informado"}</b></p></div>
@@ -288,7 +289,7 @@ export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: s
     <section className="panel mt-4 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">Perfil financeiro gerencial</h3><p className="muted mt-1 text-xs">Referências não substituem as movimentações realizadas.</p></div><label className="block text-xs">Vigência<input aria-label="Mês de referência" type="month" className="field mt-1 min-h-10" value={referenceMonth} onChange={(event) => setReferenceMonth(event.target.value)}/></label></div>
       <form onSubmit={(event) => void saveFinance(event)} className="mt-4 space-y-3">
         {BUSINESS_ASSUMPTION_KEYS.map((key) => <AssumptionField key={key} metricKey={key} value={amountInputs[key]} nature={natures[key]} existing={assumptions[key] || null} onValue={(value) => setAmountInputs((current) => ({ ...current, [key]: value }))} onNature={(nature) => setNatures((current) => ({ ...current, [key]: nature }))}/>)}
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--panel2)]/65 p-3 text-xs leading-5"><p className="font-medium">Como esses valores são usados</p><p className="muted mt-1">O faturamento e as despesas do período vêm dos lançamentos quando existirem. Valores manuais permanecem como referências históricas; as estimativas não apagam nem alteram o extrato. DRE e projeções são gerenciais e não fazem apuração fiscal.</p></div>
+        <div className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel2)]/65 p-3 text-xs"><p className="font-medium">Como esses valores são usados</p><HelpHint label="Uso dos valores empresariais"><p>O faturamento e as despesas do período vêm dos lançamentos quando existirem. Valores manuais permanecem como referências históricas; estimativas não apagam nem alteram o extrato. DRE e projeções são gerenciais e não fazem apuração fiscal.</p></HelpHint></div>
         <div className="flex justify-end pt-1"><button type="submit" disabled={saving !== ""} className="primary inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold disabled:opacity-60 sm:w-auto"><Save size={15}/>{saving === "finance" ? "Salvando…" : "Salvar perfil financeiro"}</button></div>
       </form>
       {loadedProfile && <p className="muted mt-3 text-[10px]">As alterações ficam vinculadas a este workspace empresarial e mantêm o histórico de valores informado.</p>}
