@@ -48,11 +48,11 @@ type RequestTarget = { search: string; userId?: string; nonce: number };
 
 const pageSize = 25;
 const sections: { id: Section; label: string; icon: typeof Bell }[] = [
+  { id: "val-ai", label: "IA da Val", icon: BrainCircuit },
   { id: "requests", label: "Solicitações", icon: Bell },
   { id: "users", label: "Usuários", icon: Users },
   { id: "invites", label: "Convites", icon: MailCheck },
   { id: "audit", label: "Auditoria", icon: Activity },
-  { id: "val-ai", label: "Central da Val", icon: BrainCircuit },
 ];
 const statusLabels: Record<string, string> = {
   pending: "Aguardando análise",
@@ -176,7 +176,10 @@ export function MasterAdminPanel({
     const currentRequest = ++requestSequence.current;
     setLoading(true);
     try {
-      if (section === "val-ai") return;
+      if (section === "val-ai") {
+        setLoading(false);
+        return;
+      }
       if (section === "audit" && auditSince && auditUntil && auditSince > auditUntil) {
         setAudit([]);
         setTotal(0);

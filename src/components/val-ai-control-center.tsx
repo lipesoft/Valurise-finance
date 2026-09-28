@@ -21,7 +21,7 @@ type Tab = "overview" | "providers" | "models" | "quotas" | "users" | "logs";
 
 const names: Record<ProviderId, string> = { groq: "Groq", openrouter: "OpenRouter" };
 const tabs: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
-  { id: "overview", label: "Visão geral", icon: Activity }, { id: "providers", label: "Provedores", icon: KeyRound },
+  { id: "providers", label: "Provedores", icon: KeyRound }, { id: "overview", label: "Visão geral", icon: Activity },
   { id: "models", label: "Modelos", icon: Zap }, { id: "quotas", label: "Cotas e limites", icon: ShieldCheck },
   { id: "users", label: "Usuários", icon: Users }, { id: "logs", label: "Logs e auditoria", icon: CircleAlert },
 ];
@@ -31,11 +31,12 @@ const dateTime = (value: unknown) => typeof value === "string" ? new Intl.DateTi
 const currencyPerToken = (value: unknown) => value === null || value === undefined ? "não informado" : Number(value) === 0 ? "R$ 0" : String(value);
 
 export function ValAIControlCenter({ toast }: { toast: (message: string) => void }) {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("providers");
   const [data, setData] = useState<ValAIData | null>(null);
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const tokenHeaders = useCallback(async () => {
     const { data: sessionData } = await getSupabaseBrowserClient()?.auth.getSession() || {};
@@ -53,8 +54,11 @@ export function ValAIControlCenter({ toast }: { toast: (message: string) => void
       if (!response.ok) throw new Error(result.error || "Não foi possível carregar a Central da Val.");
       setData(result as ValAIData);
       setSettings(result.settings || {});
+      setLoadError(null);
     } catch (error) {
-      toast(error instanceof Error ? error.message : "Não foi possível atualizar a Central da Val.");
+      const message = error instanceof Error ? error.message : "Não foi possível atualizar a Central da Val.";
+      setLoadError(message);
+      toast(message);
     } finally { setLoading(false); setRefreshing(false); }
   }, [tokenHeaders, toast]);
 
@@ -75,7 +79,7 @@ export function ValAIControlCenter({ toast }: { toast: (message: string) => void
   const providers = useMemo(() => new Map((data?.providers || []).map((provider) => [provider.id, provider])), [data]);
 
   if (loading) return <div role="status" className="panel mt-5 rounded-2xl p-6 text-sm">Carregando a Central da Val…</div>;
-  if (!data) return <div className="panel mt-5 rounded-2xl p-6"><p className="text-sm">A Central da Val ainda não conseguiu carregar os dados.</p><button type="button" onClick={() => void refresh()} className="mt-3 min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Tentar novamente</button></div>;
+  if (!data) return <div role="alert" className="panel mt-5 rounded-2xl p-6"><p className="text-sm">{loadError || "A Central da Val ainda não conseguiu carregar os dados."}</p><button type="button" disabled={refreshing} onClick={() => void refresh()} className="mt-3 min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">{refreshing ? "Verificando…" : "Tentar novamente"}</button></div>;
 
   const overview = data.overview;
   const statusLabel = overview.status === "operational" ? "Operacional" : overview.status === "degraded" ? "Degradado" : "Indisponível";

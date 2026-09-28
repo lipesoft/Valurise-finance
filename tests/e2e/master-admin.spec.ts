@@ -487,12 +487,16 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
     return route.fulfill({ status: 200, json: { ok: true } });
   });
 
-  await page.getByRole("button", { name: "Central da Val" }).click();
+  await page.getByRole("button", { name: "IA da Val" }).click();
   await expect(page.getByRole("heading", { name: "Central da Val" })).toBeVisible();
+  const keyInput = page.getByPlaceholder("Cole a chave do provider").first();
+  await expect(keyInput).toBeVisible();
+  await expect(page.getByPlaceholder("Cole a chave do provider")).toHaveCount(2);
+  await page.getByRole("button", { name: "Visão geral" }).click();
   await expect(page.getByText("Operacional", { exact: true })).toBeVisible();
   await expect(page.getByText("14", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Provedores" }).click();
-  const keyInput = page.getByPlaceholder("Cole a chave do provider").first();
+  await expect(keyInput).toBeVisible();
   await keyInput.fill(keySentinel);
   await page.getByRole("button", { name: "Guardar chave" }).first().click();
   await expect(keyInput).toHaveValue("");
