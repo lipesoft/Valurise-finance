@@ -22,7 +22,7 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("refresh_catalog"), provider: providerSchema }).strict(),
   z.object({ action: z.literal("update_model"), provider: providerSchema, modelId: z.string().trim().min(2).max(150).regex(/^[A-Za-z0-9._:/-]+$/), isFree: z.boolean(), enabled: z.boolean(), priority: z.number().int().min(1).max(1000), supportsTools: z.boolean(), supportsStructuredOutput: z.boolean(), supportsReasoning: z.boolean(), dailyRequestLimit: z.number().int().min(0).max(1000000).nullable(), monthlyRequestLimit: z.number().int().min(0).max(10000000).nullable(), dailyTokenLimit: z.number().int().min(0).max(1000000000).nullable(), monthlyTokenLimit: z.number().int().min(0).max(10000000000).nullable() }).strict(),
   z.object({ action: z.literal("test_model"), provider: providerSchema, modelId: z.string().trim().min(2).max(150).regex(/^[A-Za-z0-9._:/-]+$/) }).strict(),
-  z.object({ action: z.literal("save_limits"), dailyRequests: z.number().int().min(0).max(10000), monthlyRequests: z.number().int().min(0).max(100000), dailyTokens: z.number().int().min(0).max(100000000), monthlyTokens: z.number().int().min(0).max(1000000000), maxContextTokens: z.number().int().min(2000).max(1000000), maxOutputTokens: z.number().int().min(16).max(32000), maxAttempts: z.number().int().min(1).max(3), softQuotaPercent: z.number().int().min(1).max(99), deprioritizeQuotaPercent: z.number().int().min(2).max(99), hardQuotaPercent: z.number().int().min(50).max(100), valEnabled: z.boolean(), routerEnabled: z.boolean(), groqEnabled: z.boolean(), openrouterEnabled: z.boolean(), actionsEnabled: z.boolean(), insightsEnabled: z.boolean() }).strict().refine((value) => value.softQuotaPercent < value.deprioritizeQuotaPercent && value.deprioritizeQuotaPercent < value.hardQuotaPercent, "Os limites precisam seguir: atenção < reduzir prioridade < bloqueio."),
+  z.object({ action: z.literal("save_limits"), dailyRequests: z.number().int().min(0).max(10000), monthlyRequests: z.number().int().min(0).max(100000), dailyTokens: z.number().int().min(0).max(100000000), monthlyTokens: z.number().int().min(0).max(1000000000), maxContextTokens: z.number().int().min(2000).max(1000000), maxOutputTokens: z.number().int().min(16).max(32000), maxAttempts: z.number().int().min(1).max(3), circuitFailureThreshold: z.number().int().min(1).max(20), circuitCooldownSeconds: z.number().int().min(10).max(86400), softQuotaPercent: z.number().int().min(1).max(99), deprioritizeQuotaPercent: z.number().int().min(2).max(99), hardQuotaPercent: z.number().int().min(50).max(100), valEnabled: z.boolean(), routerEnabled: z.boolean(), groqEnabled: z.boolean(), openrouterEnabled: z.boolean(), actionsEnabled: z.boolean(), insightsEnabled: z.boolean() }).strict().refine((value) => value.softQuotaPercent < value.deprioritizeQuotaPercent && value.deprioritizeQuotaPercent < value.hardQuotaPercent, "Os limites precisam seguir: atenção < reduzir prioridade < bloqueio."),
   z.object({ action: z.literal("set_user_override"), userId: z.string().uuid(), blocked: z.boolean(), dailyRequests: z.number().int().min(0).max(10000).nullable(), monthlyRequests: z.number().int().min(0).max(100000).nullable(), dailyTokens: z.number().int().min(0).max(100000000).nullable(), monthlyTokens: z.number().int().min(0).max(1000000000).nullable(), maxContextTokens: z.number().int().min(2000).max(1000000).nullable(), maxOutputTokens: z.number().int().min(16).max(32000).nullable() }).strict(),
 ]);
 
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
   const today = new Date(); today.setUTCHours(0, 0, 0, 0);
   const month = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
   const [providers, keys, models, settings, dayRows, monthRows, recentErrors, userUsage, users, overrides, auditRows] = await Promise.all([
-    admin.from("val_ai_providers").select("id, enabled, free_tier_confirmed, health_status, priority, last_health_check, last_latency_ms, last_error_category, quota_headers, updated_at"),
+    admin.from("val_ai_providers").select("id, enabled, free_tier_confirmed, health_status, failure_count, circuit_open_until, priority, last_health_check, last_latency_ms, last_error_category, quota_headers, updated_at"),
     admin.from("val_ai_provider_keys").select("id, provider_id, key_suffix, is_active, created_at, updated_at").eq("is_active", true),
     admin.from("val_ai_models").select("id, provider_id, model_id, display_name, is_free, free_verified, free_evidence, is_enabled, priority, supports_chat, supports_tools, supports_structured_output, supports_reasoning, supports_streaming, context_window, health_status, last_health_check, last_success_at, last_failure_at, last_latency_ms, failure_count, circuit_open_until, official_prompt_price, official_completion_price, daily_request_limit, monthly_request_limit, daily_token_limit, monthly_token_limit, catalog_seen_at"),
     admin.from("val_ai_runtime_settings").select("*").eq("id", 1).maybeSingle(),
@@ -162,7 +162,7 @@ export async function POST(request: NextRequest) {
       if (previousKeyError) throw new Error("Não foi possível validar a chave ativa.");
       const disabledAt = new Date().toISOString();
       const [{ error: disableProviderError }, { error: disableModelsError }] = await Promise.all([
-        admin.from("val_ai_providers").update({ enabled: false, free_tier_confirmed: false, health_status: "DISABLED", quota_headers: {}, updated_at: disabledAt }).eq("id", action.provider),
+        admin.from("val_ai_providers").update({ enabled: false, free_tier_confirmed: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, quota_headers: {}, updated_at: disabledAt }).eq("id", action.provider),
         admin.from("val_ai_models").update({ is_enabled: false, health_status: "DISABLED", updated_at: disabledAt }).eq("provider_id", action.provider),
       ]);
       if (disableProviderError || disableModelsError) throw new Error("O provedor foi mantido bloqueado porque não foi possível preparar uma rotação segura da chave.");
@@ -186,7 +186,7 @@ export async function POST(request: NextRequest) {
     if (action.action === "remove_key") {
       const { error } = await admin.from("val_ai_provider_keys").delete().eq("provider_id", action.provider);
       if (error) throw new Error("Não foi possível remover a chave protegida.");
-      await admin.from("val_ai_providers").update({ enabled: false, health_status: "DISABLED", updated_at: new Date().toISOString() }).eq("id", action.provider);
+      await admin.from("val_ai_providers").update({ enabled: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, updated_at: new Date().toISOString() }).eq("id", action.provider);
       await admin.from("val_ai_models").update({ is_enabled: false, health_status: "DISABLED", updated_at: new Date().toISOString() }).eq("provider_id", action.provider);
       auditMetadata = { removed: true };
     } else if (action.action === "set_provider") {
@@ -197,7 +197,7 @@ export async function POST(request: NextRequest) {
       const patch = {
         id: action.provider, enabled: action.enabled,
         free_tier_confirmed: action.provider === "groq" ? action.freeTierConfirmed === true : false,
-        health_status: action.enabled ? "DEGRADED" : "DISABLED", updated_at: new Date().toISOString(),
+        health_status: action.enabled ? "DEGRADED" : "DISABLED", failure_count: 0, circuit_open_until: null, updated_at: new Date().toISOString(),
       };
       const { error } = await admin.from("val_ai_providers").upsert(patch, { onConflict: "id" });
       if (error) throw new Error("Não foi possível atualizar o estado do provedor.");
@@ -328,14 +328,15 @@ export async function POST(request: NextRequest) {
         id: 1, daily_requests: action.dailyRequests, monthly_requests: action.monthlyRequests,
       daily_tokens: action.dailyTokens, monthly_tokens: action.monthlyTokens,
       max_context_tokens: action.maxContextTokens, max_output_tokens: action.maxOutputTokens,
-      max_attempts: action.maxAttempts, val_enabled: action.valEnabled, val_router_enabled: action.routerEnabled,
+      max_attempts: action.maxAttempts, circuit_failure_threshold: action.circuitFailureThreshold,
+      circuit_cooldown_seconds: action.circuitCooldownSeconds, val_enabled: action.valEnabled, val_router_enabled: action.routerEnabled,
       soft_quota_percent: action.softQuotaPercent, deprioritize_quota_percent: action.deprioritizeQuotaPercent, hard_quota_percent: action.hardQuotaPercent,
         val_groq_enabled: action.groqEnabled, val_openrouter_enabled: action.openrouterEnabled,
         val_actions_enabled: action.actionsEnabled, val_insights_enabled: action.insightsEnabled,
         updated_by: master.id, updated_at: new Date().toISOString(),
       }, { onConflict: "id" });
       if (error) throw new Error("Não foi possível salvar limites e controles gerais.");
-      auditMetadata = { dailyRequests: action.dailyRequests, monthlyRequests: action.monthlyRequests, maxAttempts: action.maxAttempts, valEnabled: action.valEnabled };
+      auditMetadata = { dailyRequests: action.dailyRequests, monthlyRequests: action.monthlyRequests, maxAttempts: action.maxAttempts, circuitFailureThreshold: action.circuitFailureThreshold, circuitCooldownSeconds: action.circuitCooldownSeconds, valEnabled: action.valEnabled };
     } else if (action.action === "set_user_override") {
       const { error } = await admin.from("val_ai_user_quota_overrides").upsert({
         user_id: action.userId, is_blocked: action.blocked, daily_requests: action.dailyRequests,

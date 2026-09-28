@@ -2,9 +2,9 @@ import "server-only";
 
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
-import { indexValModelQuotaUsage, isFreeModelCatalogFresh, providerQuotaUtilizationPercent, selectFreeModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
+import { indexValModelQuotaUsage, isFreeModelCatalogFresh, providerCircuitDecision, providerQuotaUtilizationPercent, selectFreeModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
 
-export type RoutedModel = ValModelCandidate & { apiKey: string; displayName: string; requiresProbe?: boolean };
+export type RoutedModel = ValModelCandidate & { apiKey: string; displayName: string; requiresProbe?: boolean; requiresProviderProbe?: boolean };
 export type ValRouterRuntime = {
   enabled: boolean;
   settings: Record<string, unknown> | null;
@@ -32,7 +32,7 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
   const admin = getSupabaseAdminClient();
   const [settingsResult, providersResult, modelsResult, keysResult] = await Promise.all([
     admin.from("val_ai_runtime_settings").select("*").eq("id", 1).maybeSingle(),
-    admin.from("val_ai_providers").select("id, enabled, free_tier_confirmed, health_status, priority, quota_headers, last_health_check, updated_at"),
+    admin.from("val_ai_providers").select("id, enabled, free_tier_confirmed, health_status, failure_count, circuit_open_until, priority, quota_headers, last_health_check, updated_at"),
     admin.from("val_ai_models").select("*").eq("is_free", true).eq("free_verified", true).eq("is_enabled", true),
     admin.from("val_ai_provider_keys").select("provider_id, encrypted_api_key").eq("is_active", true),
   ]);
@@ -66,6 +66,11 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
     const apiKey = activeKeys.get(providerId);
     const providerGlobalFlag = providerId === "groq" ? settings.val_groq_enabled === true : settings.val_openrouter_enabled === true;
     if (!provider || !apiKey || !provider.enabled || !providerGlobalFlag) continue;
+    const providerCircuit = providerCircuitDecision(
+      String(provider.health_status) as ValModelCandidate["health"],
+      provider.circuit_open_until ? String(provider.circuit_open_until) : null,
+    );
+    if (providerCircuit === "blocked") continue;
     let modelHealth = String(row.health_status) as ValModelCandidate["health"];
     let circuitOpenUntil = row.circuit_open_until ? String(row.circuit_open_until) : null;
     let requiresProbe = false;
@@ -134,6 +139,7 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
       freeTierConfirmed: provider.free_tier_confirmed === true,
       apiKey,
       requiresProbe,
+      requiresProviderProbe: providerCircuit === "probe",
     });
   }
   const ordered = selectFreeModels(rows, requirements).map((candidate) => rows.find((row) => row.provider === candidate.provider && row.modelId === candidate.modelId)!).filter(Boolean);

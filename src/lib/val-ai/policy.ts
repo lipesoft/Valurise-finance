@@ -29,6 +29,15 @@ export type ValModelRequirements = {
   now?: number;
 };
 
+export function providerCircuitDecision(health: ValHealth, openUntil: string | null, now = Date.now()) {
+  if (health === "CIRCUIT_OPEN") {
+    const until = openUntil ? Date.parse(openUntil) : Number.NaN;
+    return Number.isFinite(until) && until <= now ? "probe" as const : "blocked" as const;
+  }
+  if (health === "HALF_OPEN" || health === "UNAVAILABLE" || health === "QUOTA_EXHAUSTED" || health === "DISABLED") return "blocked" as const;
+  return "ready" as const;
+}
+
 export function indexValModelQuotaUsage(rows: Array<{
   period_kind: string;
   provider_id: string | null;

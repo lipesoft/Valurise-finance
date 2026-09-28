@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyValTask, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, providerQuotaUtilizationPercent, runFreeModelCandidates, selectFreeModels, type ValModelCandidate } from "./policy";
+import { classifyValTask, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, providerCircuitDecision, providerQuotaUtilizationPercent, runFreeModelCandidates, selectFreeModels, type ValModelCandidate } from "./policy";
 
 const model = (overrides: Partial<ValModelCandidate> = {}): ValModelCandidate => ({
   provider: "groq", modelId: "openai/gpt-oss-20b", isFree: true, freeVerified: true,
@@ -43,6 +43,14 @@ describe("Val FreeModelPolicy", () => {
     ]);
     expect(usage.get("day:groq/vendor/model-a")).toEqual({ requests: 3, tokens: 250 });
     expect([...usage.keys()]).toEqual(["day:groq/vendor/model-a"]);
+  });
+
+  it("abre circuito do provider, bloqueia tentativas concorrentes e permite uma sonda após o cooldown", () => {
+    const now = Date.parse("2026-09-28T12:00:00.000Z");
+    expect(providerCircuitDecision("CIRCUIT_OPEN", "2026-09-28T12:01:00.000Z", now)).toBe("blocked");
+    expect(providerCircuitDecision("HALF_OPEN", "2026-09-28T12:00:30.000Z", now)).toBe("blocked");
+    expect(providerCircuitDecision("CIRCUIT_OPEN", "2026-09-28T11:59:00.000Z", now)).toBe("probe");
+    expect(providerCircuitDecision("DEGRADED", null, now)).toBe("ready");
   });
 
   it("escolhe o próximo modelo somente dentro da allowlist gratuita", () => {

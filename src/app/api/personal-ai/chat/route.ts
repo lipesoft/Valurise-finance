@@ -208,10 +208,15 @@ export async function POST(request: NextRequest) {
     .filter((candidate): candidate is RoutedModel => Boolean(candidate));
   const candidates: RoutedModel[] = [];
   for (const candidate of orderedCandidates) {
-    if (candidate.requiresProbe) {
-      const { data: claimed, error: claimError } = await admin.rpc("claim_val_ai_model_probe", { p_provider_id: candidate.provider, p_model_id: candidate.modelId });
+    if (candidate.requiresProviderProbe || candidate.requiresProbe) {
+      const { data: claimed, error: claimError } = await admin.rpc("claim_val_ai_router_probe", {
+        p_provider_id: candidate.provider,
+        p_model_id: candidate.modelId,
+        p_claim_provider: candidate.requiresProviderProbe === true,
+        p_claim_model: candidate.requiresProbe === true,
+      });
       if (claimError || claimed !== true) continue;
-      candidates.push({ ...candidate, requiresProbe: false });
+      candidates.push({ ...candidate, requiresProbe: false, requiresProviderProbe: false });
     } else candidates.push(candidate);
     if (candidates.length >= Math.max(1, Math.min(3, maxAttempts))) break;
   }

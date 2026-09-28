@@ -510,6 +510,10 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   const visibleText = await page.locator("body").innerText();
   expect(visibleText).not.toContain(keySentinel);
   expect(JSON.stringify(await page.evaluate(() => localStorage))).not.toContain(keySentinel);
+  await page.getByRole("button", { name: "Cotas e limites" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Falhas para abrir circuito" })).toHaveValue("3");
+  await page.getByRole("button", { name: "Salvar limites e controles" }).click();
+  expect(adminActions.at(-1)).toMatchObject({ action: "save_limits", circuitFailureThreshold: 3, circuitCooldownSeconds: 120 });
   for (const width of [375, 390, 430, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
