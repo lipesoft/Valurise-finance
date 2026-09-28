@@ -87,6 +87,7 @@ import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
 import { HelpHint } from "@/components/help-hint";
 import { WorkspaceDashboardHeader } from "@/components/dashboard/workspace-dashboard-header";
+import { WorkspaceSwitcher } from "@/components/dashboard/workspace-switcher";
 import { MasterAdminPanel } from "@/components/master-admin-panel";
 import { MasterNotifications } from "@/components/master-notifications";
 import { ValAISettings } from "@/components/val-ai-settings";
@@ -1237,11 +1238,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
             <Brand compactOnMobile className="shrink-0" />
           </div>
           <div className="flex min-w-0 items-center gap-1">
-            <label className="sr-only" htmlFor="active-workspace">Espaço financeiro ativo</label>
-            <select id="active-workspace" aria-label="Espaço financeiro ativo" title={`${workspace.type === "personal" ? "Pessoal" : "Empresa"} · ${workspace.displayName}`} value={workspace.id} onChange={(event) => onSwitchWorkspace(event.target.value)} className="field workspace-selector h-10 min-h-10 min-w-0 px-2 text-xs font-medium sm:px-3">
-              {workspaces.map((item) => <option key={item.id} value={item.id}>{item.type === "personal" ? "Pessoal" : "Empresa"} · {item.displayName}</option>)}
-            </select>
-            <button type="button" onClick={onCreateWorkspace} aria-label="Criar espaço empresarial" title="Criar espaço empresarial" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--accent)]"><Plus size={18}/></button>
+            <WorkspaceSwitcher workspace={workspace} workspaces={workspaces} onSwitchWorkspace={onSwitchWorkspace} onCreateWorkspace={onCreateWorkspace} />
           </div>
           <div className="flex shrink-0 items-center gap-0.5 sm:gap-2">
             <button

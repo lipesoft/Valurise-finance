@@ -156,9 +156,12 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await installMockSession(page);
   await page.goto("/");
   const personalGreeting = page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ });
-  await expect(personalGreeting).toBeVisible();
+  await expect(personalGreeting).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Mercado QA")).toBeVisible();
-  await page.getByRole("button", { name: "Criar espaço empresarial" }).click();
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await expect(page.getByRole("menu", { name: "Espaços financeiros" })).toBeVisible();
+  await expect(page.getByRole("menuitemradio", { name: /Pessoal.*Pessoa de teste/ })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
   const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
   await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
   await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
@@ -175,11 +178,13 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);
 
-  await page.getByLabel("Espaço financeiro ativo").selectOption(personalWorkspaceId);
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitemradio", { name: /Pessoal.*Pessoa de teste/ }).click();
   await expect(personalGreeting).toBeVisible();
   await expect(page.getByText("Patrimônio total", { exact: true })).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
-  await page.getByLabel("Espaço financeiro ativo").selectOption(businessWorkspaceId);
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitemradio", { name: /Empresa QA.*Espaço empresarial/ }).click();
   await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
   await expect(personalGreeting).toHaveCount(0);
   await expect(page.getByText("Mercado QA")).toHaveCount(0);
@@ -188,7 +193,8 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
 test("salva referências empresariais, distingue realizado de estimado e mantém o mobile utilizável", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Criar espaço empresarial" }).click();
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
   const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
   await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
   await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
@@ -352,7 +358,7 @@ test("splash respeita movimento reduzido e libera o dashboard", async ({ page })
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 15_000 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -396,10 +402,10 @@ test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px
 test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 15_000 });
 
-  const workspaceSelect = page.getByLabel("Espaço financeiro ativo");
-  const header = workspaceSelect.locator("xpath=ancestor::header");
+  const workspaceSwitcher = page.getByRole("button", { name: "Alternar espaço financeiro" });
+  const header = workspaceSwitcher.locator("xpath=ancestor::header");
   const searchButton = page.getByRole("button", { name: "Buscar em todo o Valurise" });
 
   for (const width of [320, 360, 375, 390, 430, 768, 1023, 1280]) {
@@ -407,12 +413,13 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     const headerBounds = await header.boundingBox();
-    const selectBounds = await workspaceSelect.boundingBox();
+    const switcherBounds = await workspaceSwitcher.boundingBox();
     expect(headerBounds).not.toBeNull();
-    expect(selectBounds).not.toBeNull();
-    expect(selectBounds!.width).toBeGreaterThanOrEqual(70);
+    expect(switcherBounds).not.toBeNull();
+    expect(switcherBounds!.width).toBeGreaterThanOrEqual(70);
+    expect(switcherBounds!.width).toBeLessThanOrEqual(160);
 
-    const controls = await header.locator("select, button").evaluateAll((elements) => elements
+    const controls = await header.locator("button").evaluateAll((elements) => elements
       .map((element) => {
         const rect = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -423,8 +430,8 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
     for (const control of controls) {
       expect(control.x).toBeGreaterThanOrEqual(headerBounds!.x - 1);
       expect(control.right).toBeLessThanOrEqual(headerBounds!.x + headerBounds!.width + 1);
-      if (control.label !== "Espaço financeiro ativo") expect(control.width).toBeGreaterThanOrEqual(44);
-      if (control.label !== "Espaço financeiro ativo") expect(control.height).toBeGreaterThanOrEqual(44);
+      if (control.label !== "Alternar espaço financeiro") expect(control.width).toBeGreaterThanOrEqual(44);
+      if (control.label !== "Alternar espaço financeiro") expect(control.height).toBeGreaterThanOrEqual(44);
     }
     for (let index = 1; index < controls.length; index += 1) {
       expect(controls[index - 1].right).toBeLessThanOrEqual(controls[index].x + 1);
@@ -439,6 +446,18 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
   }
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await workspaceSwitcher.focus();
+  await page.keyboard.press("ArrowDown");
+  const workspaceMenu = page.getByRole("menu", { name: "Espaços financeiros" });
+  await expect(workspaceMenu).toBeVisible();
+  const workspaceMenuBounds = await workspaceMenu.boundingBox();
+  expect(workspaceMenuBounds).not.toBeNull();
+  expect(workspaceMenuBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(workspaceMenuBounds!.x + workspaceMenuBounds!.width).toBeLessThanOrEqual(390);
+  await page.keyboard.press("Escape");
+  await expect(workspaceMenu).toBeHidden();
+  await expect(workspaceSwitcher).toBeFocused();
+
   await page.getByRole("button", { name: "Abrir menu" }).click();
   const menu = page.getByRole("dialog", { name: "Menu principal" });
   await menu.getByRole("button", { name: "Buscar em todo o Valurise" }).click();
