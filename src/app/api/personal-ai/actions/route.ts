@@ -15,15 +15,16 @@ export async function GET(request: NextRequest) {
   const { user, workspace } = active;
 
   const admin = getSupabaseAdminClient();
-  const [{ data: connection, error: connectionError }, { data: proposals, error: proposalError }] = await Promise.all([
-    admin.from("personal_ai_connections").select("actions_enabled").eq("workspace_id", workspace.id).maybeSingle(),
+  const [{ data: preference, error: preferenceError }, { data: consent, error: consentError }, { data: proposals, error: proposalError }] = await Promise.all([
+    admin.from("val_ai_user_preferences").select("actions_enabled").eq("workspace_id", workspace.id).eq("user_id", user.id).maybeSingle(),
+    admin.from("workspace_ai_consents").select("ai_data_sharing_version, accepted_at").eq("workspace_id", workspace.id).eq("user_id", user.id).maybeSingle(),
     admin.from("personal_ai_action_proposals")
       .select("id, action_type, amount_cents, category, account_label, description, transaction_date, created_at, expires_at")
       .eq("workspace_id", workspace.id).eq("user_id", user.id).eq("status", "pending").gt("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false }).limit(5),
   ]);
-  if (connectionError || proposalError) return NextResponse.json({ error: "Não foi possível carregar as propostas da Val." }, { status: 503 });
-  if (!connection?.actions_enabled) {
+  if (preferenceError || consentError || proposalError) return NextResponse.json({ error: "Não foi possível carregar as propostas da Val." }, { status: 503 });
+  if (!preference?.actions_enabled || consent?.ai_data_sharing_version !== legalVersions.aiSharing || !consent.accepted_at) {
     await admin.from("personal_ai_action_proposals").update({ status: "cancelled", acted_at: new Date().toISOString() })
       .eq("workspace_id", workspace.id).eq("user_id", user.id).eq("status", "pending");
     return NextResponse.json({ proposals: [] });

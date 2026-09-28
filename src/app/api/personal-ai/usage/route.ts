@@ -1,30 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createUserScopedSupabaseClient } from "@/lib/supabase/user-scoped";
+import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
 
 export async function GET(request: NextRequest) {
   const active = await getVerifiedWorkspaceContext(request.headers.get("authorization"), request.headers.get("x-valurise-workspace-id"));
   if (!active.ok) return NextResponse.json({ error: active.error }, { status: active.status });
-  const { user, workspace } = active;
+  const { user } = active;
+  const admin = getSupabaseAdminClient();
   const now = new Date();
-  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() || "";
-  const { data, error } = await createUserScopedSupabaseClient(token).from("personal_ai_usage_monthly")
-    .select("month_start, request_count, chat_count, input_tokens, output_tokens")
-    .eq("workspace_id", workspace.id).eq("month_start", month).maybeSingle();
-  if (error) {
-    // The UI can still operate while an additive usage migration is being deployed.
-    if (error.code === "42P01" || error.code === "PGRST205") return NextResponse.json({ available: false, usage: null });
-    return NextResponse.json({ error: "Não foi possível consultar o uso da IA." }, { status: 500 });
-  }
-  const usage = data ? {
-    month: data.month_start,
-    requests: data.request_count,
-    chatRequests: data.chat_count,
-    inputTokens: data.input_tokens,
-    outputTokens: data.output_tokens,
-    totalTokens: Number(data.input_tokens) + Number(data.output_tokens),
-    quotaTokens: null,
-  } : { month, requests: 0, chatRequests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, quotaTokens: null };
-  return NextResponse.json({ available: true, usage });
+  const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
+  const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
+  const [settingsResult, overrideResult, usageResult] = await Promise.all([
+    admin.from("val_ai_runtime_settings").select("daily_requests, monthly_requests, daily_tokens, monthly_tokens").eq("id", 1).maybeSingle(),
+    admin.from("val_ai_user_quota_overrides").select("daily_requests, monthly_requests, daily_tokens, monthly_tokens, is_blocked").eq("user_id", user.id).maybeSingle(),
+    admin.from("val_ai_user_quota_usage").select("period_kind, period_start, requests, tokens").eq("user_id", user.id).in("period_kind", ["day", "month"]).in("period_start", [day, month]),
+  ]);
+  if (settingsResult.error || usageResult.error) return NextResponse.json({ error: "Não foi possível consultar o uso da Val." }, { status: 503 });
+  const settings = settingsResult.data || { daily_requests: 0, monthly_requests: 0, daily_tokens: 0, monthly_tokens: 0 };
+  const override = overrideResult.data;
+  const dayUse = (usageResult.data || []).find((row) => row.period_kind === "day" && row.period_start === day);
+  const monthUse = (usageResult.data || []).find((row) => row.period_kind === "month" && row.period_start === month);
+  const dailyLimit = Number(override?.daily_requests ?? settings.daily_requests);
+  const monthlyLimit = Number(override?.monthly_requests ?? settings.monthly_requests);
+  return NextResponse.json({ available: true, blocked: override?.is_blocked === true, usage: {
+    today: { requests: Number(dayUse?.requests || 0), limit: dailyLimit, remaining: Math.max(0, dailyLimit - Number(dayUse?.requests || 0)) },
+    month: { requests: Number(monthUse?.requests || 0), limit: monthlyLimit, remaining: Math.max(0, monthlyLimit - Number(monthUse?.requests || 0)), tokens: Number(monthUse?.tokens || 0) },
+  } }, { headers: { "Cache-Control": "no-store" } });
 }

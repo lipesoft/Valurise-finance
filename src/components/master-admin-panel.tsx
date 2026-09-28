@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bell,
+  BrainCircuit,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -20,8 +21,9 @@ import {
   X,
 } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { ValAIControlCenter } from "@/components/val-ai-control-center";
 
-type Section = "requests" | "users" | "invites" | "audit";
+type Section = "requests" | "users" | "invites" | "audit" | "val-ai";
 type Account = {
   id: string;
   email: string | null;
@@ -50,6 +52,7 @@ const sections: { id: Section; label: string; icon: typeof Bell }[] = [
   { id: "users", label: "Usuários", icon: Users },
   { id: "invites", label: "Convites", icon: MailCheck },
   { id: "audit", label: "Auditoria", icon: Activity },
+  { id: "val-ai", label: "Central da Val", icon: BrainCircuit },
 ];
 const statusLabels: Record<string, string> = {
   pending: "Aguardando análise",
@@ -173,6 +176,7 @@ export function MasterAdminPanel({
     const currentRequest = ++requestSequence.current;
     setLoading(true);
     try {
+      if (section === "val-ai") return;
       if (section === "audit" && auditSince && auditUntil && auditSince > auditUntil) {
         setAudit([]);
         setTotal(0);
@@ -487,6 +491,8 @@ export function MasterAdminPanel({
       </section>
       {pageControls}
     </div>}
+
+    {section === "val-ai" && <ValAIControlCenter toast={toast} />}
 
     {section === "users" && <div className="mt-5 space-y-4">
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_200px]">
