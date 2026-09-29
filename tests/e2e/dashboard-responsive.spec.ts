@@ -193,6 +193,16 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   const revenueStatusBounds = await revenueStatus.boundingBox();
   const revenueCardBounds = await revenueMetric.boundingBox();
   expect(revenueStatusBounds && revenueCardBounds ? revenueStatusBounds.x - revenueCardBounds.x : 99).toBeLessThan(30);
+  const resultMetric = businessSummary.locator("article").filter({ hasText: "Resultado gerencial" });
+  await expect(resultMetric).toHaveAttribute("data-nature", "none");
+  await expect(resultMetric.locator("[data-metric-value]")).toHaveText("Sem dados");
+  await expect.poll(() => resultMetric.locator("[data-metric-value]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expect(resultMetric.locator("span[data-nature]")).toHaveCount(0);
+  await page.getByRole("button", { name: "Ajuda: O que significa o status?" }).click();
+  await expect(page.getByRole("region", { name: "O que significa o status?" })).toContainText("Realizado usa movimentações registradas");
+  await page.keyboard.press("Escape");
+  const marginMetric = businessSummary.locator("article").filter({ hasText: "Margem bruta" });
+  await expect(marginMetric.locator("[data-metric-value]")).toHaveText("Sem dados");
   const projectedMetric = businessSummary.locator("article").filter({ hasText: "A receber · programado" });
   await expect(projectedMetric).toHaveAttribute("data-nature", "projected");
   const [actualColor, projectedColor] = await Promise.all([
@@ -203,6 +213,13 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByText("Total", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect.poll(() => resultMetric.locator("[data-metric-value]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expect.poll(() => marginMetric.locator("[data-metric-value]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  await page.setViewportSize({ width: 1348, height: 618 });
 
   await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
   await page.getByRole("menuitemradio", { name: /Pessoal.*Pessoa de teste/ }).click();

@@ -47,6 +47,13 @@ const assumptionLabels: Record<BusinessAssumptionKey, string> = {
 const natureLabels: Record<FinancialDataNature, string> = {
   actual: "Realizado", reported: "Informado", estimated: "Estimado", projected: "Projetado", mixed: "Misto",
 };
+const natureDescriptions: Record<FinancialDataNature, string> = {
+  actual: "Calculado com base em valores e movimentações já registrados.",
+  reported: "Valor de referência informado manualmente no perfil financeiro da empresa.",
+  estimated: "Estimativa gerencial baseada nas referências informadas; não representa um lançamento confirmado.",
+  projected: "Valor futuro planejado, ainda não confirmado como recebido ou pago.",
+  mixed: "Combina valores registrados com referências informadas ou estimadas.",
+};
 
 function monthKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
@@ -56,6 +63,9 @@ function centsInput(amount: number | null | undefined) {
 }
 function monthlyMoney(cents: number | null, currency = "BRL") {
   return formatBusinessMoney(cents, currency);
+}
+function displayMonthlyMoney(cents: number | null, currency = "BRL") {
+  return cents === null ? "Sem dados" : monthlyMoney(cents, currency);
 }
 function exactMonthlyMoney(cents: number | null, currency = "BRL") {
   if (cents === null) return "Sem dados suficientes";
@@ -84,8 +94,9 @@ function emptySnapshot(period: string): BusinessFinanceSnapshot {
   return calculateBusinessFinanceSnapshot({ period, transactions: [], assumptions: [], cashAvailableCents: null });
 }
 function natureBadge(nature: FinancialDataNature | null) {
+  if (!nature) return null;
   const tone = natureTone(nature);
-  return <span data-nature={nature || "none"} className={`${styles.statusBadge} ${tone} rounded-full px-2 py-1 text-[10px] font-medium`}>{nature ? natureLabels[nature] : "Sem dados"}</span>;
+  return <span data-nature={nature} title={natureDescriptions[nature]} aria-label={`${natureLabels[nature]}. ${natureDescriptions[nature]}`} className={`${styles.statusBadge} ${tone} rounded-full px-2 py-1 text-[10px] font-medium`}>{natureLabels[nature]}</span>;
 }
 function natureTone(nature: FinancialDataNature | null) {
   if (nature === "actual") return styles.metricActual;
@@ -98,7 +109,7 @@ function Metric({ label, item, currency = "BRL" }: { label: string; item: { amou
   return <article data-nature={item.nature || "none"} className={`min-w-0 rounded-2xl p-4 ${styles.metricCard} ${tone}`} title={item.explanation}>
     <div className="min-h-5">{natureBadge(item.nature)}</div>
     <p className="muted mt-2 min-h-10 text-xs leading-5">{label}</p>
-    <p aria-label={amountLabel} title={item.amountCents === null ? undefined : amountLabel} className="mt-1 whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums sm:text-xl 2xl:text-2xl">{monthlyMoney(item.amountCents, currency)}</p>
+    <p data-metric-value aria-label={amountLabel} title={item.amountCents === null ? undefined : amountLabel} className={`mt-1 font-semibold tracking-tight ${item.amountCents === null ? "break-words text-base leading-tight sm:text-lg" : "whitespace-nowrap text-lg tabular-nums sm:text-xl 2xl:text-2xl"}`}>{displayMonthlyMoney(item.amountCents, currency)}</p>
     <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{item.explanation}</p></details>
   </article>;
 }
@@ -184,27 +195,27 @@ export function BusinessFinanceDashboard({
         <p className="muted text-[11px] leading-5">Saldo derivado dos saldos das contas e dos lançamentos registrados; transferências não alteram o caixa total. Valores informados não substituem o extrato.</p>
       </div></section>
     </div>
-    <footer className="muted mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-[10px]"><span className="inline-flex items-center gap-1"><Info size={12}/> Estimativas não substituem os valores registrados.</span><span>Para configurar os valores, abra Perfil financeiro nas Configurações.</span><HelpHint label="Estimativas e projeções"><p>As projeções usam somente as contas a receber e a pagar informadas. Elas são referências gerenciais e não substituem os lançamentos.</p></HelpHint></footer>
+    <footer className="muted mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-[10px]"><span className="inline-flex items-center gap-1"><Info size={12}/> Estimativas não substituem os valores registrados.</span><span>Para configurar os valores, abra Perfil financeiro nas Configurações.</span><HelpHint label="O que significa o status?"><p>Realizado usa movimentações registradas. Informado é uma referência preenchida manualmente. Estimado é um cálculo baseado nessas referências. Projetado considera movimentações futuras planejadas. Misto combina mais de uma dessas fontes.</p><p className="mt-2">Esses dados ajudam na gestão e não substituem os lançamentos oficiais.</p></HelpHint></footer>
   </section>;
 }
 
 function DreRow({ label, item, currency, strong = false }: { label: string; item: { amountCents: number | null; nature: FinancialDataNature | null }; currency: string; strong?: boolean }) {
   const exactAmount = exactMonthlyMoney(item.amountCents, currency);
-  return <div className={`flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${strong ? "font-semibold" : ""}`}><span>{label}</span><span className="inline-flex items-center gap-2 text-right">{natureBadge(item.nature)}<span aria-label={exactAmount} title={item.amountCents === null ? undefined : exactAmount} className="min-w-28">{monthlyMoney(item.amountCents, currency)}</span></span></div>;
+  return <div className={`flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${strong ? "font-semibold" : ""}`}><span>{label}</span><span className="inline-flex items-center gap-2 text-right">{natureBadge(item.nature)}<span aria-label={exactAmount} title={item.amountCents === null ? undefined : exactAmount} className="min-w-28">{displayMonthlyMoney(item.amountCents, currency)}</span></span></div>;
 }
 function PercentageMetric({ label, percent, nature, explanation }: { label: string; percent: number | null; nature: FinancialDataNature | null; explanation: string }) {
   const tone = natureTone(nature);
   return <article data-nature={nature || "none"} className={`min-w-0 rounded-2xl p-4 ${styles.metricCard} ${tone}`} title={explanation}>
     <div className="min-h-5">{natureBadge(nature)}</div>
     <p className="muted mt-2 min-h-10 text-xs leading-5">{label}</p>
-    <p className="mt-1 whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums sm:text-xl 2xl:text-2xl">{percent === null ? "Sem dados suficientes" : `${percent.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`}</p>
+    <p data-metric-value className={`mt-1 font-semibold tracking-tight ${percent === null ? "break-words text-base leading-tight sm:text-lg" : "whitespace-nowrap text-lg tabular-nums sm:text-xl 2xl:text-2xl"}`}>{percent === null ? "Sem dados" : `${percent.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`}</p>
     <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{explanation}</p></details>
   </article>;
 }
 function FlowRow({ label, amount, icon, currency }: { label: string; amount: number | null; icon: "neutral" | "in" | "out"; currency: string }) {
   const Icon = icon === "in" ? ArrowDownLeft : icon === "out" ? ArrowUpRight : null;
   const exactAmount = exactMonthlyMoney(amount, currency);
-  return <div className="flex items-center justify-between gap-3"><span className="muted flex min-w-0 items-center gap-2">{Icon && <Icon size={14} className={icon === "in" ? "text-[var(--accent)]" : "text-amber-300"}/>}<span>{label}</span></span><b aria-label={exactAmount} title={amount === null ? undefined : exactAmount} className="shrink-0">{monthlyMoney(amount, currency)}</b></div>;
+  return <div className="flex items-center justify-between gap-3"><span className="muted flex min-w-0 items-center gap-2">{Icon && <Icon size={14} className={icon === "in" ? "text-[var(--accent)]" : "text-amber-300"}/>}<span>{label}</span></span><b aria-label={exactAmount} title={amount === null ? undefined : exactAmount} className="shrink-0">{displayMonthlyMoney(amount, currency)}</b></div>;
 }
 
 export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: string; toast: (message: string) => void }) {
