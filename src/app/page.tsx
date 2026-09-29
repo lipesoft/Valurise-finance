@@ -2031,7 +2031,7 @@ function Dashboard({
     <StaggerContainer className={`mx-auto w-full px-4 pt-5 ${dashboardWidth}`}>
       <WorkspaceDashboardHeader workspace={workspace} userName={displayName || user.name} month={month} setMonth={setMonth} />
       {isBusinessWorkspace ? (
-        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} scheduledReceivablesCents={scheduledReceivablesCents} go={go} />
+        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} summary={sum} total={total} availableBalanceCents={accountBalanceCents} committedCents={availability.committedCents} freeToSpendCents={availability.freeToSpendCents} scheduledReceivablesCents={scheduledReceivablesCents} go={go} />
       ) : (
         <>
       <StaggerItem>

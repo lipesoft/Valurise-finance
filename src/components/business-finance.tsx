@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowDownLeft, ArrowUpRight, Building2, Info, Save } from "lucide-react";
 import { accountBalance, formatBRL, type FinanceTransaction } from "@/lib/finance";
 import { HelpHint } from "@/components/help-hint";
+import { AnimatedCard } from "@/components/motion";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import styles from "@/components/business-finance.module.css";
 import {
@@ -113,6 +114,46 @@ function Metric({ label, item, currency = "BRL" }: { label: string; item: { amou
     <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{item.explanation}</p></details>
   </article>;
 }
+type DashboardTotals = {
+  balanceCents: number;
+  incomeCents: number;
+  expenseCents: number;
+  investmentCents: number;
+};
+function TotalValue({ label, value, currency }: { label: string; value: number; currency: string }) {
+  return <div className="min-w-0">
+    <p className="muted text-xs">{label}</p>
+    <b title={exactMonthlyMoney(value, currency)} className="mt-1 block whitespace-nowrap text-[clamp(.72rem,3.1vw,1rem)] leading-tight tracking-tight">{monthlyMoney(value, currency)}</b>
+  </div>;
+}
+function TotalFinancialMetric({ label, value, currency, negative = false, accent = false, help }: { label: string; value: number; currency: string; negative?: boolean; accent?: boolean; help?: string }) {
+  const amount = negative ? -Math.abs(value) : value;
+  return <div className="min-w-0 rounded-xl bg-[var(--panel2)] px-3 py-2.5" title={help}>
+    <p className="muted text-[10px]">{label}{help ? " · ⓘ" : ""}</p>
+    <b title={exactMonthlyMoney(amount, currency)} className={`mt-0.5 block truncate text-[13px] ${negative ? "text-[var(--danger)]" : accent ? "text-[var(--accent)]" : ""}`}>{monthlyMoney(amount, currency)}</b>
+  </div>;
+}
+function BusinessTotalCard({ summary, total, availableBalanceCents, committedCents, freeToSpendCents, scheduledReceivablesCents, currency }: {
+  summary: DashboardTotals; total: DashboardTotals; availableBalanceCents: number; committedCents: number;
+  freeToSpendCents: number; scheduledReceivablesCents: number; currency: string;
+}) {
+  return <section aria-label="Total da empresa"><AnimatedCard className="panel mt-5 rounded-3xl p-6">
+    <p className="muted text-sm">Total</p>
+    <p className="mt-2 text-4xl font-semibold" title={exactMonthlyMoney(total.balanceCents, currency)}>{monthlyMoney(total.balanceCents, currency)}</p>
+    <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-[var(--border)] pt-4 sm:grid-cols-5 sm:gap-3">
+      <TotalValue label="Entrou" value={summary.incomeCents} currency={currency}/>
+      <TotalValue label="Consumo" value={summary.expenseCents} currency={currency}/>
+      <TotalValue label="Aportes" value={summary.investmentCents} currency={currency}/>
+      <TotalValue label="Resultado" value={summary.incomeCents - summary.expenseCents} currency={currency}/>
+      <TotalValue label="A receber" value={scheduledReceivablesCents} currency={currency}/>
+    </div>
+    <div className="mt-4 grid gap-2 border-t border-[var(--border)] pt-3 sm:grid-cols-3">
+      <TotalFinancialMetric label="Saldo disponível" value={availableBalanceCents} currency={currency}/>
+      <TotalFinancialMetric label="Compromissos do mês" value={committedCents} currency={currency} negative/>
+      <TotalFinancialMetric label="Disponível para gastar" value={freeToSpendCents} currency={currency} accent help="Saldo disponível menos contas recorrentes ainda pendentes neste mês."/>
+    </div>
+  </AnimatedCard></section>;
+}
 function currentCash(data: BusinessInstitutionData, transactions: FinanceTransaction[]) {
   const accounts = (data.institutions || []).flatMap((institution) => institution.accounts.map((account) => ({
     name: `${institution.name} • ${account.name}`, balance: account.balance,
@@ -122,10 +163,13 @@ function currentCash(data: BusinessInstitutionData, transactions: FinanceTransac
 }
 
 export function BusinessFinanceDashboard({
-  workspaceId, month, data, allTransactions, scheduledReceivablesCents = 0, go,
+  workspaceId, month, data, allTransactions, summary, total, availableBalanceCents, committedCents,
+  freeToSpendCents, scheduledReceivablesCents = 0, go,
 }: {
   workspaceId: string; month: Date; data: BusinessInstitutionData;
-  allTransactions: FinanceTransaction[]; scheduledReceivablesCents?: number; go: (view: "settings") => void;
+  allTransactions: FinanceTransaction[]; summary: DashboardTotals; total: DashboardTotals;
+  availableBalanceCents: number; committedCents: number; freeToSpendCents: number;
+  scheduledReceivablesCents?: number; go: (view: "settings") => void;
 }) {
   const period = monthKey(month);
   const [assumptions, setAssumptions] = useState<AssumptionRecord>({});
@@ -155,8 +199,9 @@ export function BusinessFinanceDashboard({
       cashAvailableCents: currentCash(data, allTransactions),
     });
   }, [allTransactions, assumptions, data, period]);
-  if (loading) return <section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-5 sm:p-6"><p className="muted text-sm">Carregando indicadores empresariais…</p></section>;
-  return <section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-4 sm:p-6">
+  const totalCard = <BusinessTotalCard summary={summary} total={total} availableBalanceCents={availableBalanceCents} committedCents={committedCents} freeToSpendCents={freeToSpendCents} scheduledReceivablesCents={scheduledReceivablesCents} currency={profile.default_currency}/>;
+  if (loading) return <>{totalCard}<section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-5 sm:p-6"><p className="muted text-sm">Carregando indicadores empresariais…</p></section></>;
+  return <>{totalCard}<section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-4 sm:p-6">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Building2 size={17} className="text-[var(--accent)]"/><h2 className="text-lg font-semibold">Visão da empresa</h2></div><p className="muted mt-1 text-xs">Regime de caixa · movimentações registradas e referências informadas</p></div><button type="button" onClick={() => go("settings")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Perfil financeiro</button></header>
     {error && <p role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">{error} Para evitar números desatualizados, os indicadores não foram substituídos por zeros.</p>}
     <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
@@ -196,7 +241,7 @@ export function BusinessFinanceDashboard({
       </div></section>
     </div>
     <footer className="muted mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-[10px]"><span className="inline-flex items-center gap-1"><Info size={12}/> Estimativas não substituem os valores registrados.</span><span>Para configurar os valores, abra Perfil financeiro nas Configurações.</span><HelpHint label="O que significa o status?"><p>Realizado usa movimentações registradas. Informado é uma referência preenchida manualmente. Estimado é um cálculo baseado nessas referências. Projetado considera movimentações futuras planejadas. Misto combina mais de uma dessas fontes.</p><p className="mt-2">Esses dados ajudam na gestão e não substituem os lançamentos oficiais.</p></HelpHint></footer>
-  </section>;
+  </section></>;
 }
 
 function DreRow({ label, item, currency, strong = false }: { label: string; item: { amountCents: number | null; nature: FinancialDataNature | null }; currency: string; strong?: boolean }) {

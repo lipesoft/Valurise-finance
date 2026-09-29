@@ -178,6 +178,12 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await page.getByRole("button", { name: "Pular por enquanto" }).click();
   await expect(page.getByRole("button", { name: "Registrar movimentação" })).toBeVisible();
   await expect(page.locator("h1")).toHaveText("Empresa QA");
+  const businessTotal = page.getByRole("region", { name: "Total da empresa" });
+  await expect(businessTotal).toBeVisible();
+  await expect(businessTotal).toContainText(/R\$\s*4,5M/);
+  await expect(businessTotal.getByText("Entrou", { exact: true })).toBeVisible();
+  await expect(businessTotal.getByText("A receber", { exact: true })).toBeVisible();
+  await expect(businessTotal.getByText("Saldo disponível", { exact: true })).toBeVisible();
   const businessSummary = page.getByRole("region", { name: "Resumo empresarial" });
   await expect(businessSummary).toBeVisible();
   const summaryBounds = await businessSummary.boundingBox();
@@ -210,7 +216,7 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
     projectedMetric.evaluate((element) => getComputedStyle(element).backgroundColor),
   ]);
   expect(actualColor).not.toBe(projectedColor);
-  await expect(page.getByText("Total", { exact: true })).toHaveCount(0);
+  await expect(businessTotal.getByText("Total", { exact: true })).toBeVisible();
   await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);
   for (const width of [375, 390, 430]) {
