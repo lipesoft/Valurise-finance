@@ -71,10 +71,12 @@ async function installMockSession(page: import("@playwright/test").Page, financi
     const body = route.request().postDataJSON() as { workspaceId?: string };
     return route.fulfill({ status: 200, json: { ok: true, activeWorkspaceId: body.workspaceId } });
   });
-  await page.route("**/api/workspaces/business", (route) => route.fulfill({ status: 201, json: {
-    ok: true,
-    workspace: { id: businessWorkspaceId, type: "business", displayName: "Empresa QA", role: "owner" },
-  } }));
+  await page.route("**/api/workspaces/business", (route) => route.request().method() === "DELETE"
+    ? route.fulfill({ status: 200, json: { ok: true, deletedWorkspaceId: businessWorkspaceId, personalWorkspaceId } })
+    : route.fulfill({ status: 201, json: {
+      ok: true,
+      workspace: { id: businessWorkspaceId, type: "business", displayName: "Empresa QA", role: "owner" },
+    } }));
   let businessProfile = {
     workspace_id: businessWorkspaceId, legal_name: "Empresa QA Serviços LTDA", trade_name: "Empresa QA", cnpj: "11222333000181",
     email: null, phone: null, postal_code: null, street: null, number: null, address_complement: null, neighborhood: null,
@@ -241,6 +243,63 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
   await expect(personalGreeting).toHaveCount(0);
   await expect(page.getByText("Mercado QA")).toHaveCount(0);
+});
+
+test("proprietário exclui empresa após confirmação e volta ao Pessoal sem apagar seus dados", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installMockSession(page);
+  let deletionPayload: { confirmationName?: string } | null = null;
+  await page.route("**/api/workspaces/business", (route) => {
+    if (route.request().method() === "DELETE") {
+      deletionPayload = route.request().postDataJSON() as { confirmationName?: string };
+      return route.fulfill({ status: 200, json: { ok: true, deletedWorkspaceId: businessWorkspaceId, personalWorkspaceId } });
+    }
+    return route.fallback();
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
+  const createDialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
+  await createDialog.getByLabel("Nome fantasia").fill("Empresa QA");
+  await createDialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
+  await createDialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
+  await createDialog.getByRole("button", { name: "Criar empresa" }).click();
+  await page.getByRole("button", { name: "Pular por enquanto" }).click();
+  await page.getByRole("button", { name: "Configurações", exact: true }).click();
+
+  await page.getByRole("button", { name: "Excluir esta empresa" }).click();
+  const confirmationDialog = page.getByRole("dialog", { name: "Excluir Empresa QA?" });
+  const confirmButton = confirmationDialog.getByRole("button", { name: "Confirmar exclusão definitiva" });
+  await expect(confirmButton).toBeDisabled();
+  await confirmationDialog.getByRole("textbox", { name: "Digite o nome da empresa Empresa QA" }).fill("Empresa errada");
+  await expect(confirmButton).toBeDisabled();
+  await confirmationDialog.getByRole("button", { name: "Cancelar" }).click();
+  await expect(confirmationDialog).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Alternar espaço financeiro" })).toContainText("Empresa QA");
+
+  await page.getByRole("button", { name: "Excluir esta empresa" }).click();
+  const secondDialog = page.getByRole("dialog", { name: "Excluir Empresa QA?" });
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    const dialogBounds = await secondDialog.boundingBox();
+    expect(dialogBounds).not.toBeNull();
+    expect(dialogBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(dialogBounds!.x + dialogBounds!.width).toBeLessThanOrEqual(width + 1);
+  }
+  await secondDialog.getByRole("textbox", { name: "Digite o nome da empresa Empresa QA" }).fill("Empresa QA");
+  await secondDialog.getByRole("button", { name: "Confirmar exclusão definitiva" }).click();
+
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Mercado QA")).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const workspaceSwitcher = page.getByRole("button", { name: "Alternar espaço financeiro" });
+  await workspaceSwitcher.click();
+  const workspaceMenu = page.getByRole("menu", { name: "Espaços financeiros" });
+  await expect(workspaceMenu.getByRole("menuitemradio", { name: /Pessoal.*Pessoa de teste/ })).toHaveAttribute("aria-checked", "true");
+  await expect(workspaceMenu.getByRole("menuitemradio", { name: /Empresa QA/ })).toHaveCount(0);
+  await expect.poll(() => page.evaluate((prefix) => [":data", ":tx", ":theme", ":profile", ":dismissed-alerts"].every((suffix) => localStorage.getItem(prefix + suffix) === null), `valurise:v2:${testUserId}:workspace:${businessWorkspaceId}`)).toBe(true);
+  expect(deletionPayload).toEqual({ confirmationName: "Empresa QA" });
 });
 
 test("receita prevista empresarial aparece no resumo sem alterar valores realizados", async ({ page }) => {

@@ -87,6 +87,7 @@ import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
+import { BusinessWorkspaceDangerZone } from "@/components/business-workspace-danger-zone";
 import {
   firstDayOfMonthValue,
   getReceivableOccurrences,
@@ -419,6 +420,64 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
     }
   };
 
+  const deleteBusinessWorkspace = async (workspaceId: string, confirmationName: string) => {
+    if (switching) throw new Error("Aguarde a operação atual terminar e tente novamente.");
+    const personalWorkspace = workspaces.find((item) => item.type === "personal");
+    if (!personalWorkspace) throw new Error("Seu espaço Pessoal não foi encontrado. A empresa não foi alterada.");
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase?.auth.getSession() || {};
+    const token = data?.session?.access_token;
+    if (!token) throw new Error("Sua sessão expirou. Entre novamente para excluir a empresa.");
+
+    setSwitching(true);
+    setLoadError("");
+    onLoadingStatusChange("syncing");
+    try {
+      await beforeSwitchRef.current();
+      const response = await fetch("/api/workspaces/business", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "X-Valurise-Workspace-Id": workspaceId,
+        },
+        body: JSON.stringify({ confirmationName }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível excluir a empresa.");
+
+      // Clear only browser cache keys belonging to this exact business workspace.
+      const localPrefix = `valurise:v2:${user.username}:workspace:${workspaceId}`;
+      try {
+        for (const suffix of [":data", ":tx", ":theme", ":profile", ":dismissed-alerts"]) {
+          localStorage.removeItem(localPrefix + suffix);
+        }
+      } catch {
+        // Server-side deletion already succeeded; a browser storage restriction
+        // must not keep the user in a workspace that no longer exists.
+      }
+
+      const remainingWorkspaces = workspaces.filter((item) => item.id !== workspaceId);
+      setWorkspaces(remainingWorkspaces);
+      setActiveWorkspaceId(personalWorkspace.id);
+
+      // The delete has succeeded; refresh the list if available, but retain the
+      // already validated personal workspace as a safe navigation fallback.
+      try {
+        const refreshed = await loadWorkspaces();
+        if (refreshed.workspaces.some((item) => item.id === personalWorkspace.id && item.type === "personal")) {
+          setWorkspaces(refreshed.workspaces);
+          setActiveWorkspaceId(personalWorkspace.id);
+        }
+      } catch {
+        setLoadError("A empresa foi excluída. O espaço Pessoal foi aberto, mas a lista de empresas não pôde ser atualizada.");
+      }
+    } finally {
+      setSwitching(false);
+      onLoadingStatusChange("ready");
+    }
+  };
+
   const createBusiness = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError("");
@@ -457,7 +516,7 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
   if (!activeWorkspace) return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-5"><section className="panel w-full max-w-md rounded-2xl p-6 text-center"><h1 className="text-lg font-semibold">Nenhum espaço disponível</h1><p className="muted mt-2 text-sm">Recarregue a página ou entre em contato com o suporte.</p><button onClick={logout} className="mt-5 min-h-10 rounded-xl bg-[var(--panel2)] px-4 text-sm">Sair</button></section></main>;
 
   return <>
-    <App key={`${user.username}:${activeWorkspace.id}`} user={user} workspace={activeWorkspace} workspaces={workspaces} onSwitchWorkspace={switchWorkspace} onRegisterBeforeWorkspaceSwitch={registerBeforeSwitch} onCreateWorkspace={() => { setFormError(""); setCreateOpen(true); }} logout={logout} onLoadingStatusChange={onLoadingStatusChange} />
+    <App key={`${user.username}:${activeWorkspace.id}`} user={user} workspace={activeWorkspace} workspaces={workspaces} onSwitchWorkspace={switchWorkspace} onDeleteBusinessWorkspace={deleteBusinessWorkspace} onRegisterBeforeWorkspaceSwitch={registerBeforeSwitch} onCreateWorkspace={() => { setFormError(""); setCreateOpen(true); }} logout={logout} onLoadingStatusChange={onLoadingStatusChange} />
     {loadError && <div role="status" className="fixed left-1/2 top-20 z-[70] w-[min(92vw,32rem)] -translate-x-1/2 rounded-xl border border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-3 text-sm shadow-xl">{loadError}</div>}
     {createOpen && <div className="fixed inset-0 z-[90] grid place-items-end bg-black/55 p-0 backdrop-blur-sm sm:place-items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !creating) setCreateOpen(false); }}><section role="dialog" aria-modal="true" aria-labelledby="business-workspace-title" className="panel w-full max-w-lg rounded-t-3xl p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl sm:p-6"><div className="flex items-start justify-between gap-4"><div><h2 id="business-workspace-title" className="text-lg font-semibold">Criar espaço empresarial</h2><p className="muted mt-1 text-sm">Os dados da empresa começam vazios e separados do seu espaço pessoal.</p></div><button type="button" aria-label="Fechar" disabled={creating} onClick={() => setCreateOpen(false)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--panel2)]"><X size={18}/></button></div><form onSubmit={(event) => void createBusiness(event)} className="mt-5 space-y-4"><label className="block text-sm">Nome fantasia<input autoFocus value={tradeName} onChange={(event) => setTradeName(event.target.value)} maxLength={120} autoComplete="organization" className="field mt-2" required /></label><label className="block text-sm">Razão social<input value={legalName} onChange={(event) => setLegalName(event.target.value)} maxLength={180} autoComplete="organization" className="field mt-2" required /></label><label className="block text-sm">CNPJ<input inputMode="numeric" autoComplete="off" value={cnpj} onChange={(event) => setCnpj(event.target.value)} maxLength={24} className="field mt-2" placeholder="00.000.000/0000-00" required /></label>{formError && <p role="alert" className="text-sm text-[var(--danger)]">{formError}</p>}<div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end"><button type="button" disabled={creating} onClick={() => setCreateOpen(false)} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Cancelar</button><button type="submit" disabled={creating} className="primary min-h-11 rounded-xl px-4 text-sm font-semibold disabled:opacity-60">{creating ? "Criando espaço…" : "Criar empresa"}</button></div></form></section></div>}
   </>;
@@ -702,7 +761,7 @@ function MasterConsole({ user, logout }: { user: User; logout: () => void }) {
     </MotionConfig>
   );
 }
-function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeWorkspaceSwitch, onCreateWorkspace, logout, onLoadingStatusChange }: { user: User; workspace: WorkspaceSummary; workspaces: WorkspaceSummary[]; onSwitchWorkspace: (workspaceId: string) => void; onRegisterBeforeWorkspaceSwitch: (flush: () => Promise<void>) => void; onCreateWorkspace: () => void; logout: () => void; onLoadingStatusChange: (status: ValuriseSplashStatus) => void }) {
+function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessWorkspace, onRegisterBeforeWorkspaceSwitch, onCreateWorkspace, logout, onLoadingStatusChange }: { user: User; workspace: WorkspaceSummary; workspaces: WorkspaceSummary[]; onSwitchWorkspace: (workspaceId: string) => void; onDeleteBusinessWorkspace: (workspaceId: string, confirmationName: string) => Promise<void>; onRegisterBeforeWorkspaceSwitch: (flush: () => Promise<void>) => void; onCreateWorkspace: () => void; logout: () => void; onLoadingStatusChange: (status: ValuriseSplashStatus) => void }) {
   const oldPersonalKey = `valurise:v2:${user.username}`;
   const key = `${oldPersonalKey}:workspace:${workspace.id}`;
   const legacyKey = `lume:v2:${user.username}`;
@@ -1584,6 +1643,9 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
             localStoragePrefix={key}
             workspaceId={workspace.id}
             businessWorkspace={workspace.type === "business"}
+            workspaceName={workspace.displayName}
+            canDeleteBusinessWorkspace={workspace.type === "business" && workspace.role === "owner"}
+            onDeleteBusinessWorkspace={onDeleteBusinessWorkspace}
           />
         )}
         </AnimatedPage>
@@ -6338,7 +6400,7 @@ function Statement({ tx, month, save, toast, categoryIcons }: any) {
     </section>
   );
 }
-function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancialBackup, toast, logout, localStoragePrefix, workspaceId, businessWorkspace }: any) {
+function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancialBackup, toast, logout, localStoragePrefix, workspaceId, businessWorkspace, workspaceName, canDeleteBusinessWorkspace, onDeleteBusinessWorkspace }: any) {
   const syncEnabled = Boolean(getSupabaseBrowserClient());
   const [restoreCandidate, setRestoreCandidate] = useState<any | null>(null);
   const [backupError, setBackupError] = useState("");
@@ -6421,6 +6483,7 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
         help="Personalize a aparência, gerencie seus dados e configure privacidade e a assistente Val."
       />
       {businessWorkspace && <BusinessFinanceSettings workspaceId={workspaceId} toast={toast} />}
+      {canDeleteBusinessWorkspace && <BusinessWorkspaceDangerZone workspaceId={workspaceId} workspaceName={workspaceName} onDelete={onDeleteBusinessWorkspace} />}
       <section className="panel mt-5 flex flex-wrap items-center justify-between gap-4 rounded-2xl p-5">
         <div><b>Aparência</b><p className="muted mt-1 text-sm">Escolha o tema que prefere usar.</p></div>
         <Theme value={theme} change={setTheme} />

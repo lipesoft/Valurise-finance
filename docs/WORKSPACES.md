@@ -9,6 +9,8 @@ O workspace separa os dados financeiros da identidade de autenticação. Cada co
 - O documento financeiro atual continua em `user_financial_state`, agora identificado por `workspace_id`. O backfill preenche o workspace pessoal sem reescrever o JSON financeiro. A empresa começa com um documento vazio.
 - A troca espera gravações pendentes, oculta a tela anterior e monta a nova árvore com chave/cache local próprios. Tema e dados locais ficam separados por workspace.
 - Conexão, consentimento, propostas, mensagens e uso da Val são associados ao workspace. A consulta da Val usa somente o documento autorizado na chamada. O compartilhamento legado de metas permanece pessoal e separado dos documentos empresariais.
+- Em Configurações, somente o proprietário pode excluir definitivamente uma empresa. A confirmação exige digitar o nome fantasia; o servidor valida sessão, membership, tipo e `owner_user_id`, encontra o workspace pessoal original (`type = 'personal'`, mais antigo) e o define como padrão antes de apagar a empresa. As chaves estrangeiras `ON DELETE CASCADE` removem os dados ligados somente àquele workspace; o cache local empresarial também é limpo. O workspace pessoal e os dados dele não são alvo da operação.
+- A exclusão é bloqueada quando existem outros membros empresariais ativos. Além da verificação antecipada no servidor, o trigger `reject_workspace_delete_with_members` impede uma inclusão concorrente de membro de transformar a exclusão em perda de dados compartilhados.
 
 ## Migração e verificação
 
