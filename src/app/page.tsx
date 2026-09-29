@@ -86,7 +86,7 @@ import { formatValResponse } from "@/lib/personal-ai/presentation";
 import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise-splash";
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
-import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
+import { BusinessFinanceDashboard, BusinessFinanceDetail, BusinessFinanceSettings } from "@/components/business-finance";
 import { BusinessWorkspaceDangerZone } from "@/components/business-workspace-danger-zone";
 import {
   firstDayOfMonthValue,
@@ -110,6 +110,9 @@ type View =
   | "dashboard"
   | "statement"
   | "accounts"
+  | "payables"
+  | "cashflow"
+  | "result"
   | "cards"
   | "investments"
   | "budgets"
@@ -771,6 +774,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
     onboarded: false,
   });
   const [stateReady, setStateReady] = useState(false);
+  const [businessOverviewReady, setBusinessOverviewReady] = useState(workspace.type !== "business");
   const [stateLoadError, setStateLoadError] = useState(false);
   const [stateConflict, setStateConflict] = useState(false);
   const [tx, setTx] = useState<FinanceTransaction[]>([]);
@@ -833,8 +837,13 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
   useEffect(() => { txRef.current = tx; }, [tx]);
   useEffect(() => { profileRef.current = profile; }, [profile]);
   useEffect(() => {
-    onLoadingStatusChange(stateLoadError ? "error" : stateReady ? "ready" : "syncing");
-  }, [onLoadingStatusChange, stateLoadError, stateReady]);
+    // The welcome screen contains no business financial figures. Once an
+    // onboarded business dashboard is requested, keep the branded startup
+    // state until its actual server-owned profile has loaded.
+    const criticalBusinessDataReady = workspace.type !== "business" || view !== "dashboard" || !data.onboarded || businessOverviewReady;
+    onLoadingStatusChange(stateLoadError ? "error" : stateReady && criticalBusinessDataReady ? "ready" : "syncing");
+  }, [onLoadingStatusChange, stateLoadError, stateReady, workspace.type, businessOverviewReady, view, data.onboarded]);
+  const completeBusinessOverviewLoad = useCallback(() => setBusinessOverviewReady(true), []);
   useEffect(() => {
     let stale = false;
     setStateReady(false);
@@ -973,6 +982,31 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
     }
     saveTx([...txRef.current, transaction]);
     setToast(`Recebimento de “${plan.name}” registrado no extrato.`);
+  };
+  const markRecurringBillPaid = (billId: string, period: string, account: string) => {
+    const currentData = dataRef.current;
+    const bill = currentData.recurringBills?.find((item) => item.id === billId);
+    if (!bill || !account.trim()) return setToast("Escolha uma conta para registrar o pagamento.");
+    const transactionId = `payable:${bill.id}:${period}`;
+    if (txRef.current.some((transaction) => transaction.id === transactionId)) return setToast("Este pagamento já está registrado no extrato.");
+    const now = new Date();
+    const transaction: FinanceTransaction = {
+      id: transactionId,
+      type: "expense",
+      amountCents: bill.amountCents,
+      category: bill.category || "Contas a pagar",
+      account,
+      description: bill.name,
+      date: now.toISOString(),
+      createdAt: now.toISOString(),
+    };
+    const nextData = {
+      ...currentData,
+      recurringBills: currentData.recurringBills?.map((item) => item.id === billId ? setRecurringBillPaidInMonth(item, period, true) : item) || [],
+    };
+    saveData(nextData);
+    saveTx([...txRef.current, transaction]);
+    setToast(`Pagamento de “${bill.name}” registrado no extrato.`);
   };
   const restoreFinancialBackup = (nextData: Data, nextTransactions: FinanceTransaction[]) => {
     dataRef.current = nextData;
@@ -1245,6 +1279,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
   const useLightTheme =
     theme === "light" || (theme === "system" && systemPrefersLight);
   const AppearanceIcon = useLightTheme ? Sun : Moon;
+  const navigation = workspace.type === "business" ? businessNav : personalNav;
   const closeMobileMenu = () => {
     setMobileMenu(false);
     setNotificationsOpen(false);
@@ -1256,14 +1291,10 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
         <Brand />
         <LayoutGroup id="desktop-navigation">
         <nav className="mt-10 space-y-1">
-          {nav.map((n) => (
-            <Nav
-              key={n[0]}
-              n={n}
-              active={view === n[0]}
-              go={() => setView(n[0])}
-            />
-          ))}
+          {navigation.map((n, index) => <div key={n[0]}>
+            {n[3] && navigation[index - 1]?.[3] !== n[3] && <p className={`${index ? "mt-5" : ""} mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.14em] text-[var(--muted)]`}>{n[3]}</p>}
+            <Nav n={n} active={view === n[0]} go={() => setView(n[0])} />
+          </div>)}
         </nav>
         </LayoutGroup>
         <button
@@ -1408,24 +1439,12 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
 
                   <p className="muted mt-6 px-2 text-[11px] font-semibold tracking-[0.12em]">NAVEGAÇÃO</p>
                   <nav aria-label="Navegação principal" className="mt-2 space-y-1">
-                    {nav.map((n) => (
-                      <button
-                        key={n[0]}
-                        type="button"
-                        aria-current={view === n[0] ? "page" : undefined}
-                        onClick={() => {
-                          setView(n[0]);
-                          closeMobileMenu();
-                        }}
-                        className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors ${view === n[0] ? "bg-[var(--accent)]/10 font-medium text-[var(--accent)]" : "muted hover:bg-[var(--panel2)]"}`}
-                      >
-                        {(() => {
-                          const Icon = n[2];
-                          return <Icon size={18} />;
-                        })()}
-                        <span>{n[1]}</span>
+                    {navigation.map((n, index) => <div key={n[0]}>
+                      {n[3] && navigation[index - 1]?.[3] !== n[3] && <p className={`${index ? "mt-5" : ""} mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.14em] text-[var(--muted)]`}>{n[3]}</p>}
+                      <button type="button" aria-current={view === n[0] ? "page" : undefined} onClick={() => { setView(n[0]); closeMobileMenu(); }} className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors ${view === n[0] ? "bg-[var(--accent)]/10 font-medium text-[var(--accent)]" : "muted hover:bg-[var(--panel2)]"}`}>
+                        {(() => { const Icon = n[2]; return <Icon size={18} />; })()}<span>{n[1]}</span>
                       </button>
-                    ))}
+                    </div>)}
                   </nav>
                 </div>
               </>
@@ -1599,13 +1618,14 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
             go={setView}
             sharedGoals={inviteInbox.sharedGoals}
             displayName={profile.displayName?.trim() || user.name}
+            onCriticalBusinessReady={completeBusinessOverviewLoad}
           />
         )}{" "}
         {view === "statement" && (
-          <Statement tx={tx} month={month} save={saveTx} toast={setToast} categoryIcons={data.categoryIcons} />
+          <Statement tx={tx} month={month} save={saveTx} toast={setToast} categoryIcons={data.categoryIcons} businessWorkspace={workspace.type === "business"} />
         )}{" "}
         {view === "accounts" && (
-          <Institutions data={data} save={saveData} toast={setToast} />
+          workspace.type === "business" ? <BusinessAccountsHub data={data} save={saveData} toast={setToast} saveTx={saveTx} tx={tx} /> : <Institutions data={data} save={saveData} toast={setToast} />
         )}{" "}
         {view === "cards" && (
           <Cards data={data} save={saveData} toast={setToast} />
@@ -1623,10 +1643,13 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
           <Categories data={data} tx={tx} month={month} save={saveData} saveTx={saveTx} toast={setToast} />
         )}{" "}
         {view === "receivables" && (
-          <Receivables data={data} tx={tx} month={month} setMonth={setMonth} save={saveData} toast={setToast} onReceive={markReceivableReceived} />
+          <Receivables data={data} tx={tx} month={month} setMonth={setMonth} save={saveData} toast={setToast} onReceive={markReceivableReceived} businessMode={workspace.type === "business"} />
         )}
+        {view === "payables" && workspace.type === "business" && <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} onPayBill={markRecurringBillPaid} businessMode />}
+        {view === "cashflow" && workspace.type === "business" && <BusinessFinanceDetail workspaceId={workspace.id} month={month} data={data} allTransactions={tx} cashBalanceCents={businessCashBalance(data, tx)} mode="cashflow" />}
+        {view === "result" && workspace.type === "business" && <BusinessFinanceDetail workspaceId={workspace.id} month={month} data={data} allTransactions={tx} cashBalanceCents={businessCashBalance(data, tx)} mode="result" />}
         {view === "planning" && (
-          <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} />
+          workspace.type === "business" ? <div className="mx-auto max-w-5xl px-4 pb-10 lg:px-10"><BusinessFinanceSettings workspaceId={workspace.id} toast={setToast} section="planning"/><div className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Orçamento e metas</h2><p className="muted mt-1 text-xs">Planejamento financeiro do espaço empresarial.</p></div><button type="button" onClick={() => setView("budgets")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs text-[var(--accent)]">Orçamentos</button></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setView("goals")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Metas de caixa</button><button type="button" onClick={() => setView("categories")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Categorias auxiliares</button></div></div></div> : <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} />
         )}
         {view === "reports" && <Reports tx={tx} data={data} month={month} />}
         {view === "settings" && (
@@ -1679,6 +1702,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
           <Launcher
             data={data}
             workspace={workspace}
+            go={setView}
             createCategory={createCategory}
             createInvestment={createInvestment}
             close={() => setSheet(false)}
@@ -1709,7 +1733,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
     </MotionConfig>
   );
 }
-const nav: any = [
+const personalNav: any = [
   ["dashboard", "Dashboard", Home],
   ["statement", "Extrato", ReceiptText],
   ["accounts", "Contas", Landmark],
@@ -1722,6 +1746,18 @@ const nav: any = [
   ["reports", "Relatórios", ChartNoAxesCombined],
   ["categories", "Categorias", Tags],
   ["settings", "Configurações", Menu],
+];
+const businessNav: any = [
+  ["dashboard", "Visão Geral", Home, "VISÃO GERAL"],
+  ["statement", "Movimentações", ReceiptText, "FINANCEIRO"],
+  ["receivables", "A Receber", ArrowDownLeft, "FINANCEIRO"],
+  ["payables", "A Pagar", ArrowUpRight, "FINANCEIRO"],
+  ["accounts", "Bancos e Caixa", Landmark, "FINANCEIRO"],
+  ["cashflow", "Fluxo de Caixa", WalletCards, "FINANCEIRO"],
+  ["result", "Resultado", ChartNoAxesCombined, "GESTÃO"],
+  ["planning", "Planejamento", CalendarDays, "GESTÃO"],
+  ["reports", "Relatórios", BarChart3, "GESTÃO"],
+  ["settings", "Configurações", Menu, "SISTEMA"],
 ];
 function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNotification[] {
   const today = new Date();
@@ -2004,6 +2040,21 @@ function Nav({ n, active, go }: any) {
     </motion.button>
   );
 }
+function BusinessAccountsHub({ data, save, toast, saveTx, tx }: any) {
+  const [section, setSection] = useState<"accounts" | "cards" | "investments">("accounts");
+  const tabs = [
+    ["accounts", "Contas bancárias e caixa"],
+    ["cards", "Cartões empresariais"],
+    ["investments", "Aplicações financeiras"],
+  ] as const;
+  return <section className="mx-auto max-w-5xl px-4 pt-8 lg:px-10">
+    <header><p className="muted text-xs">Financeiro</p><h2 className="mt-1 text-2xl font-semibold tracking-tight">Bancos e Caixa</h2><p className="muted mt-2 text-sm">Contas, cartões e aplicações financeiras da empresa.</p></header>
+    <div role="tablist" aria-label="Áreas de bancos e caixa" className="panel mt-4 flex flex-wrap gap-2 rounded-2xl p-2">{tabs.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={section === id} onClick={() => setSection(id)} className={`min-h-10 rounded-xl px-3 text-xs font-medium ${section === id ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "muted hover:bg-[var(--panel2)]"}`}>{label}</button>)}</div>
+    {section === "accounts" && <div role="tabpanel" className="mt-4"><Institutions data={data} save={save} toast={toast} businessMode /></div>}
+    {section === "cards" && <div role="tabpanel" className="mt-4"><Cards data={data} save={save} toast={toast}/></div>}
+    {section === "investments" && <div role="tabpanel" className="mt-4"><Investments data={data} transactions={tx} save={save} saveTransactions={saveTx} toast={toast}/></div>}
+  </section>;
+}
 function Theme({ value, change }: any) {
   return (
     <div aria-label="Tema da Valurise" className="flex shrink-0 rounded-full bg-[var(--panel2)] p-1 text-[10px]">
@@ -2205,9 +2256,15 @@ function ProfileSheet({
     </Sheet>
   );
 }
+function businessCashBalance(data: Data, transactions: FinanceTransaction[]) {
+  return (data.institutions || []).reduce((total, institution) => total + institution.accounts.reduce((sum, account) =>
+    sum + accountBalance(account.balance, `${institution.name} • ${account.name}`, transactions), 0), 0);
+}
+
 function Dashboard({
   user,
   displayName,
+  onCriticalBusinessReady,
   workspace,
   workspaceId,
   sum,
@@ -2247,11 +2304,14 @@ function Dashboard({
   const scheduledReceivablesCents = outstandingReceivablesCents(
     getReceivableOccurrences(data.plannedReceivables || [], format(month, "yyyy-MM"), allTx),
   );
+  const receivableOccurrences = getReceivableOccurrences(data.plannedReceivables || [], format(month, "yyyy-MM"), allTx);
+  const lateReceivables = receivableOccurrences.filter((item) => item.status === "overdue").length;
+  const latePayables = (data.recurringBills || []).filter((bill: any) => isRecurringBillScheduledInMonth(bill, format(month, "yyyy-MM")) && !isRecurringBillPaidInMonth(bill, format(month, "yyyy-MM")) && isCommitmentLateInMonth(bill, format(month, "yyyy-MM"), new Date())).length;
   return (
     <StaggerContainer className={`mx-auto w-full px-4 pt-5 ${dashboardWidth}`}>
       <WorkspaceDashboardHeader workspace={workspace} userName={displayName || user.name} month={month} setMonth={setMonth} />
       {isBusinessWorkspace ? (
-        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} summary={sum} total={total} availableBalanceCents={accountBalanceCents} committedCents={availability.committedCents} freeToSpendCents={availability.freeToSpendCents} scheduledReceivablesCents={scheduledReceivablesCents} go={go} />
+        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} summary={sum} total={total} availableBalanceCents={accountBalanceCents} committedCents={availability.committedCents} freeToSpendCents={availability.freeToSpendCents} scheduledReceivablesCents={scheduledReceivablesCents} latePayables={latePayables} lateReceivables={lateReceivables} onCriticalReady={onCriticalBusinessReady} go={go} />
       ) : (
         <>
       <StaggerItem>
@@ -4110,7 +4170,7 @@ function parseReceivableAmountCents(value: string) {
   return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
 }
 
-function Receivables({ data, tx, month, setMonth, save, toast, onReceive }: any) {
+function Receivables({ data, tx, month, setMonth, save, toast, onReceive, businessMode = false }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<PlannedReceivable | null>(null);
   const [deleting, setDeleting] = useState<PlannedReceivable | null>(null);
@@ -4167,8 +4227,8 @@ function Receivables({ data, tx, month, setMonth, save, toast, onReceive }: any)
     closeEditor();
   };
 
-  return <section className="mx-auto max-w-3xl px-4 pt-8">
-    <SectionTitle title="Receitas" help="Planeje valores que espera receber. A previsão não altera o saldo; ao confirmar o recebimento, a Valurise cria o lançamento no extrato." onAdd={openNew} addLabel="Adicionar receita" />
+  return <section className="mx-auto max-w-4xl px-4 pt-8">
+    <SectionTitle title={businessMode ? "A Receber" : "Receitas"} help="Planeje valores que espera receber. A previsão não altera o saldo; ao confirmar o recebimento, a Valurise cria o lançamento no extrato." onAdd={openNew} addLabel={businessMode ? "Adicionar conta a receber" : "Adicionar receita"} />
     <div className="panel mt-5 flex items-center justify-between gap-3 rounded-2xl p-3">
       <button aria-label="Mês anterior" onClick={() => setMonth(startOfMonth(addMonths(month, -1)))} className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--panel2)]"><ChevronLeft size={18} /></button>
       <b className="text-sm capitalize">{format(month, "MMMM yyyy", { locale: ptBR })}</b>
@@ -4179,7 +4239,7 @@ function Receivables({ data, tx, month, setMonth, save, toast, onReceive }: any)
       <article className="panel rounded-2xl p-4"><p className="muted text-xs">Recebido</p><b className="mt-1 block text-xl text-[var(--accent)]">{formatBRL(received.reduce((sum, item) => sum + item.amountCents, 0))}</b><small className="muted">{received.length} confirmada{received.length === 1 ? "" : "s"}</small></article>
     </div>
     <section className="panel mt-4 rounded-2xl p-5">
-      <div className="flex items-center justify-between gap-3"><div><b>Receitas do período</b><p className="muted mt-1 text-xs">Receitas pessoais ou da empresa, conforme o espaço ativo.</p></div><span className="muted text-xs">{format(month, "MM/yyyy")}</span></div>
+      <div className="flex items-center justify-between gap-3"><div><b>{businessMode ? "Contas a receber do período" : "Receitas do período"}</b><p className="muted mt-1 text-xs">{businessMode ? "Recebimentos previstos para este espaço empresarial." : "Receitas pessoais ou da empresa, conforme o espaço ativo."}</p></div><span className="muted text-xs">{format(month, "MM/yyyy")}</span></div>
       {occurrences.length ? <div className="mt-3 divide-y divide-[var(--border)]">
         {occurrences.map((item) => <div key={item.occurrenceId} className="flex items-center justify-between gap-3 py-3">
           <div className="min-w-0"><b className="block truncate text-sm">{item.name}</b><small className="muted block truncate">{format(new Date(`${item.dueDate}T12:00:00`), "dd/MM/yyyy")} · {item.frequency === "monthly" ? item.dueRule === "last_business_day" ? "todo último dia útil" : "mensal" : "uma vez"}{item.category ? ` · ${item.category}` : ""}</small><span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] ${item.status === "received" ? "bg-[var(--accent)]/10 text-[var(--accent)]" : item.status === "overdue" ? "bg-[var(--danger)]/10 text-[var(--danger)]" : "bg-amber-400/10 text-amber-300"}`}>{item.status === "received" ? "Recebida" : item.status === "overdue" ? "Atrasada" : "Pendente"}</span></div>
@@ -4203,10 +4263,12 @@ function Receivables({ data, tx, month, setMonth, save, toast, onReceive }: any)
   </section>;
 }
 
-function Planning({ data, tx, month, save, toast, onReceive }: any) {
+function Planning({ data, tx, month, save, toast, onReceive, onPayBill, businessMode = false }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
+  const [paying, setPaying] = useState<any | null>(null);
+  const [paymentAccount, setPaymentAccount] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(month);
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
@@ -4240,6 +4302,8 @@ function Planning({ data, tx, month, save, toast, onReceive }: any) {
   const paidCount = monthBills.filter((bill: any) => isRecurringBillPaidInMonth(bill, currentMonth)).length;
   const lateCount = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, currentMonth) && (currentMonth < format(today, "yyyy-MM") || (currentMonth === format(today, "yyyy-MM") && bill.occurrenceDay < today.getDate()))).length;
   const pendingCount = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, currentMonth) && !isCommitmentLateInMonth(bill, currentMonth, today)).length;
+  const paymentAccounts = financialAccountOptions(data);
+  const openPayment = (bill: any) => { setPaymentAccount(bill.account || paymentAccounts[0]?.value || ""); setPaying(bill); };
   const openNew = (monthKey = currentMonth, day?: number) => {
     setName(""); setAmount(""); setCategory(""); setFrequency("monthly"); setStartMonth(monthKey);
     setDueDay(day ? String(day) : ""); setAdding(true); setEditing(null);
@@ -4275,26 +4339,26 @@ function Planning({ data, tx, month, save, toast, onReceive }: any) {
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
-        title="Planejamento"
+        title={businessMode ? "A Pagar" : "Planejamento"}
         help="Organize contas e pagamentos previstos. Defina se aparecem uma vez ou se repetem automaticamente nos próximos meses."
         onAdd={() => openNew()}
-        addLabel="Adicionar compromisso"
+        addLabel={businessMode ? "Adicionar conta a pagar" : "Adicionar compromisso"}
       />
       <div className="mt-5 grid gap-4 sm:grid-cols-2">
-        <section className="panel rounded-2xl p-5">
+        {!businessMode && <section className="panel rounded-2xl p-5">
           <p className="muted text-xs">COMPROMISSOS DO PERÍODO</p>
           <b className="mt-2 block text-2xl">{formatBRL(monthlyCommitted)}</b>
           <p className="muted mt-2 text-sm">
             {monthBills.length} compromisso{monthBills.length === 1 ? "" : "s"} em {format(calendarMonth, "MMMM", { locale: ptBR })}
           </p>
-        </section>
-        <section className="panel rounded-2xl p-5">
+        </section>}
+        {!businessMode && <section className="panel rounded-2xl p-5">
           <p className="muted text-xs">PROJEÇÃO DE CONSUMO</p>
           <b className="mt-2 block text-2xl">{formatBRL(projected)}</b>
           <p className="muted mt-2 text-sm">
             No ritmo atual, até o fim deste mês.
           </p>
-        </section>
+        </section>}
       </div>
       <section className="panel mt-4 grid grid-cols-3 divide-x divide-[var(--border)] rounded-2xl p-4 text-center">
         <div>
@@ -4314,7 +4378,7 @@ function Planning({ data, tx, month, save, toast, onReceive }: any) {
           <span className="muted text-[11px]">Atrasadas</span>
         </div>
       </section>
-      <FinancialCalendar
+      {!businessMode && <FinancialCalendar
         month={calendarMonth}
         setMonth={setCalendarMonth}
         bills={bills}
@@ -4324,7 +4388,7 @@ function Planning({ data, tx, month, save, toast, onReceive }: any) {
         onAddForDate={openNew}
         transactions={tx}
         onReceive={onReceive}
-      />
+      />}
       <section className="panel mt-4 rounded-2xl p-5">
         <div className="flex items-center justify-between">
           <b>Compromissos do período</b>
@@ -4339,12 +4403,13 @@ function Planning({ data, tx, month, save, toast, onReceive }: any) {
               >
                 <span>
                   <b className="block text-sm">{bill.name}</b>
-                  <small className="muted">
+                  <small className="muted block">
                     vence dia {bill.occurrenceDay} · {bill.frequency === "once" ? "uma vez" : bill.frequency === "yearly" ? "anual" : "mensal"}
                     {bill.category ? ` · ${bill.category}` : ""}
                   </small>
+                  {businessMode && <small className={`mt-1 inline-block text-[10px] ${isRecurringBillPaidInMonth(bill, currentMonth) ? "text-[var(--accent)]" : isCommitmentLateInMonth(bill, currentMonth, today) ? "text-[var(--danger)]" : "text-amber-300"}`}>{isRecurringBillPaidInMonth(bill, currentMonth) ? "Pago" : isCommitmentLateInMonth(bill, currentMonth, today) ? "Vencido" : "Pendente"}</small>}
                 </span>
-                <span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b><ItemActions className="mt-1 justify-end" label={`a conta recorrente ${bill.name}`} onEdit={() => startEdit(bill)} onDelete={() => setDeleting(bill)} /></span>
+                <span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b>{businessMode && !isRecurringBillPaidInMonth(bill, currentMonth) && <button type="button" onClick={() => openPayment(bill)} disabled={!paymentAccounts.length} className="mt-1 min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)] disabled:opacity-50">Registrar pagamento</button>}<ItemActions className="mt-1 justify-end" label={`a conta recorrente ${bill.name}`} onEdit={() => startEdit(bill)} onDelete={() => setDeleting(bill)} /></span>
               </div>
             ))}
           </div>
@@ -4352,12 +4417,11 @@ function Planning({ data, tx, month, save, toast, onReceive }: any) {
           <Empty text="Nenhum compromisso neste mês. Adicione aluguel, internet, água, luz ou assinaturas para planejar os próximos vencimentos." />
         )}
       </section>
-      <section className="panel mt-4 rounded-2xl p-5">
+      {!businessMode && <section className="panel mt-4 rounded-2xl p-5">
         <div className="flex items-center justify-between gap-3"><b>Receitas previstas</b><span className="muted text-xs">{formatBRL(outstandingReceivablesCents(monthReceivables))} a receber</span></div>
         {monthReceivables.length ? <div className="mt-3 divide-y divide-[var(--border)]">{monthReceivables.map((item) => <div key={item.occurrenceId} className="flex items-center justify-between gap-3 py-3"><span className="min-w-0"><b className="block truncate text-sm">{item.name}</b><small className="muted">{format(new Date(`${item.dueDate}T12:00:00`), "dd/MM/yyyy")} · {item.status === "received" ? "Recebida" : item.status === "overdue" ? "Atrasada" : "Pendente"}</small></span><span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(item.amountCents)}</b>{item.status !== "received" && <button onClick={() => onReceive(item)} className="mt-1 min-h-9 rounded-lg px-2 text-xs text-[var(--accent)]">Marcar recebida</button>}</span></div>)}</div> : <p className="muted mt-3 text-sm">Nenhuma receita prevista neste período.</p>}
-      </section>
-      <CardInvoicePreview data={data} tx={tx} />
-      <MonthlyReview data={data} save={save} />
+      </section>}
+      {!businessMode && <><CardInvoicePreview data={data} tx={tx} /><MonthlyReview data={data} save={save} /></>}
       {(adding || editing) && (
         <Sheet close={() => { setAdding(false); setEditing(null); }}>
           <section className="space-y-3">
@@ -4421,6 +4485,7 @@ function Planning({ data, tx, month, save, toast, onReceive }: any) {
         </Sheet>
       )}
       {deleting && <DeleteConfirm title="Excluir conta recorrente?" description={`“${deleting.name}” deixará de ser considerado nos próximos vencimentos e compromissos.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, recurringBills: bills.filter((bill: any) => bill.id !== deleting.id) }); toast("Conta recorrente excluída."); setDeleting(null); }} />}
+      {paying && <Sheet close={() => setPaying(null)}><section className="space-y-3"><b className="text-lg">Registrar pagamento</b><p className="muted text-sm">Isso cria uma despesa de {formatBRL(paying.amountCents)} no extrato e marca este compromisso como pago em {format(calendarMonth, "MMMM yyyy", { locale: ptBR })}.</p><label className="block space-y-1.5 text-sm"><span>Conta de saída</span><select aria-label="Conta de saída do pagamento" className="field" value={paymentAccount} onChange={(event) => setPaymentAccount(event.target.value)}>{paymentAccounts.map((item: { value: string; label: string }) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button type="button" onClick={() => { onPayBill(paying.id, currentMonth, paymentAccount); setPaying(null); }} disabled={!paymentAccount} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">Confirmar pagamento</button></section></Sheet>}
     </section>
   );
 }
@@ -4844,9 +4909,9 @@ type PersonalChatProposal = {
   expires_at: string;
 };
 type PersonalChatError = { message: string };
-function PersonalFinanceChat({ workspace, startMovement, approveAction, close }: { workspace: WorkspaceSummary; startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void>; close: () => void }) {
+function PersonalFinanceChat({ workspace, startMovement, approveAction, close, go }: { workspace: WorkspaceSummary; startMovement: (kind: Kind) => void; approveAction: (id: string) => Promise<void>; close: () => void; go: (view: View) => void }) {
   const [messages, setMessages] = useState<PersonalChatMessage[]>([
-    { id: "welcome", role: "assistant", content: "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
+    { id: "welcome", role: "assistant", content: workspace.type === "business" ? `Olá! Eu sou a Val. Vou ajudar você a acompanhar o financeiro da empresa ${workspace.displayName}, com clareza sobre caixa, recebimentos e compromissos.` : "Olá! Eu sou a Val, sua assistente financeira da Valurise. Vamos trazer clareza para suas decisões de hoje e constância para prosperar amanhã?" },
   ]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [input, setInput] = useState("");
@@ -4961,6 +5026,14 @@ function PersonalFinanceChat({ workspace, startMovement, approveAction, close }:
       }
     } finally { setDecisionBusy(null); }
   };
+  const businessShortcuts = [
+    { label: "Recebi", kind: "income" as const, Icon: ArrowDownLeft },
+    { label: "Paguei", kind: "expense" as const, Icon: ArrowUpRight },
+    { label: "A Receber", view: "receivables" as const, Icon: ArrowDownLeft },
+    { label: "A Pagar", view: "payables" as const, Icon: ReceiptText },
+    { label: "Caixa", view: "accounts" as const, Icon: Landmark },
+    { label: "Transferir", kind: "transfer" as const, Icon: WalletCards },
+  ];
   return <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden">
     <div className="flex shrink-0 items-center gap-3 border-b border-[var(--border)] pb-4">
       <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot size={20} /></span>
@@ -4982,7 +5055,7 @@ function PersonalFinanceChat({ workspace, startMovement, approveAction, close }:
       <p>{error.message}</p>
     </div>}
     <div role="group" aria-label="Atalhos de movimentação" className="mt-3 grid shrink-0 grid-cols-2 gap-2 pb-1 min-[350px]:grid-cols-3 sm:flex sm:flex-wrap sm:justify-start">
-      {choices.map(([kind, label, Icon]) => <button key={label} type="button" onClick={() => startMovement(kind)} className="flex min-h-10 w-full min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--panel2)] px-2 text-[11px] font-medium hover:ring-1 hover:ring-[var(--accent)] sm:w-auto sm:gap-2 sm:px-3 sm:text-xs"><Icon size={14} className="shrink-0 text-[var(--accent)]" />{label}</button>)}
+      {workspace.type === "business" ? businessShortcuts.map(({ label, kind, view, Icon }) => <button key={label} type="button" onClick={() => { if (view) { go(view); close(); } else if (kind) startMovement(kind); }} className="flex min-h-10 w-full min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--panel2)] px-2 text-[11px] font-medium hover:ring-1 hover:ring-[var(--accent)] sm:w-auto sm:gap-2 sm:px-3 sm:text-xs"><Icon size={14} className="shrink-0 text-[var(--accent)]" />{label}</button>) : choices.map(([kind, label, Icon]) => <button key={label} type="button" onClick={() => startMovement(kind)} className="flex min-h-10 w-full min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--panel2)] px-2 text-[11px] font-medium hover:ring-1 hover:ring-[var(--accent)] sm:w-auto sm:gap-2 sm:px-3 sm:text-xs"><Icon size={14} className="shrink-0 text-[var(--accent)]" />{label}</button>)}
     </div>
     <form className="mt-2 flex shrink-0 items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--panel2)] p-2" onSubmit={(event) => { event.preventDefault(); void send(); }}>
       <input aria-label="Mensagem para a assistente financeira" value={input} onChange={(event) => setInput(event.target.value)} className="min-h-10 min-w-0 flex-1 bg-transparent px-2 py-2 text-sm outline-none placeholder:text-[var(--muted)]" placeholder="Pergunte sobre suas finanças..." />
@@ -4991,7 +5064,7 @@ function PersonalFinanceChat({ workspace, startMovement, approveAction, close }:
     <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Propostas sempre exigem sua confirmação" : "A Val consulta seus dados somente com sua permissão"}` : "Se a Val estiver indisponível, use os atalhos para registrar movimentações."}</p>
   </section>;
 }
-function Launcher({ data, workspace, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
+function Launcher({ data, workspace, go, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
   const [k, setK] = useState<Kind | null>(null),
     [step, setStep] = useState(0),
     [amount, setAmount] = useState(""),
@@ -5088,7 +5161,7 @@ function Launcher({ data, workspace, close, saved, createCategory, createInvestm
   if (!k)
     return (
       <ChatOverlay close={close}>
-        <PersonalFinanceChat workspace={workspace} startMovement={(kind) => { setK(kind); setStep(0); }} approveAction={approvePersonalAiAction} close={close} />
+        <PersonalFinanceChat workspace={workspace} startMovement={(kind) => { setK(kind); setStep(0); }} approveAction={approvePersonalAiAction} go={go} close={close} />
       </ChatOverlay>
     );
   if (showCat)
@@ -5559,7 +5632,7 @@ function Onboard({ user, finish }: any) {
     </main>
   );
 }
-function Institutions({ data, save, toast }: any) {
+function Institutions({ data, save, toast, businessMode = false }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{ institution: Institution; account?: any } | null>(null);
   const [deleting, setDeleting] = useState<{ institution: Institution; account?: any } | null>(null);
@@ -5605,8 +5678,8 @@ function Institutions({ data, save, toast }: any) {
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
-        title="Contas"
-        help="Cadastre a instituição uma vez e inclua as contas dentro dela. Os saldos acompanham os lançamentos e transferências."
+        title={businessMode ? "Contas bancárias e caixas" : "Contas"}
+        help={businessMode ? "Cadastre bancos, contas empresariais e caixas. Os saldos acompanham os lançamentos e transferências." : "Cadastre a instituição uma vez e inclua as contas dentro dela. Os saldos acompanham os lançamentos e transferências."}
         onAdd={() => { resetAdding(); setAdding(true); }}
         addLabel="Adicionar conta ou instituição"
       />
@@ -6080,7 +6153,7 @@ function CategorySpendingDonut({ tx, categoryIcons }: { tx: FinanceTransaction[]
     </section>
   );
 }
-function Statement({ tx, month, save, toast, categoryIcons }: any) {
+function Statement({ tx, month, save, toast, categoryIcons, businessWorkspace = false }: any) {
   const [query, setQuery] = useState("");
   const [type, setType] = useState("all");
   const [min, setMin] = useState("");
@@ -6120,8 +6193,8 @@ function Statement({ tx, month, save, toast, categoryIcons }: any) {
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
-        title="Extrato"
-        help="Aqui ficam todas as movimentações registradas. Use-o para conferir o que entrou, saiu, foi investido ou transferido."
+        title={businessWorkspace ? "Movimentações" : "Extrato"}
+        help={businessWorkspace ? "Consulte as entradas, despesas, aplicações e transferências registradas no espaço empresarial." : "Aqui ficam todas as movimentações registradas. Use-o para conferir o que entrou, saiu, foi investido ou transferido."}
       />
       <input
         value={query}

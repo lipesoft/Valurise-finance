@@ -1,4 +1,6 @@
 import type { FinanceTransaction } from "@/lib/finance";
+import { getReceivableOccurrences, type PlannedReceivable } from "@/lib/receivables";
+import { isRecurringBillPaidInMonth, isRecurringBillScheduledInMonth, recurringBillDueDay } from "@/lib/recurring-bills";
 
 export type FinancialDataNature = "actual" | "reported" | "estimated" | "projected" | "mixed";
 export const BUSINESS_ASSUMPTION_KEYS = [
@@ -13,6 +15,15 @@ export const BUSINESS_ASSUMPTION_KEYS = [
   "initial_cash",
 ] as const;
 export type BusinessAssumptionKey = typeof BUSINESS_ASSUMPTION_KEYS[number];
+export const BUSINESS_PLAN_GOAL_KEYS = [
+  "annual_revenue_goal",
+  "annual_result_goal",
+  "minimum_cash",
+  "expense_limit",
+  "reserve_target",
+] as const;
+export type BusinessPlanGoalKey = typeof BUSINESS_PLAN_GOAL_KEYS[number];
+export type BusinessPlanGoal = { metricKey: BusinessPlanGoalKey; amountCents: number | null; referenceMonth: string };
 export type BusinessAssumption = {
   metricKey: BusinessAssumptionKey;
   amountCents: number | null;
@@ -48,6 +59,86 @@ export function formatBusinessMoney(amountCents: number | null, currency = "BRL"
   const sign = amount < 0 ? "−" : "";
 
   return `${sign}${currencySymbol}\u00a0${compactAmount}M`;
+}
+
+export function calculateAnnualRevenueOutlook(year: number, transactions: FinanceTransaction[], goalCents: number | null, asOf = new Date()) {
+  const yearKey = String(year);
+  const throughDate = year === asOf.getFullYear()
+    ? `${yearKey}-${String(asOf.getMonth() + 1).padStart(2, "0")}-${String(asOf.getDate()).padStart(2, "0")}`
+    : `${yearKey}-12-31`;
+  const actualCents = transactions.reduce((total, transaction) => {
+    if (transaction.type !== "income" || !transaction.date.startsWith(`${yearKey}-`) || transaction.date.slice(0, 10) > throughDate) return total;
+    return total + transaction.amountCents;
+  }, 0);
+  const monthlyRevenue = new Map<number, number>();
+  for (const transaction of transactions) {
+    if (transaction.type !== "income" || !transaction.date.startsWith(`${yearKey}-`) || transaction.date.slice(0, 10) > throughDate) continue;
+    const month = Number(transaction.date.slice(5, 7));
+    if (month >= 1 && month <= 12) monthlyRevenue.set(month, (monthlyRevenue.get(month) || 0) + transaction.amountCents);
+  }
+  const isCurrentYear = year === asOf.getFullYear();
+  const monthsElapsed = isCurrentYear ? asOf.getMonth() + 1 : year < asOf.getFullYear() ? 12 : 0;
+  const observedMonths = [...monthlyRevenue.values()].filter((amount) => amount > 0).length;
+  const forecastCents = !isCurrentYear
+    ? null
+    : monthsElapsed >= 3 && observedMonths >= 3
+      ? Math.round((actualCents / monthsElapsed) * 12)
+      : null;
+  return {
+    year,
+    actualCents,
+    forecastCents,
+    goalCents,
+    progressPercent: goalCents && goalCents > 0 ? (actualCents / goalCents) * 100 : null,
+    remainingMonths: Math.max(0, 12 - monthsElapsed),
+    observedMonths,
+    explanation: forecastCents === null
+      ? "Ainda precisamos de pelo menos três meses com faturamento registrado para apresentar uma projeção anual confiável."
+      : `Projeção linear: faturamento registrado no ano dividido por ${monthsElapsed} meses decorridos e anualizado. É uma estimativa gerencial, não uma garantia.`
+  };
+}
+
+export type BusinessCashEvent = { id: string; date: string; label: string; kind: "receivable" | "payable"; amountCents: number };
+export type BusinessCashSchedule = {
+  id: string; name: string; amountCents: number; dueDay: number; frequency: "once" | "monthly" | "yearly";
+  active: boolean; startMonth?: string; paidMonth?: string; paidMonths?: string[];
+};
+
+/** Project only scheduled receipts and commitments; transfers and investments are never operating cashflow. */
+export function buildBusinessCashEvents(args: { receivables: PlannedReceivable[]; payables: BusinessCashSchedule[]; transactions: FinanceTransaction[]; from?: Date; days?: number }): BusinessCashEvent[] {
+  const from = args.from || new Date();
+  const days = Math.min(366, Math.max(1, Math.trunc(args.days || 90)));
+  const start = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 12);
+  const end = new Date(start);
+  end.setDate(end.getDate() + days);
+  const dateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const monthKeys: string[] = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), 1, 12);
+  while (cursor <= end) {
+    monthKeys.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`);
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  const events: BusinessCashEvent[] = [];
+  for (const month of monthKeys) {
+    for (const item of getReceivableOccurrences(args.receivables, month, args.transactions)) {
+      if (item.status === "received" || item.dueDate < dateKey(start) || item.dueDate > dateKey(end)) continue;
+      events.push({ id: item.occurrenceId, date: item.dueDate, label: item.name, kind: "receivable", amountCents: item.amountCents });
+    }
+    for (const bill of args.payables) {
+      if (!isRecurringBillScheduledInMonth(bill, month) || isRecurringBillPaidInMonth(bill, month)) continue;
+      const dueDate = `${month}-${String(recurringBillDueDay(bill, month)).padStart(2, "0")}`;
+      if (dueDate < dateKey(start) || dueDate > dateKey(end)) continue;
+      events.push({ id: `${bill.id}:${month}`, date: dueDate, label: bill.name, kind: "payable", amountCents: bill.amountCents });
+    }
+  }
+  return events.sort((left, right) => left.date.localeCompare(right.date) || left.kind.localeCompare(right.kind) || left.label.localeCompare(right.label, "pt-BR"));
+}
+
+export function projectedBusinessCash(openingCents: number, events: BusinessCashEvent[], days: number, from = new Date()) {
+  const end = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 12);
+  end.setDate(end.getDate() + days);
+  const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, "0")}-${String(end.getDate()).padStart(2, "0")}`;
+  return openingCents + events.filter((event) => event.date <= endKey).reduce((balance, event) => balance + (event.kind === "receivable" ? event.amountCents : -event.amountCents), 0);
 }
 
 export type BusinessFinanceSnapshot = {

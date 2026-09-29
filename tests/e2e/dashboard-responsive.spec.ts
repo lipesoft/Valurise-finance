@@ -84,9 +84,10 @@ async function installMockSession(page: import("@playwright/test").Page, financi
     management_close_day: null, default_currency: "BRL", timezone: "America/Sao_Paulo",
   };
   const businessAssumptions: Record<string, { metricKey: string; amountCents: number; nature: "reported" | "estimated"; source: "manual"; referenceMonth: string; createdAt: string } | null> = {};
+  const businessPlanGoals: Record<string, { metricKey: string; amountCents: number; nature: "reported"; source: "manual"; referenceMonth: string; createdAt: string } | null> = {};
   await page.route("**/api/workspaces/business/profile**", async (route) => {
-    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { profile: businessProfile, assumptions: businessAssumptions, referenceMonth: currentMonth } });
-    const body = route.request().postDataJSON() as { section: string; profile?: Record<string, unknown>; referenceMonth?: string; assumptions?: { metricKey: string; amountCents: number | null; nature: "reported" | "estimated" }[] };
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: { profile: businessProfile, assumptions: businessAssumptions, planGoals: businessPlanGoals, referenceMonth: currentMonth } });
+    const body = route.request().postDataJSON() as { section: string; profile?: Record<string, unknown>; referenceMonth?: string; referenceYear?: string; assumptions?: { metricKey: string; amountCents: number | null; nature: "reported" | "estimated" }[]; goals?: { metricKey: string; amountCents: number | null }[] };
     if (body.section === "company" && body.profile) businessProfile = { ...businessProfile, ...body.profile } as typeof businessProfile;
     if (body.section === "finance") for (const item of body.assumptions || []) {
       businessAssumptions[item.metricKey] = item.amountCents === null ? null : {
@@ -94,7 +95,13 @@ async function installMockSession(page: import("@playwright/test").Page, financi
         referenceMonth: `${body.referenceMonth}-01`, createdAt: new Date().toISOString(),
       };
     }
-    return route.fulfill({ status: 200, json: { ok: true, saved: body.assumptions?.length || 0 } });
+    if (body.section === "plan") for (const item of body.goals || []) {
+      businessPlanGoals[item.metricKey] = item.amountCents === null ? null : {
+        metricKey: item.metricKey, amountCents: item.amountCents, nature: "reported", source: "manual",
+        referenceMonth: `${body.referenceYear}-01`, createdAt: new Date().toISOString(),
+      };
+    }
+    return route.fulfill({ status: 200, json: { ok: true, saved: body.assumptions?.length || body.goals?.length || 0 } });
   });
   await page.route("**/rest/v1/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
@@ -188,48 +195,56 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(businessTotal.getByText("Saldo disponível", { exact: true })).toBeVisible();
   const businessSummary = page.getByRole("region", { name: "Resumo empresarial" });
   await expect(businessSummary).toBeVisible();
-  const summaryBounds = await businessSummary.boundingBox();
-  expect(summaryBounds?.width ?? 0).toBeGreaterThan(1000);
-  const primaryMetricGrid = businessSummary.locator(".mt-4.grid").first();
-  await expect.poll(() => primaryMetricGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(4);
-  await expect(businessSummary.locator("article").first().locator("[data-metric-value]")).toHaveCSS("white-space", "nowrap");
-  const revenueMetric = businessSummary.locator("article").filter({ hasText: "Faturamento do período" });
-  await expect(revenueMetric).toHaveAttribute("data-nature", "actual");
-  await expect(revenueMetric).toContainText(/R\$\s*4,5M/);
-  const revenueTitle = revenueMetric.getByRole("heading", { name: "Faturamento do período" });
-  await expect(revenueTitle).toHaveCSS("font-weight", "600");
-  await expect(revenueMetric.getByText("Realizado", { exact: true })).toBeVisible();
-  const revenueStatus = revenueMetric.locator('span[data-nature="actual"]');
-  const revenueValueBounds = await revenueMetric.locator("[data-metric-value]").boundingBox();
-  const revenueStatusBounds = await revenueStatus.boundingBox();
-  const revenueCardBounds = await revenueMetric.boundingBox();
-  expect(revenueStatusBounds && revenueValueBounds ? revenueStatusBounds.y : 0).toBeGreaterThan((revenueValueBounds?.y || 0) + (revenueValueBounds?.height || 0));
-  expect(revenueStatusBounds && revenueCardBounds ? revenueCardBounds.y + revenueCardBounds.height - revenueStatusBounds.y : 0).toBeLessThan(36);
-  const resultMetric = businessSummary.locator("article").filter({ hasText: "Resultado gerencial" });
-  await expect(resultMetric).toHaveAttribute("data-nature", "none");
-  await expect(resultMetric.locator("[data-metric-value]")).toHaveText("Sem dados");
-  await expect.poll(() => resultMetric.locator("[data-metric-value]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await expect(resultMetric.locator("span[data-nature]")).toHaveCount(0);
-  await page.getByRole("button", { name: "Ajuda: O que significa o status?" }).click();
-  await expect(page.getByRole("region", { name: "O que significa o status?" })).toContainText("Realizado usa movimentações registradas");
-  await page.keyboard.press("Escape");
-  const marginMetric = businessSummary.locator("article").filter({ hasText: "Margem bruta" });
-  await expect(marginMetric.locator("[data-metric-value]")).toHaveText("Sem dados");
-  const projectedMetric = businessSummary.locator("article").filter({ hasText: "A receber · programado" });
-  await expect(projectedMetric).toHaveAttribute("data-nature", "projected");
-  const [actualColor, projectedColor] = await Promise.all([
-    revenueMetric.evaluate((element) => getComputedStyle(element).backgroundColor),
-    projectedMetric.evaluate((element) => getComputedStyle(element).backgroundColor),
-  ]);
-  expect(actualColor).not.toBe(projectedColor);
+  await expect(businessSummary.getByRole("heading", { name: "Visão da empresa" })).toBeVisible();
+  for (const label of ["Caixa disponível", "A receber", "A pagar", "Resultado"]) {
+    await expect(businessSummary.getByRole("button", { name: new RegExp(label) })).toBeVisible();
+  }
+  await expect(businessSummary.getByRole("region", { name: /Faturamento anual/ })).toBeVisible();
+  const desktopNavigation = page.locator("aside").getByRole("navigation");
+  for (const item of ["Movimentações", "A Receber", "A Pagar", "Bancos e Caixa", "Fluxo de Caixa", "Resultado", "Planejamento", "Relatórios", "Configurações"]) {
+    await expect(desktopNavigation.getByRole("button", { name: item, exact: true })).toBeVisible();
+  }
+  for (const hiddenItem of ["Cartões", "Investimentos", "Orçamentos", "Metas", "Receitas", "Categorias"]) {
+    await expect(desktopNavigation.getByRole("button", { name: hiddenItem, exact: true })).toHaveCount(0);
+  }
   await expect(businessTotal.getByText("Total", { exact: true })).toBeVisible();
   await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);
-  for (const width of [375, 390, 430]) {
+  await page.getByRole("button", { name: "A Receber", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar conta a receber", exact: true }).click();
+  await page.getByLabel("Origem da receita").fill("Contrato empresa QA");
+  await page.getByLabel("Valor previsto").fill("750,00");
+  await page.getByLabel("Repetição").selectOption("monthly");
+  await page.getByRole("button", { name: "Último dia útil" }).click();
+  await page.getByLabel("Conta onde será recebido").selectOption("Banco Empresa QA • Conta da empresa");
+  await page.getByRole("button", { name: "Adicionar receita", exact: true }).last().click();
+  await expect(page.getByText("Contrato empresa QA", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Marcar recebida" }).click();
+  await expect(page.getByText("Recebimento de “Contrato empresa QA” registrado no extrato.")).toBeVisible();
+  await page.getByRole("button", { name: "Visão Geral", exact: true }).click();
+  await expect(businessTotal).toContainText("A receber");
+  await page.getByRole("button", { name: "A Pagar", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar conta a pagar", exact: true }).click();
+  await page.getByPlaceholder("Ex.: Internet, aluguel, Netflix").fill("Aluguel Empresa QA");
+  await page.getByPlaceholder("Valor previsto").fill("1250,00");
+  await page.getByPlaceholder("Dia de vencimento").fill("25");
+  await page.getByRole("button", { name: "Adicionar ao planejamento" }).click();
+  await expect(page.getByText("Aluguel Empresa QA", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Registrar pagamento", exact: true }).click();
+  await page.getByLabel("Conta de saída do pagamento").selectOption("Banco Empresa QA • Conta da empresa");
+  await page.getByRole("button", { name: "Confirmar pagamento" }).click();
+  await expect(page.getByText("Pagamento de “Aluguel Empresa QA” registrado no extrato.")).toBeVisible();
+  await expect(page.getByText("Pago", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Bancos e Caixa", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Bancos e Caixa" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Cartões empresariais" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Aplicações financeiras" })).toBeVisible();
+  await page.getByRole("button", { name: "Fluxo de Caixa", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Fluxo de caixa", exact: true })).toBeVisible();
+  await expect(page.getByText("Caixa projetado · 30 dias", { exact: true })).toBeVisible();
+  for (const width of [320, 375, 390, 430, 768]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await expect.poll(() => resultMetric.locator("[data-metric-value]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-    await expect.poll(() => marginMetric.locator("[data-metric-value]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   }
   await page.setViewportSize({ width: 1348, height: 618 });
 
@@ -238,11 +253,8 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(personalGreeting).toBeVisible();
   await expect(page.getByText("Total", { exact: true })).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
-  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
-  await page.getByRole("menuitemradio", { name: /Empresa QA.*Espaço empresarial/ }).click();
-  await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
-  await expect(personalGreeting).toHaveCount(0);
-  await expect(page.getByText("Mercado QA")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Cartões", exact: true })).toBeVisible();
+  await expect(page.getByText("Contrato empresa QA", { exact: true })).toHaveCount(0);
 });
 
 test("proprietário exclui empresa após confirmação e volta ao Pessoal sem apagar seus dados", async ({ page }) => {
@@ -320,21 +332,20 @@ test("receita prevista empresarial aparece no resumo sem alterar valores realiza
   await expect(page.getByRole("region", { name: "Resumo empresarial" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Resumo empresarial" })).not.toContainText("R$ 750,00");
 
-  await page.getByRole("button", { name: "Receitas", exact: true }).click();
-  await page.getByRole("button", { name: "Adicionar receita", exact: true }).click();
+  await page.getByRole("button", { name: "A Receber", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar conta a receber", exact: true }).click();
   await page.getByLabel("Origem da receita").fill("Contrato empresa QA");
   await page.getByLabel("Valor previsto").fill("750,00");
-  await page.getByLabel("Repetição da receita").selectOption("monthly");
+  await page.getByLabel("Repetição").selectOption("monthly");
   await page.getByLabel("Conta onde será recebido").selectOption("Banco Empresa QA • Conta da empresa");
   await page.getByRole("button", { name: "Adicionar receita", exact: true }).last().click();
-  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  await page.getByRole("button", { name: "Visão Geral", exact: true }).click();
 
-  await expect(page.getByRole("region", { name: "Resumo empresarial" })).toContainText("A receber · programado");
-  await expect(page.getByRole("region", { name: "Resumo empresarial" })).toContainText("R$ 750,00");
+  await expect(page.getByRole("region", { name: "Resumo empresarial" }).getByRole("button", { name: /A receber/ })).toContainText("R$ 750,00");
   await expect(page.getByRole("region", { name: "Resumo empresarial" })).not.toContainText("Receita realizada");
 });
 
-test("salva referências empresariais, distingue realizado de estimado e mantém o mobile utilizável", async ({ page }) => {
+test("separa configuração da empresa do planejamento e mantém as visões financeiras responsivas", async ({ page }) => {
   await installMockSession(page, 0, false, true);
   await page.goto("/");
   await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
@@ -345,11 +356,16 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
   await dialog.getByRole("button", { name: "Criar empresa" }).click();
   await page.getByRole("button", { name: "Completar perfil financeiro" }).click();
-  await expect(page.getByRole("heading", { name: "Perfil financeiro da empresa" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Configurações da empresa" })).toBeVisible();
   await expect(page.getByText("Não precisa ter os números exatos agora.")).toHaveCount(0);
-  await page.getByRole("button", { name: "Ajuda: Valores informados e estimativas" }).click();
-  await expect(page.getByRole("region", { name: "Valores informados e estimativas" })).toContainText("Valores aproximados serão identificados como estimativas");
-  await page.getByRole("button", { name: "Ajuda: Valores informados e estimativas" }).click();
+  await page.getByLabel("E-mail empresarial").fill("financeiro@empresa-qa.invalid");
+  await page.getByRole("button", { name: "Salvar dados da empresa" }).click();
+  await expect(page.getByText("Dados cadastrais da empresa atualizados.")).toBeVisible();
+  await page.getByRole("button", { name: "Planejamento", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Ajuda: Metas e referências" })).toBeVisible();
+  await page.getByRole("button", { name: "Ajuda: Metas e referências" }).click();
+  await expect(page.getByRole("region", { name: "Metas e referências" })).toContainText("Defina metas estratégicas");
+  await page.getByRole("button", { name: "Ajuda: Metas e referências" }).click();
   await page.getByLabel("Faturamento médio mensal").fill("5000,00");
   await page.getByLabel("Custos diretos médios").fill("1000,00");
   await page.getByLabel("Despesas fixas médias").fill("500,00");
@@ -361,19 +377,21 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   await page.getByLabel("Saldo inicial informado").fill("3000,00");
   await page.getByRole("button", { name: "Salvar perfil financeiro" }).click();
   await expect(page.getByText("Perfil financeiro salvo com histórico e origem dos valores.")).toBeVisible();
-  await page.getByRole("button", { name: "Dashboard" }).click();
-  await expect(page.getByRole("heading", { name: "Visão da empresa" })).toBeVisible();
-  await expect(page.getByText("Realizado", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Estimado", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Resultado gerencial", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("DRE gerencial simplificada")).toBeVisible();
-  await expect(page.getByText("Fluxo de caixa registrado")).toBeVisible();
-  await expect(page.getByText("Ponto de equilíbrio gerencial mensal")).toBeVisible();
+  await page.getByLabel("Meta de faturamento anual").fill("60000,00");
+  await page.getByLabel("Meta anual de resultado").fill("12000,00");
+  await page.getByRole("button", { name: "Salvar metas" }).click();
+  await expect(page.getByText("Metas e limites do planejamento salvos para este ano.")).toBeVisible();
+  await page.getByRole("button", { name: "Visão Geral", exact: true }).click();
   const businessSummary = page.getByRole("region", { name: "Resumo empresarial" });
-  const payablesMetric = businessSummary.locator("article").filter({ hasText: "A pagar · informado" });
-  await expect(payablesMetric).toHaveAttribute("data-nature", "estimated");
-  await expect(payablesMetric.getByText("Estimado", { exact: true })).toBeVisible();
+  await expect(businessSummary.getByRole("region", { name: /Faturamento anual/ })).toContainText(/R\$\s*60\.000,00/);
+  await expect(businessSummary).toContainText("Dados insuficientes");
   await expect(businessSummary).toContainText(/R\$\s*4,5M/);
+  await page.getByRole("button", { name: "Resultado", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Resultado gerencial", exact: true })).toBeVisible();
+  await expect(page.getByText("DRE gerencial simplificada")).toBeVisible();
+  await expect(page.getByText("Valores informados e cálculos gerenciais")).toBeVisible();
+  await page.getByRole("button", { name: "Fluxo de Caixa", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Fluxo de caixa", exact: true })).toBeVisible();
   for (const width of [375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

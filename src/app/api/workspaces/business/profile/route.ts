@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { BUSINESS_ASSUMPTION_KEYS } from "@/lib/business-finance";
+import { BUSINESS_ASSUMPTION_KEYS, BUSINESS_PLAN_GOAL_KEYS } from "@/lib/business-finance";
 import { createUserScopedSupabaseClient } from "@/lib/supabase/user-scoped";
 import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
 
@@ -34,19 +34,30 @@ const financialSchema = z.object({
     metricKey: z.enum(BUSINESS_ASSUMPTION_KEYS),
     amountCents: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
     nature: z.enum(["reported", "estimated"]),
-  }).strict()).length(BUSINESS_ASSUMPTION_KEYS.length),
+  }).strict()).length(BUSINESS_ASSUMPTION_KEYS.length)
+    .refine((items) => new Set(items.map((item) => item.metricKey)).size === BUSINESS_ASSUMPTION_KEYS.length),
+}).strict();
+const planSchema = z.object({
+  referenceYear: z.string().regex(/^\d{4}$/).refine((year) => Number(year) >= 2000 && Number(year) <= 9998),
+  requestId: z.string().uuid(),
+  goals: z.array(z.object({
+    metricKey: z.enum(BUSINESS_PLAN_GOAL_KEYS),
+    amountCents: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
+  }).strict()).length(BUSINESS_PLAN_GOAL_KEYS.length)
+    .refine((items) => new Set(items.map((item) => item.metricKey)).size === BUSINESS_PLAN_GOAL_KEYS.length),
 }).strict();
 
 const patchSchema = z.discriminatedUnion("section", [
   z.object({ section: z.literal("company"), profile: companySchema }).strict(),
   z.object({ section: z.literal("finance"), ...financialSchema.shape }).strict(),
+  z.object({ section: z.literal("plan"), ...planSchema.shape }).strict(),
 ]);
 
 function bearerToken(request: NextRequest) {
   return request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() || "";
 }
 
-function latestAssumption(client: ReturnType<typeof createUserScopedSupabaseClient>, workspaceId: string, metricKey: typeof BUSINESS_ASSUMPTION_KEYS[number], referenceMonth: string) {
+function latestAssumption(client: ReturnType<typeof createUserScopedSupabaseClient>, workspaceId: string, metricKey: typeof BUSINESS_ASSUMPTION_KEYS[number] | typeof BUSINESS_PLAN_GOAL_KEYS[number], referenceMonth: string) {
   return client.from("business_financial_assumptions")
     .select("metric_key, amount_cents, nature, source, reference_month, is_cleared, created_at")
     .eq("workspace_id", workspaceId)
@@ -67,27 +78,29 @@ export async function GET(request: NextRequest) {
   if (!parsedMonth.success) return NextResponse.json({ error: "Informe um período válido." }, { status: 400 });
   try {
     const client = createUserScopedSupabaseClient(bearerToken(request));
-    const [profileResult, ...assumptionResults] = await Promise.all([
+    const [profileResult, ...indicatorResults] = await Promise.all([
       client.from("business_profiles")
         .select("workspace_id, legal_name, trade_name, cnpj, email, phone, postal_code, street, number, address_complement, neighborhood, city, state, activity_start_date, cnae, tax_regime, accountant_name, management_close_day, default_currency, timezone")
         .eq("workspace_id", active.workspace.id).maybeSingle(),
       ...BUSINESS_ASSUMPTION_KEYS.map((key) => latestAssumption(client, active.workspace.id, key, parsedMonth.data)),
+      ...BUSINESS_PLAN_GOAL_KEYS.map((key) => latestAssumption(client, active.workspace.id, key, parsedMonth.data)),
     ]);
     if (profileResult.error || !profileResult.data) return NextResponse.json({ error: "Não foi possível carregar o cadastro da empresa. Confira se a migration de perfil empresarial foi aplicada." }, { status: 503 });
-    const assumptions = Object.fromEntries(BUSINESS_ASSUMPTION_KEYS.map((key, index) => {
-      const result = assumptionResults[index];
+    const decodeValue = (result: (typeof indicatorResults)[number]) => {
       if (result.error) throw new Error("assumption-query-failed");
       const row = result.data;
-      return [key, !row || row.is_cleared ? null : {
+      return !row || row.is_cleared ? null : {
         metricKey: row.metric_key,
         amountCents: Number(row.amount_cents),
         nature: row.nature,
         source: row.source,
         referenceMonth: row.reference_month,
         createdAt: row.created_at,
-      }];
-    }));
-    return NextResponse.json({ profile: profileResult.data, assumptions, referenceMonth: parsedMonth.data }, { headers: { "Cache-Control": "private, no-store" } });
+      };
+    };
+    const assumptions = Object.fromEntries(BUSINESS_ASSUMPTION_KEYS.map((key, index) => [key, decodeValue(indicatorResults[index])]));
+    const planGoals = Object.fromEntries(BUSINESS_PLAN_GOAL_KEYS.map((key, index) => [key, decodeValue(indicatorResults[BUSINESS_ASSUMPTION_KEYS.length + index])]));
+    return NextResponse.json({ profile: profileResult.data, assumptions, planGoals, referenceMonth: parsedMonth.data }, { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     console.error("Business financial profile read failed", JSON.stringify({ code: error instanceof Error ? error.message : "UNKNOWN" }));
     return NextResponse.json({ error: "Não foi possível consultar o perfil financeiro da empresa." }, { status: 503 });
@@ -131,6 +144,40 @@ export async function PATCH(request: NextRequest) {
         }, { status: error ? 503 : 404 });
       }
       return NextResponse.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    }
+
+    if (parsed.data.section === "plan") {
+      const planData = parsed.data as { referenceYear: string; requestId: string; goals: z.infer<typeof planSchema>["goals"] };
+      const referenceMonth = `${planData.referenceYear}-01`;
+      const currentRows = await Promise.all(BUSINESS_PLAN_GOAL_KEYS.map((key) => latestAssumption(client, active.workspace.id, key, `${planData.referenceYear}-12`)));
+      if (currentRows.some((result) => result.error)) return NextResponse.json({ error: "Não foi possível conferir as metas atuais antes de salvar." }, { status: 503 });
+      const inserts = planData.goals.flatMap((item, index) => {
+        const current = currentRows[index].data;
+        const unchanged = item.amountCents === null
+          ? !current || current.is_cleared
+          : current && !current.is_cleared && Number(current.amount_cents) === item.amountCents;
+        return unchanged ? [] : [{
+          workspace_id: active.workspace.id,
+          metric_key: item.metricKey,
+          amount_cents: item.amountCents ?? 0,
+          nature: "reported",
+          source: "manual",
+          reference_month: referenceMonth,
+          is_cleared: item.amountCents === null,
+          request_id: planData.requestId,
+        }];
+      });
+      if (inserts.length) {
+        const { error } = await client.from("business_financial_assumptions").upsert(inserts, {
+          onConflict: "workspace_id,request_id,metric_key",
+          ignoreDuplicates: true,
+        });
+        if (error) {
+          console.error("Business financial goals save failed", JSON.stringify({ code: error.code || "UNKNOWN" }));
+          return NextResponse.json({ error: "Não foi possível salvar o planejamento empresarial." }, { status: 503 });
+        }
+      }
+      return NextResponse.json({ ok: true, saved: inserts.length }, { headers: { "Cache-Control": "no-store" } });
     }
 
     const financialData = parsed.data as { referenceMonth: string; requestId: string; assumptions: z.infer<typeof financialSchema>["assumptions"] };

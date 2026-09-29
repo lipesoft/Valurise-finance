@@ -9,14 +9,22 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import styles from "@/components/business-finance.module.css";
 import {
   BUSINESS_ASSUMPTION_KEYS,
+  BUSINESS_PLAN_GOAL_KEYS,
+  buildBusinessCashEvents,
+  calculateAnnualRevenueOutlook,
   calculateBusinessFinanceSnapshot,
   formatBusinessMoney,
   parseBusinessMoneyToCents,
   type BusinessAssumption,
   type BusinessAssumptionKey,
+  type BusinessCashSchedule,
+  type BusinessPlanGoal,
+  type BusinessPlanGoalKey,
   type BusinessFinanceSnapshot,
   type FinancialDataNature,
+  projectedBusinessCash,
 } from "@/lib/business-finance";
+import type { PlannedReceivable } from "@/lib/receivables";
 
 type Profile = {
   legal_name: string; trade_name: string; cnpj: string; email: string | null; phone: string | null;
@@ -26,7 +34,12 @@ type Profile = {
   accountant_name: string | null; management_close_day: number | null; default_currency: string; timezone: string;
 };
 type AssumptionRecord = Partial<Record<BusinessAssumptionKey, BusinessAssumption | null>>;
-type BusinessInstitutionData = { institutions?: { name: string; accounts: { name: string; balance: number }[] }[] };
+type PlanGoalRecord = Partial<Record<BusinessPlanGoalKey, BusinessPlanGoal | null>>;
+type BusinessInstitutionData = {
+  institutions?: { name: string; accounts: { name: string; balance: number }[] }[];
+  recurringBills?: BusinessCashSchedule[];
+  plannedReceivables?: PlannedReceivable[];
+};
 
 const blankProfile: Profile = {
   legal_name: "", trade_name: "", cnpj: "", email: null, phone: null, postal_code: null, street: null,
@@ -44,6 +57,13 @@ const assumptionLabels: Record<BusinessAssumptionKey, string> = {
   receivables: "Contas a receber estimadas",
   payables: "Contas a pagar estimadas",
   initial_cash: "Saldo inicial informado",
+};
+const planGoalLabels: Record<BusinessPlanGoalKey, string> = {
+  annual_revenue_goal: "Meta de faturamento anual",
+  annual_result_goal: "Meta anual de resultado",
+  minimum_cash: "Caixa mínimo desejado",
+  expense_limit: "Limite anual de despesas",
+  reserve_target: "Reserva empresarial desejada",
 };
 const natureLabels: Record<FinancialDataNature, string> = {
   actual: "Realizado", reported: "Informado", estimated: "Estimado", projected: "Projetado", mixed: "Misto",
@@ -85,6 +105,7 @@ async function authorizedRequest(workspaceId: string, path: string, init?: Reque
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
     },
+    signal: init?.signal || AbortSignal.timeout(15_000),
     cache: "no-store",
   });
   const payload = await response.json().catch(() => ({}));
@@ -162,12 +183,88 @@ function currentCash(data: BusinessInstitutionData, transactions: FinanceTransac
 
 export function BusinessFinanceDashboard({
   workspaceId, month, data, allTransactions, summary, total, availableBalanceCents, committedCents,
-  freeToSpendCents, scheduledReceivablesCents = 0, go,
+  freeToSpendCents, scheduledReceivablesCents = 0, latePayables = 0, lateReceivables = 0, onCriticalReady, go,
 }: {
   workspaceId: string; month: Date; data: BusinessInstitutionData;
   allTransactions: FinanceTransaction[]; summary: DashboardTotals; total: DashboardTotals;
   availableBalanceCents: number; committedCents: number; freeToSpendCents: number;
-  scheduledReceivablesCents?: number; go: (view: "settings") => void;
+  scheduledReceivablesCents?: number; latePayables?: number; lateReceivables?: number; onCriticalReady?: () => void;
+  go: (view: "planning" | "result" | "cashflow" | "receivables" | "payables") => void;
+}) {
+  const period = monthKey(month);
+  const year = new Date().getFullYear();
+  const [assumptions, setAssumptions] = useState<AssumptionRecord>({});
+  const [planGoals, setPlanGoals] = useState<Partial<Record<BusinessPlanGoalKey, BusinessPlanGoal | null>>>({});
+  const [profile, setProfile] = useState<Profile>(blankProfile);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [requestRevision, setRequestRevision] = useState(0);
+  useEffect(() => {
+    let stale = false;
+    setLoading(true); setError("");
+    void authorizedRequest(workspaceId, `/api/workspaces/business/profile?month=${encodeURIComponent(period)}`)
+      .then((result) => {
+        if (stale) return;
+        setAssumptions(result.assumptions || {});
+        setPlanGoals(result.planGoals || {});
+        setProfile({ ...blankProfile, ...result.profile });
+        setLoading(false);
+        onCriticalReady?.();
+      }).catch((cause) => {
+        if (stale) return;
+        setError(cause instanceof Error && cause.name === "TimeoutError" ? "A consulta do perfil empresarial demorou mais que o esperado." : cause instanceof Error ? cause.message : "Não foi possível carregar o perfil empresarial.");
+        setLoading(false);
+        onCriticalReady?.();
+      });
+    return () => { stale = true; };
+  }, [workspaceId, period, requestRevision, onCriticalReady]);
+  const snapshot = useMemo(() => {
+    const values = Object.values(assumptions).filter((item): item is BusinessAssumption => Boolean(item));
+    return calculateBusinessFinanceSnapshot({
+      period, transactions: allTransactions, assumptions: values,
+      cashAvailableCents: currentCash(data, allTransactions),
+    });
+  }, [allTransactions, assumptions, data, period]);
+  const cashEvents = useMemo(() => buildBusinessCashEvents({
+    receivables: data.plannedReceivables || [],
+    payables: data.recurringBills || [],
+    transactions: allTransactions,
+    days: 90,
+  }), [allTransactions, data.plannedReceivables, data.recurringBills]);
+  const forecastCash30Days = projectedBusinessCash(availableBalanceCents, cashEvents, 30);
+  const totalCard = <BusinessTotalCard summary={summary} total={total} availableBalanceCents={availableBalanceCents} committedCents={committedCents} freeToSpendCents={freeToSpendCents} scheduledReceivablesCents={scheduledReceivablesCents} currency={profile.default_currency}/>;
+  if (loading) return <>{totalCard}<section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-5 sm:p-6"><p className="muted text-sm">Carregando indicadores empresariais…</p></section></>;
+  const annualGoal = planGoals.annual_revenue_goal?.amountCents ?? null;
+  const annual = calculateAnnualRevenueOutlook(year, allTransactions, annualGoal);
+  const statusCards = [
+    { label: "Caixa disponível", value: formatBusinessMoney(availableBalanceCents, profile.default_currency), detail: "Saldo atual nas contas", action: "cashflow" as const },
+    { label: "A receber", value: formatBusinessMoney(scheduledReceivablesCents, profile.default_currency), detail: "Previsto no mês selecionado", action: "receivables" as const },
+    { label: "A pagar", value: formatBusinessMoney(committedCents, profile.default_currency), detail: "Compromissos previstos no mês", action: "payables" as const },
+    { label: "Resultado", value: formatBusinessMoney(summary.incomeCents - summary.expenseCents, profile.default_currency), detail: "Receitas menos despesas registradas", action: "result" as const },
+  ];
+  const dueAttention = (latePayables || 0) + (lateReceivables || 0);
+  return <>{totalCard}<section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-4 sm:p-6">
+    <header className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Building2 size={17} className="text-[var(--accent)]"/><h2 className="text-lg font-semibold">Visão da empresa</h2></div><p className="muted mt-1 text-xs">Indicadores do período · visão de caixa</p></div><button type="button" onClick={() => go("planning")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Metas e planejamento</button></header>
+    {error && <div role="alert" className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100"><span>Não foi possível atualizar as premissas empresariais. Os valores registrados continuam disponíveis.</span><button type="button" onClick={() => setRequestRevision((value) => value + 1)} className="min-h-9 rounded-lg bg-[var(--panel2)] px-3 font-medium">Tentar novamente</button></div>}
+    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {statusCards.map((card) => <button type="button" key={card.label} onClick={() => go(card.action)} className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--panel2)]/70 p-4 text-left transition-colors hover:border-[var(--accent)]/50"><span className="muted block text-xs">{card.label}</span><b className="mt-2 block truncate text-xl tracking-tight" title={card.value}>{card.value}</b><small className="muted mt-1 block truncate text-[11px]">{card.detail}</small></button>)}
+    </div>
+    <section className="mt-4 rounded-2xl border border-[var(--border)] p-4 sm:p-5" aria-label={`Faturamento anual ${year}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="muted text-[11px] font-semibold uppercase tracking-[.12em]">Faturamento · {year}</p><h3 className="mt-1 text-base font-semibold">Realizado e perspectiva anual</h3></div><button type="button" onClick={() => go("result")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Ver resultado</button></div>
+      <div className="mt-4 grid gap-4 sm:grid-cols-3"><TotalValue label="Realizado no ano" value={annual.actualCents} currency={profile.default_currency}/><div className="min-w-0"><p className="muted text-xs">Projeção anual estimada</p><b className="mt-1 block text-base font-semibold" title={annual.explanation}>{annual.forecastCents === null ? "Dados insuficientes" : formatBusinessMoney(annual.forecastCents, profile.default_currency)}</b>{annual.forecastCents === null && <small className="muted block text-[11px]">{annual.explanation}</small>}</div><div className="min-w-0"><p className="muted text-xs">Meta anual</p><b className="mt-1 block text-base font-semibold">{annual.goalCents === null ? "Não definida" : formatBusinessMoney(annual.goalCents, profile.default_currency)}</b>{annual.progressPercent !== null && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--panel2)]"><span className="block h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.min(100, Math.max(0, annual.progressPercent))}%` }}/></div>}</div></div>
+    </section>
+    <div className="mt-4 grid gap-3 lg:grid-cols-2">
+      <section className="rounded-2xl border border-[var(--border)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="text-sm font-semibold">Resultado gerencial</h3><p className="muted mt-1 text-xs">Não substitui uma demonstração contábil ou fiscal.</p></div><button type="button" onClick={() => go("result")} className="min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)]">Detalhes</button></div><div className="mt-3 flex items-end justify-between gap-3"><span className="muted text-xs">Margem bruta</span><b className="text-lg">{snapshot.grossMarginPercent === null ? "—" : `${snapshot.grossMarginPercent.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`}</b></div></section>
+      <section className="rounded-2xl border border-[var(--border)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="text-sm font-semibold">Fluxo de caixa</h3><p className="muted mt-1 text-xs">Estimativa com recebimentos e pagamentos programados · 30 dias.</p></div><button type="button" onClick={() => go("cashflow")} className="min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)]">Ver fluxo</button></div><b className="mt-3 block text-lg">{formatBusinessMoney(forecastCash30Days, profile.default_currency)}</b></section>
+    </div>
+    <section className={`mt-4 rounded-2xl border p-4 ${dueAttention ? "border-amber-400/30 bg-amber-400/5" : "border-[var(--border)]"}`}><h3 className="text-sm font-semibold">Atenção</h3>{dueAttention ? <p className="muted mt-1 text-xs">Há {latePayables || 0} conta(s) a pagar e {lateReceivables || 0} recebimento(s) em atraso. <button type="button" onClick={() => go(latePayables ? "payables" : "receivables")} className="font-medium text-[var(--accent)]">Revisar agora</button></p> : <p className="muted mt-1 text-xs">Nenhum compromisso vencido identificado no período atual.</p>}</section>
+    <footer className="muted mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-[10px]"><span className="inline-flex items-center gap-1"><Info size={12}/> Projeções são estimativas, não garantias.</span><HelpHint label="O que significa a projeção?"><p>O faturamento realizado soma somente entradas categorizadas como receita no ano. A projeção só aparece com pelo menos três meses com faturamento e usa a média mensal observada anualizada. Transferências, aportes e aplicações não entram.</p></HelpHint></footer>
+  </section></>;
+}
+
+export function BusinessFinanceDetail({ workspaceId, month, data, allTransactions, cashBalanceCents, mode }: {
+  workspaceId: string; month: Date; data: BusinessInstitutionData; allTransactions: FinanceTransaction[];
+  cashBalanceCents: number; mode: "result" | "cashflow";
 }) {
   const period = monthKey(month);
   const [assumptions, setAssumptions] = useState<AssumptionRecord>({});
@@ -183,63 +280,37 @@ export function BusinessFinanceDashboard({
         setAssumptions(result.assumptions || {});
         setProfile({ ...blankProfile, ...result.profile });
         setLoading(false);
-      }).catch((cause) => {
+      }).catch(() => {
         if (stale) return;
-        setError(cause instanceof Error ? cause.message : "Não foi possível carregar o perfil empresarial.");
+        setError("Não foi possível atualizar as premissas empresariais. Os dados registrados continuam disponíveis.");
         setLoading(false);
       });
     return () => { stale = true; };
   }, [workspaceId, period]);
-  const snapshot = useMemo(() => {
-    const values = Object.values(assumptions).filter((item): item is BusinessAssumption => Boolean(item));
-    return calculateBusinessFinanceSnapshot({
-      period, transactions: allTransactions, assumptions: values,
-      cashAvailableCents: currentCash(data, allTransactions),
-    });
-  }, [allTransactions, assumptions, data, period]);
-  const totalCard = <BusinessTotalCard summary={summary} total={total} availableBalanceCents={availableBalanceCents} committedCents={committedCents} freeToSpendCents={freeToSpendCents} scheduledReceivablesCents={scheduledReceivablesCents} currency={profile.default_currency}/>;
-  if (loading) return <>{totalCard}<section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-5 sm:p-6"><p className="muted text-sm">Carregando indicadores empresariais…</p></section></>;
-  return <>{totalCard}<section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-4 sm:p-6">
-    <header className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Building2 size={17} className="text-[var(--accent)]"/><h2 className="text-lg font-semibold">Visão da empresa</h2></div><p className="muted mt-1 text-xs">Regime de caixa · movimentações registradas e referências informadas</p></div><button type="button" onClick={() => go("settings")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Perfil financeiro</button></header>
-    {error && <p role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">{error} Para evitar números desatualizados, os indicadores não foram substituídos por zeros.</p>}
-    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
-      <Metric label="Faturamento do período" item={snapshot.grossRevenue} currency={profile.default_currency}/>
-      <Metric label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency}/>
-      <Metric label="Caixa disponível" item={snapshot.cashAvailable} currency={profile.default_currency}/>
-      <Metric label="A receber · informado" item={snapshot.receivables} currency={profile.default_currency}/>
-      <Metric label="A receber · programado" item={{ amountCents: scheduledReceivablesCents, nature: "projected", explanation: "Soma das receitas planejadas ainda não marcadas como recebidas no período selecionado. Não inclui estimativas do perfil financeiro." }} currency={profile.default_currency}/>
-    </div>
-    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <Metric label="Despesas registradas" item={snapshot.registeredExpenses} currency={profile.default_currency}/>
-      <Metric label="A pagar · informado" item={snapshot.payables} currency={profile.default_currency}/>
-      <PercentageMetric label="Margem bruta" percent={snapshot.grossMarginPercent} nature={snapshot.grossResultDre.nature} explanation="Resultado bruto gerencial dividido pela receita líquida. Só aparece quando as linhas necessárias estão preenchidas." />
-      <Metric label="Caixa projetado · 30 dias" item={snapshot.projectedCash30Days} currency={profile.default_currency}/>
-    </div>
-    {snapshot.actualVsPreviousPercent !== null && snapshot.previousComparisonLabel && <p className="mt-3 text-xs text-[var(--accent)]">Faturamento registrado {snapshot.actualVsPreviousPercent > 0 ? "subiu" : snapshot.actualVsPreviousPercent < 0 ? "caiu" : "ficou estável"} {Math.abs(snapshot.actualVsPreviousPercent).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% em comparação com {snapshot.previousComparisonLabel}{snapshot.comparisonIsPartial ? " (mesmo trecho do mês)" : ""}.</p>}
-    {snapshot.actualVsReferencePercent !== null && <p className="muted mt-2 text-xs">Referência mensal informada: {monthlyMoney(snapshot.monthlyReference.amountCents, profile.default_currency)} · realizado {snapshot.comparisonIsPartial ? "no trecho equivalente do mês" : "no período"}: {snapshot.actualVsReferencePercent.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% da referência.</p>}
-    {snapshot.breakEvenRevenue.amountCents !== null && <div className="mt-3 max-w-sm"><Metric label="Ponto de equilíbrio gerencial mensal" item={snapshot.breakEvenRevenue} currency={profile.default_currency}/><p className="muted px-1 pt-2 text-[10px]">Margem de contribuição estimada: {snapshot.contributionMarginPercent?.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%.</p></div>}
-    <div className="mt-5 grid gap-4 xl:grid-cols-2">
-      <section className="rounded-2xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">DRE gerencial simplificada</h3><span className="muted text-[10px]">Não é demonstração contábil ou fiscal</span></div><div className="mt-3 space-y-2 text-sm">
-        <DreRow label="Receita bruta" item={snapshot.grossDre} currency={profile.default_currency}/>
-        <DreRow label="(−) Impostos provisionados" item={snapshot.taxesDre} currency={profile.default_currency}/>
-        <DreRow label="Receita líquida" item={snapshot.netRevenueDre} currency={profile.default_currency} strong/>
-        <DreRow label="(−) Custos diretos" item={snapshot.directCostsDre} currency={profile.default_currency}/>
-        <DreRow label="Resultado bruto" item={snapshot.grossResultDre} currency={profile.default_currency} strong/>
-        <DreRow label="(−) Despesas operacionais" item={snapshot.operatingExpensesDre} currency={profile.default_currency}/>
-        <DreRow label="Resultado operacional" item={snapshot.operatingResultDre} currency={profile.default_currency} strong/>
-        <DreRow label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency} strong/>
-      </div></section>
-      <section className="rounded-2xl border border-[var(--border)] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold">Fluxo de caixa registrado</h3><span className="muted text-[10px]">Período selecionado · regime de caixa</span></div><div className="mt-3 space-y-3 text-sm">
-        <FlowRow label="Saldo inicial derivado" amount={snapshot.cashflow.openingCents} icon="neutral" currency={profile.default_currency}/>
-        <FlowRow label="Entradas registradas" amount={snapshot.cashflow.inflowsCents} icon="in" currency={profile.default_currency}/>
-        <FlowRow label="Saídas registradas · inclui aportes" amount={snapshot.cashflow.outflowsCents} icon="out" currency={profile.default_currency}/>
-        <FlowRow label="Saldo inicial informado · referência" amount={snapshot.initialCash.amountCents} icon="neutral" currency={profile.default_currency}/>
-        <div className="border-t border-[var(--border)] pt-3"><FlowRow label="Saldo final derivado" amount={snapshot.cashflow.closingCents} icon="neutral" currency={profile.default_currency}/></div>
-        <p className="muted text-[11px] leading-5">Saldo derivado dos saldos das contas e dos lançamentos registrados; transferências não alteram o caixa total. Valores informados não substituem o extrato.</p>
-      </div></section>
-    </div>
-    <footer className="muted mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-[10px]"><span className="inline-flex items-center gap-1"><Info size={12}/> Estimativas não substituem os valores registrados.</span><span>Para configurar os valores, abra Perfil financeiro nas Configurações.</span><HelpHint label="O que significa o status?"><p>Realizado usa movimentações registradas. Informado é uma referência preenchida manualmente. Estimado é um cálculo baseado nessas referências. Projetado considera movimentações futuras planejadas. Misto combina mais de uma dessas fontes.</p><p className="mt-2">Esses dados ajudam na gestão e não substituem os lançamentos oficiais.</p></HelpHint></footer>
-  </section></>;
+  const snapshot = useMemo(() => calculateBusinessFinanceSnapshot({
+    period,
+    transactions: allTransactions,
+    assumptions: Object.values(assumptions).filter((item): item is BusinessAssumption => Boolean(item)),
+    cashAvailableCents: cashBalanceCents,
+  }), [allTransactions, assumptions, cashBalanceCents, period]);
+  const events = useMemo(() => buildBusinessCashEvents({
+    receivables: data.plannedReceivables || [],
+    payables: data.recurringBills || [],
+    transactions: allTransactions,
+    days: 90,
+  }), [allTransactions, data.plannedReceivables, data.recurringBills]);
+  if (loading) return <section className="mx-auto max-w-5xl px-4 pt-8"><div className="panel rounded-2xl p-5"><p className="muted text-sm">Carregando {mode === "result" ? "resultado" : "fluxo de caixa"}…</p></div></section>;
+  return <section className="mx-auto max-w-5xl px-4 pt-8 lg:px-10">
+    <header><p className="muted text-xs">Gestão financeira · {period}</p><h2 className="mt-1 text-2xl font-semibold tracking-tight">{mode === "result" ? "Resultado gerencial" : "Fluxo de caixa"}</h2><p className="muted mt-2 text-sm">{mode === "result" ? "Visão gerencial do período; não é uma demonstração contábil ou fiscal." : "Caixa realizado separado dos recebimentos e compromissos futuros."}</p></header>
+    {error && <p role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">{error}</p>}
+    {mode === "result" ? <>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Faturamento realizado" item={snapshot.grossRevenue} currency={profile.default_currency}/><Metric label="Despesas registradas" item={snapshot.registeredExpenses} currency={profile.default_currency}/><Metric label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency}/><PercentageMetric label="Margem bruta" percent={snapshot.grossMarginPercent} nature={snapshot.grossResultDre.nature} explanation="Resultado bruto gerencial dividido pela receita líquida. Só aparece quando as linhas necessárias estão preenchidas."/></div>
+      <section className="panel mt-4 rounded-2xl p-5"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">DRE gerencial simplificada</h3><span className="muted text-[11px]">Valores informados e cálculos gerenciais</span></div><div className="mt-4 space-y-3 text-sm"><DreRow label="Receita bruta" item={snapshot.grossDre} currency={profile.default_currency}/><DreRow label="(−) Impostos provisionados" item={snapshot.taxesDre} currency={profile.default_currency}/><DreRow label="Receita líquida" item={snapshot.netRevenueDre} currency={profile.default_currency} strong/><DreRow label="(−) Custos diretos" item={snapshot.directCostsDre} currency={profile.default_currency}/><DreRow label="Resultado bruto" item={snapshot.grossResultDre} currency={profile.default_currency} strong/><DreRow label="(−) Despesas operacionais" item={snapshot.operatingExpensesDre} currency={profile.default_currency}/><DreRow label="Resultado operacional" item={snapshot.operatingResultDre} currency={profile.default_currency} strong/><DreRow label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency} strong/></div><p className="muted mt-4 text-xs leading-5">Entradas, despesas e premissas são identificadas pela origem. Transferências, aportes e aplicações não representam faturamento operacional.</p></section>
+    </> : <>
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><section className="panel rounded-2xl p-4"><p className="muted text-xs">Caixa atual</p><b className="mt-2 block text-xl">{formatBusinessMoney(cashBalanceCents, profile.default_currency)}</b></section>{[30, 60, 90].map((days) => <section className="panel rounded-2xl p-4" key={days}><p className="muted text-xs">Caixa projetado · {days} dias</p><b className="mt-2 block text-xl">{formatBusinessMoney(projectedBusinessCash(cashBalanceCents, events, days), profile.default_currency)}</b></section>)}</div>
+      <section className="panel mt-4 rounded-2xl p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">Próximos compromissos</h3><p className="muted mt-1 text-xs">Projeção simples em regime de caixa, com recebíveis e contas programadas.</p></div><span className="rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[11px]">{events.length} eventos</span></div>{events.length ? <div className="mt-3 divide-y divide-[var(--border)]">{events.slice(0, 30).map((event) => <div key={event.id} className="flex items-center justify-between gap-3 py-3"><span className="min-w-0"><b className="block truncate text-sm">{event.label}</b><small className="muted">{new Intl.DateTimeFormat("pt-BR").format(new Date(`${event.date}T12:00:00`))} · {event.kind === "receivable" ? "A receber" : "A pagar"}</small></span><b className={`shrink-0 text-sm ${event.kind === "receivable" ? "text-[var(--accent)]" : "text-amber-300"}`}>{event.kind === "receivable" ? "+" : "−"}{formatBusinessMoney(event.amountCents, profile.default_currency)}</b></div>)}</div> : <p className="muted mt-4 text-sm">Sem recebimentos ou compromissos programados para os próximos 90 dias.</p>}<p className="muted mt-4 border-t border-[var(--border)] pt-3 text-xs leading-5">A projeção considera somente eventos programados e não conta transferências como entrada ou saída consolidada. Valores futuros podem mudar.</p></section>
+    </>}
+  </section>;
 }
 
 function DreRow({ label, item, currency, strong = false }: { label: string; item: { amountCents: number | null; nature: FinancialDataNature | null }; currency: string; strong?: boolean }) {
@@ -260,14 +331,17 @@ function FlowRow({ label, amount, icon, currency }: { label: string; amount: num
   return <div className="flex items-center justify-between gap-3"><span className="muted flex min-w-0 items-center gap-2">{Icon && <Icon size={14} className={icon === "in" ? "text-[var(--accent)]" : "text-amber-300"}/>}<span>{label}</span></span><b aria-label={exactAmount} title={amount === null ? undefined : exactAmount} className="shrink-0">{displayMonthlyMoney(amount, currency)}</b></div>;
 }
 
-export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: string; toast: (message: string) => void }) {
+export function BusinessFinanceSettings({ workspaceId, toast, section = "settings" }: { workspaceId: string; toast: (message: string) => void; section?: "settings" | "planning" }) {
   const [referenceMonth, setReferenceMonth] = useState(() => monthKey(new Date()));
+  const [referenceYear, setReferenceYear] = useState(() => String(new Date().getFullYear()));
   const [profile, setProfile] = useState<Profile>(blankProfile);
   const [assumptions, setAssumptions] = useState<AssumptionRecord>({});
+  const [planGoals, setPlanGoals] = useState<PlanGoalRecord>({});
+  const [planInputs, setPlanInputs] = useState<Record<BusinessPlanGoalKey, string>>(() => Object.fromEntries(BUSINESS_PLAN_GOAL_KEYS.map((key) => [key, ""])) as Record<BusinessPlanGoalKey, string>);
   const [amountInputs, setAmountInputs] = useState<Record<BusinessAssumptionKey, string>>(() => Object.fromEntries(BUSINESS_ASSUMPTION_KEYS.map((key) => [key, ""])) as Record<BusinessAssumptionKey, string>);
   const [natures, setNatures] = useState<Record<BusinessAssumptionKey, "reported" | "estimated">>(() => Object.fromEntries(BUSINESS_ASSUMPTION_KEYS.map((key) => [key, "estimated"])) as Record<BusinessAssumptionKey, "reported" | "estimated">);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<"company" | "finance" | "">("");
+  const [saving, setSaving] = useState<"company" | "finance" | "plan" | "">("");
   const [error, setError] = useState("");
   const [loadedProfile, setLoadedProfile] = useState(false);
 
@@ -281,6 +355,9 @@ export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: s
         const nextAssumptions = (result.assumptions || {}) as AssumptionRecord;
         setProfile(nextProfile);
         setAssumptions(nextAssumptions);
+        const nextGoals = (result.planGoals || {}) as PlanGoalRecord;
+        setPlanGoals(nextGoals);
+        setPlanInputs(Object.fromEntries(BUSINESS_PLAN_GOAL_KEYS.map((key) => [key, centsInput(nextGoals[key]?.amountCents)])) as Record<BusinessPlanGoalKey, string>);
         setAmountInputs(Object.fromEntries(BUSINESS_ASSUMPTION_KEYS.map((key) => [key, centsInput(nextAssumptions[key]?.amountCents)])) as Record<BusinessAssumptionKey, string>);
         setNatures(Object.fromEntries(BUSINESS_ASSUMPTION_KEYS.map((key) => [key, nextAssumptions[key]?.nature || "estimated"])) as Record<BusinessAssumptionKey, "reported" | "estimated">);
         setLoadedProfile(true); setLoading(false);
@@ -290,7 +367,7 @@ export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: s
         setLoading(false);
       });
     return () => { stale = true; };
-  }, [workspaceId, referenceMonth]);
+  }, [workspaceId, referenceMonth, referenceYear, section]);
 
   const saveCompany = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setSaving("company"); setError("");
@@ -331,13 +408,31 @@ export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: s
     finally { setSaving(""); }
   };
 
+  const savePlan = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setSaving("plan"); setError("");
+    const goals = BUSINESS_PLAN_GOAL_KEYS.map((metricKey) => ({ metricKey, amountCents: parseBusinessMoneyToCents(planInputs[metricKey]) }));
+    if (goals.some((item) => planInputs[item.metricKey].trim() && item.amountCents === null)) {
+      setSaving(""); return setError("Confira os valores das metas. Use, por exemplo, 250.000,00.");
+    }
+    try {
+      await authorizedRequest(workspaceId, "/api/workspaces/business/profile", {
+        method: "PATCH", body: JSON.stringify({ section: "plan", referenceYear, requestId: crypto.randomUUID(), goals }),
+      });
+      toast("Metas e limites do planejamento salvos para este ano.");
+      const result = await authorizedRequest(workspaceId, `/api/workspaces/business/profile?month=${encodeURIComponent(`${referenceYear}-12`)}`);
+      setPlanGoals(result.planGoals || {});
+      setPlanInputs(Object.fromEntries(BUSINESS_PLAN_GOAL_KEYS.map((key) => [key, centsInput(result.planGoals?.[key]?.amountCents)])) as Record<BusinessPlanGoalKey, string>);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Não foi possível salvar o planejamento."); }
+    finally { setSaving(""); }
+  };
+
   const updateProfile = (key: keyof Profile, value: string | number | null) => setProfile((current) => ({ ...current, [key]: value }));
   if (loading) return <section className="panel mt-5 rounded-2xl p-5"><p className="muted text-sm">Carregando o perfil da empresa…</p></section>;
 
-  return <section className="mx-auto max-w-4xl px-4 pt-5 lg:px-10">
-    <header><p className="muted text-xs">Configurações · Empresa</p><div className="mt-1 flex flex-wrap items-center gap-2"><h2 className="text-2xl font-semibold tracking-tight">Perfil financeiro da empresa</h2><HelpHint label="Valores informados e estimativas"><p>Você pode informar valores exatos ou aproximados e ajustá-los depois. Valores aproximados serão identificados como estimativas no Valurise.</p></HelpHint></div><p className="muted mt-2 max-w-2xl text-sm">Informe referências gerenciais da empresa; os valores realizados vêm dos lançamentos.</p></header>
+  return <section className="mx-auto max-w-5xl px-4 pt-8 lg:px-10">
+    <header><p className="muted text-xs">{section === "planning" ? "Gestão · Planejamento" : "Sistema · Empresa"}</p><div className="mt-1 flex flex-wrap items-center gap-2"><h2 className="text-2xl font-semibold tracking-tight">{section === "planning" ? "Planejamento financeiro" : "Configurações da empresa"}</h2><HelpHint label={section === "planning" ? "Metas e referências" : "Perfil da empresa"}><p>{section === "planning" ? "Defina metas estratégicas e referências gerenciais. Os resultados realizados continuam sendo calculados a partir das movimentações." : "Atualize as informações cadastrais e preferências financeiras da empresa."}</p></HelpHint></div><p className="muted mt-2 max-w-2xl text-sm">{section === "planning" ? "Metas anuais, caixa mínimo e referências de faturamento, custos e despesas." : "Dados cadastrais e preferências do espaço empresarial."}</p></header>
     {error && <p role="alert" className="mt-4 rounded-xl border border-[var(--danger)]/35 bg-[var(--danger)]/10 p-3 text-sm leading-5 text-[var(--danger)]">{error}</p>}
-    <section className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">Dados da empresa</h3><p className="muted mt-1 text-xs">Informações cadastrais e gerenciais opcionais.</p></div><span className="rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px]">{profile.trade_name || "Empresa"}</span></div>
+    {section === "settings" && <section className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold">Dados da empresa</h3><p className="muted mt-1 text-xs">Informações cadastrais e preferências financeiras.</p></div><span className="rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[10px]">{profile.trade_name || "Empresa"}</span></div>
       <div className="muted mt-4 grid gap-3 rounded-xl bg-[var(--panel2)] p-3 text-xs sm:grid-cols-2"><p><span className="block opacity-70">Razão social</span><b className="mt-1 block text-[var(--fg)]">{profile.legal_name || "Não informada"}</b></p><p><span className="block opacity-70">CNPJ</span><b className="mt-1 block text-[var(--fg)]">{profile.cnpj || "Não informado"}</b></p></div>
       <form onSubmit={(event) => void saveCompany(event)} className="mt-4 grid gap-3 sm:grid-cols-2">
         <Field label="E-mail empresarial" value={profile.email || ""} onChange={(value) => updateProfile("email", value)} type="email"/>
@@ -358,16 +453,20 @@ export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: s
         <Field label="UF" value={profile.state || ""} onChange={(value) => updateProfile("state", value.toUpperCase().slice(0, 2) || null)}/>
         <div className="flex justify-end pt-1 sm:col-span-2"><button type="submit" disabled={saving !== ""} className="primary inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold disabled:opacity-60 sm:w-auto"><Save size={15}/>{saving === "company" ? "Salvando…" : "Salvar dados da empresa"}</button></div>
       </form>
-    </section>
+    </section>}
 
-    <section className="panel mt-4 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">Perfil financeiro gerencial</h3><p className="muted mt-1 text-xs">Referências não substituem as movimentações realizadas.</p></div><label className="block text-xs">Vigência<input aria-label="Mês de referência" type="month" className="field mt-1 min-h-10" value={referenceMonth} onChange={(event) => setReferenceMonth(event.target.value)}/></label></div>
+    {section === "planning" && <>
+    <section className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">Metas estratégicas</h3><p className="muted mt-1 text-xs">Metas são valores desejados; o realizado é calculado pelas movimentações.</p></div><label className="block text-xs">Ano de referência<input aria-label="Ano de referência" type="number" inputMode="numeric" min="2000" max="9999" className="field mt-1 min-h-10 w-32" value={referenceYear} onChange={(event) => { const nextYear = event.target.value.slice(0, 4); setReferenceYear(nextYear); if (nextYear.length === 4) setReferenceMonth(`${nextYear}-12`); }}/></label></div>
+      <form onSubmit={(event) => void savePlan(event)} className="mt-4 grid gap-3 sm:grid-cols-2">{BUSINESS_PLAN_GOAL_KEYS.map((goalKey) => <label key={goalKey} className="block min-w-0 text-xs font-medium">{planGoalLabels[goalKey]}<input className="field mt-1" inputMode="decimal" value={planInputs[goalKey]} onChange={(event) => setPlanInputs((current) => ({ ...current, [goalKey]: event.target.value }))} placeholder="Não definido"/><small className="muted mt-1 block font-normal">{planGoals[goalKey] ? `Atualizado em ${planGoals[goalKey]?.referenceMonth.slice(0, 7)}` : "Deixe em branco para não definir uma meta."}</small></label>)}<div className="flex justify-end pt-1 sm:col-span-2"><button type="submit" disabled={saving !== "" || referenceYear.length !== 4} className="primary inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold disabled:opacity-60 sm:w-auto"><Save size={15}/>{saving === "plan" ? "Salvando…" : "Salvar metas"}</button></div></form>
+    </section>
+    <section className="panel mt-4 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">Premissas financeiras</h3><p className="muted mt-1 text-xs">Referências não substituem movimentações realizadas.</p></div><label className="block text-xs">Vigência<input aria-label="Mês de referência" type="month" className="field mt-1 min-h-10" value={referenceMonth} onChange={(event) => setReferenceMonth(event.target.value)}/></label></div>
       <form onSubmit={(event) => void saveFinance(event)} className="mt-4 space-y-3">
         {BUSINESS_ASSUMPTION_KEYS.map((key) => <AssumptionField key={key} metricKey={key} value={amountInputs[key]} nature={natures[key]} existing={assumptions[key] || null} onValue={(value) => setAmountInputs((current) => ({ ...current, [key]: value }))} onNature={(nature) => setNatures((current) => ({ ...current, [key]: nature }))}/>)}
         <div className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel2)]/65 p-3 text-xs"><p className="font-medium">Como esses valores são usados</p><HelpHint label="Uso dos valores empresariais"><p>O faturamento e as despesas do período vêm dos lançamentos quando existirem. Valores manuais permanecem como referências históricas; estimativas não apagam nem alteram o extrato. DRE e projeções são gerenciais e não fazem apuração fiscal.</p></HelpHint></div>
         <div className="flex justify-end pt-1"><button type="submit" disabled={saving !== ""} className="primary inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold disabled:opacity-60 sm:w-auto"><Save size={15}/>{saving === "finance" ? "Salvando…" : "Salvar perfil financeiro"}</button></div>
       </form>
       {loadedProfile && <p className="muted mt-3 text-[10px]">As alterações ficam vinculadas a este workspace empresarial e mantêm o histórico de valores informado.</p>}
-    </section>
+    </section></>}
   </section>;
 }
 
