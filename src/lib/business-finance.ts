@@ -27,6 +27,29 @@ export type BusinessValue = {
   source: string | null;
   explanation: string;
 };
+
+export function formatBusinessMoney(amountCents: number | null, currency = "BRL"): string {
+  if (amountCents === null) return "Sem dados suficientes";
+
+  const amount = amountCents / 100;
+  if (Math.abs(amount) < 1_000_000) {
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency }).format(amount);
+  }
+
+  const currencySymbol = new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).formatToParts(0).find((part) => part.type === "currency")?.value || currency;
+  const compactAmount = new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(Math.abs(amount) / 1_000_000);
+  const sign = amount < 0 ? "−" : "";
+
+  return `${sign}${currencySymbol}\u00a0${compactAmount}M`;
+}
+
 export type BusinessFinanceSnapshot = {
   period: string;
   grossRevenue: BusinessValue;

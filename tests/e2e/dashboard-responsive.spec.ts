@@ -43,7 +43,7 @@ const mockBusinessState = {
   profile: { publicId: "VAL-QA-BUSINESS" },
 };
 
-async function installMockSession(page: import("@playwright/test").Page, financialStateDelayMs = 0, financialStateFails = false) {
+async function installMockSession(page: import("@playwright/test").Page, financialStateDelayMs = 0, financialStateFails = false, largeBusinessAmounts = false) {
   const authUser = {
     id: testUserId,
     aud: "authenticated",
@@ -111,8 +111,12 @@ async function installMockSession(page: import("@playwright/test").Page, financi
         await new Promise((resolve) => setTimeout(resolve, financialStateDelayMs));
       }
       const requestedWorkspace = new URL(route.request().url()).searchParams.get("workspace_id")?.replace(/^eq\./, "");
-      const state = requestedWorkspace === businessWorkspaceId ? mockBusinessState : mockState;
-      return route.fulfill({ status: 200, json: { state, version: 1 } });
+      const isBusinessWorkspace = requestedWorkspace === businessWorkspaceId;
+      const state = isBusinessWorkspace ? mockBusinessState : mockState;
+      const responseState = largeBusinessAmounts && isBusinessWorkspace
+        ? { ...state, transactions: state.transactions.map((item) => item.id === "business-income-qa" ? { ...item, amountCents: 450_000_000 } : item) }
+        : state;
+      return route.fulfill({ status: 200, json: { state: responseState, version: 1 } });
     }
     if (pathname.endsWith("/user_consents")) {
       return route.fulfill({ status: 200, json: { cookie_preference: "essential_only", cookie_policy_version: "2026-09-23-v1" } });
@@ -154,7 +158,7 @@ async function installMockSession(page: import("@playwright/test").Page, financi
 
 test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", async ({ page }) => {
   await page.setViewportSize({ width: 1348, height: 618 });
-  await installMockSession(page);
+  await installMockSession(page, 0, false, true);
   await page.goto("/");
   const personalGreeting = page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ });
   await expect(personalGreeting).toBeVisible({ timeout: 15_000 });
@@ -181,6 +185,21 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   const primaryMetricGrid = businessSummary.locator(".mt-4.grid").first();
   await expect.poll(() => primaryMetricGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(4);
   await expect(businessSummary.locator("article").first().locator("p").nth(1)).toHaveCSS("white-space", "nowrap");
+  const revenueMetric = businessSummary.locator("article").filter({ hasText: "Faturamento do período" });
+  await expect(revenueMetric).toHaveAttribute("data-nature", "actual");
+  await expect(revenueMetric).toContainText(/R\$\s*4,5M/);
+  await expect(revenueMetric.getByText("Realizado", { exact: true })).toBeVisible();
+  const revenueStatus = revenueMetric.getByText("Realizado", { exact: true });
+  const revenueStatusBounds = await revenueStatus.boundingBox();
+  const revenueCardBounds = await revenueMetric.boundingBox();
+  expect(revenueStatusBounds && revenueCardBounds ? revenueStatusBounds.x - revenueCardBounds.x : 99).toBeLessThan(30);
+  const projectedMetric = businessSummary.locator("article").filter({ hasText: "A receber · programado" });
+  await expect(projectedMetric).toHaveAttribute("data-nature", "projected");
+  const [actualColor, projectedColor] = await Promise.all([
+    revenueMetric.evaluate((element) => getComputedStyle(element).backgroundColor),
+    projectedMetric.evaluate((element) => getComputedStyle(element).backgroundColor),
+  ]);
+  expect(actualColor).not.toBe(projectedColor);
   await expect(page.getByText("Total", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);
@@ -230,7 +249,7 @@ test("receita prevista empresarial aparece no resumo sem alterar valores realiza
 });
 
 test("salva referências empresariais, distingue realizado de estimado e mantém o mobile utilizável", async ({ page }) => {
-  await installMockSession(page);
+  await installMockSession(page, 0, false, true);
   await page.goto("/");
   await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
   await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
@@ -264,6 +283,11 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   await expect(page.getByText("DRE gerencial simplificada")).toBeVisible();
   await expect(page.getByText("Fluxo de caixa registrado")).toBeVisible();
   await expect(page.getByText("Ponto de equilíbrio gerencial mensal")).toBeVisible();
+  const businessSummary = page.getByRole("region", { name: "Resumo empresarial" });
+  const payablesMetric = businessSummary.locator("article").filter({ hasText: "A pagar · informado" });
+  await expect(payablesMetric).toHaveAttribute("data-nature", "estimated");
+  await expect(payablesMetric.getByText("Estimado", { exact: true })).toBeVisible();
+  await expect(businessSummary).toContainText(/R\$\s*4,5M/);
   for (const width of [375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

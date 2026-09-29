@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FinanceTransaction } from "@/lib/finance";
-import { calculateBusinessFinanceSnapshot, parseBusinessMoneyToCents, type BusinessAssumption } from "./business-finance";
+import { calculateBusinessFinanceSnapshot, formatBusinessMoney, parseBusinessMoneyToCents, type BusinessAssumption } from "./business-finance";
 
 const period = "2025-04";
 const row = (metricKey: BusinessAssumption["metricKey"], amountCents: number, nature: BusinessAssumption["nature"] = "estimated", referenceMonth = "2025-04-01"): BusinessAssumption => ({ metricKey, amountCents, nature, source: "manual", referenceMonth });
@@ -14,6 +14,14 @@ const completeAssumptions = (): BusinessAssumption[] => [
 ];
 
 describe("indicadores gerenciais empresariais", () => {
+  it("abrevia milhões sem arredondar valores menores e mantém os centavos fora da faixa compacta", () => {
+    expect(formatBusinessMoney(450_000_000)).toBe("R$\u00a04,5M");
+    expect(formatBusinessMoney(123_456_789_000, "USD")).toContain("1.234,6M");
+    expect(formatBusinessMoney(-450_000_000)).toBe("−R$\u00a04,5M");
+    expect(formatBusinessMoney(99_999_999)).toBe("R$\u00a0999.999,99");
+    expect(formatBusinessMoney(null)).toBe("Sem dados suficientes");
+  });
+
   it("prioriza receitas e despesas registradas e marca resultado misto", () => {
     const snapshot = calculateBusinessFinanceSnapshot({
       period, asOf: new Date("2025-04-30T23:00:00.000Z"), cashAvailableCents: 80_000,

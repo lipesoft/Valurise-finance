@@ -1,0 +1,50 @@
+.metricCard {
+  --metric-tone: #4edea3;
+  --metric-ink: #a7f3d0;
+
+  border: 1px solid var(--border);
+  border-color: color-mix(in srgb, var(--metric-tone) 24%, var(--border));
+  border-left: 3px solid var(--metric-tone);
+  background-color: var(--panel2);
+  background-color: color-mix(in srgb, var(--metric-tone) 9%, var(--panel2));
+}
+
+.metricActual {
+  --metric-tone: #4edea3;
+  --metric-ink: #a7f3d0;
+}
+
+.metricProjected {
+  --metric-tone: #60a5fa;
+  --metric-ink: #bfdbfe;
+}
+
+.metricForecast {
+  --metric-tone: #fbbf24;
+  --metric-ink: #fde68a;
+}
+
+.metricUnknown {
+  --metric-tone: var(--muted);
+  --metric-ink: var(--muted);
+}
+
+.statusBadge {
+  color: var(--metric-ink);
+  background-color: color-mix(in srgb, var(--metric-tone) 16%, var(--panel));
+}
+
+:global(.light) .metricActual {
+  --metric-tone: #008b5c;
+  --metric-ink: #006b46;
+}
+
+:global(.light) .metricProjected {
+  --metric-tone: #2563eb;
+  --metric-ink: #1d4ed8;
+}
+
+:global(.light) .metricForecast {
+  --metric-tone: #b45309;
+  --metric-ink: #92400e;
+}

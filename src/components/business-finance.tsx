@@ -5,9 +5,11 @@ import { ArrowDownLeft, ArrowUpRight, Building2, Info, Save } from "lucide-react
 import { accountBalance, formatBRL, type FinanceTransaction } from "@/lib/finance";
 import { HelpHint } from "@/components/help-hint";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import styles from "@/components/business-finance.module.css";
 import {
   BUSINESS_ASSUMPTION_KEYS,
   calculateBusinessFinanceSnapshot,
+  formatBusinessMoney,
   parseBusinessMoneyToCents,
   type BusinessAssumption,
   type BusinessAssumptionKey,
@@ -53,6 +55,9 @@ function centsInput(amount: number | null | undefined) {
   return amount === null || amount === undefined ? "" : (amount / 100).toFixed(2).replace(".", ",");
 }
 function monthlyMoney(cents: number | null, currency = "BRL") {
+  return formatBusinessMoney(cents, currency);
+}
+function exactMonthlyMoney(cents: number | null, currency = "BRL") {
   if (cents === null) return "Sem dados suficientes";
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency }).format(cents / 100);
 }
@@ -79,14 +84,21 @@ function emptySnapshot(period: string): BusinessFinanceSnapshot {
   return calculateBusinessFinanceSnapshot({ period, transactions: [], assumptions: [], cashAvailableCents: null });
 }
 function natureBadge(nature: FinancialDataNature | null) {
-  if (!nature) return <span className="muted rounded-full bg-[var(--panel2)] px-2 py-1 text-[10px]">Sem dados</span>;
-  const tone = nature === "actual" ? "text-[var(--accent)]" : nature === "projected" ? "text-sky-300" : "text-amber-300";
-  return <span className={`rounded-full bg-[var(--panel2)] px-2 py-1 text-[10px] font-medium ${tone}`}>{natureLabels[nature]}</span>;
+  const tone = natureTone(nature);
+  return <span data-nature={nature || "none"} className={`${styles.statusBadge} ${tone} rounded-full px-2 py-1 text-[10px] font-medium`}>{nature ? natureLabels[nature] : "Sem dados"}</span>;
+}
+function natureTone(nature: FinancialDataNature | null) {
+  if (nature === "actual") return styles.metricActual;
+  if (nature === "projected") return styles.metricProjected;
+  return nature ? styles.metricForecast : styles.metricUnknown;
 }
 function Metric({ label, item, currency = "BRL" }: { label: string; item: { amountCents: number | null; nature: FinancialDataNature | null; explanation: string }; currency?: string }) {
-  return <article className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--panel2)]/65 p-4" title={item.explanation}>
-    <div className="flex flex-wrap items-center justify-between gap-2"><p className="muted text-xs">{label}</p>{natureBadge(item.nature)}</div>
-    <p className="mt-2 whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums sm:text-xl 2xl:text-2xl">{monthlyMoney(item.amountCents, currency)}</p>
+  const tone = natureTone(item.nature);
+  const amountLabel = exactMonthlyMoney(item.amountCents, currency);
+  return <article data-nature={item.nature || "none"} className={`min-w-0 rounded-2xl p-4 ${styles.metricCard} ${tone}`} title={item.explanation}>
+    <div className="min-h-5">{natureBadge(item.nature)}</div>
+    <p className="muted mt-2 min-h-10 text-xs leading-5">{label}</p>
+    <p aria-label={amountLabel} title={item.amountCents === null ? undefined : amountLabel} className="mt-1 whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums sm:text-xl 2xl:text-2xl">{monthlyMoney(item.amountCents, currency)}</p>
     <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{item.explanation}</p></details>
   </article>;
 }
@@ -177,14 +189,22 @@ export function BusinessFinanceDashboard({
 }
 
 function DreRow({ label, item, currency, strong = false }: { label: string; item: { amountCents: number | null; nature: FinancialDataNature | null }; currency: string; strong?: boolean }) {
-  return <div className={`flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${strong ? "font-semibold" : ""}`}><span>{label}</span><span className="inline-flex items-center gap-2 text-right">{natureBadge(item.nature)}<span className="min-w-28">{monthlyMoney(item.amountCents, currency)}</span></span></div>;
+  const exactAmount = exactMonthlyMoney(item.amountCents, currency);
+  return <div className={`flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)]/60 pb-2 ${strong ? "font-semibold" : ""}`}><span>{label}</span><span className="inline-flex items-center gap-2 text-right">{natureBadge(item.nature)}<span aria-label={exactAmount} title={item.amountCents === null ? undefined : exactAmount} className="min-w-28">{monthlyMoney(item.amountCents, currency)}</span></span></div>;
 }
 function PercentageMetric({ label, percent, nature, explanation }: { label: string; percent: number | null; nature: FinancialDataNature | null; explanation: string }) {
-  return <article className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--panel2)]/65 p-4" title={explanation}><div className="flex flex-wrap items-center justify-between gap-2"><p className="muted text-xs">{label}</p>{natureBadge(nature)}</div><p className="mt-2 break-words text-xl font-semibold tracking-tight sm:text-2xl">{percent === null ? "Sem dados suficientes" : `${percent.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`}</p><details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{explanation}</p></details></article>;
+  const tone = natureTone(nature);
+  return <article data-nature={nature || "none"} className={`min-w-0 rounded-2xl p-4 ${styles.metricCard} ${tone}`} title={explanation}>
+    <div className="min-h-5">{natureBadge(nature)}</div>
+    <p className="muted mt-2 min-h-10 text-xs leading-5">{label}</p>
+    <p className="mt-1 whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums sm:text-xl 2xl:text-2xl">{percent === null ? "Sem dados suficientes" : `${percent.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`}</p>
+    <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{explanation}</p></details>
+  </article>;
 }
 function FlowRow({ label, amount, icon, currency }: { label: string; amount: number | null; icon: "neutral" | "in" | "out"; currency: string }) {
   const Icon = icon === "in" ? ArrowDownLeft : icon === "out" ? ArrowUpRight : null;
-  return <div className="flex items-center justify-between gap-3"><span className="muted flex min-w-0 items-center gap-2">{Icon && <Icon size={14} className={icon === "in" ? "text-[var(--accent)]" : "text-amber-300"}/>}<span>{label}</span></span><b className="shrink-0">{monthlyMoney(amount, currency)}</b></div>;
+  const exactAmount = exactMonthlyMoney(amount, currency);
+  return <div className="flex items-center justify-between gap-3"><span className="muted flex min-w-0 items-center gap-2">{Icon && <Icon size={14} className={icon === "in" ? "text-[var(--accent)]" : "text-amber-300"}/>}<span>{label}</span></span><b aria-label={exactAmount} title={amount === null ? undefined : exactAmount} className="shrink-0">{monthlyMoney(amount, currency)}</b></div>;
 }
 
 export function BusinessFinanceSettings({ workspaceId, toast }: { workspaceId: string; toast: (message: string) => void }) {
