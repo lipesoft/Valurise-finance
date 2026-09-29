@@ -9,9 +9,10 @@ type WorkspaceSwitcherProps = {
   workspaces: WorkspaceSummary[];
   onSwitchWorkspace: (workspaceId: string) => void;
   onCreateWorkspace: () => void;
+  fullWidth?: boolean;
 };
 
-export function WorkspaceSwitcher({ workspace, workspaces, onSwitchWorkspace, onCreateWorkspace }: WorkspaceSwitcherProps) {
+export function WorkspaceSwitcher({ workspace, workspaces, onSwitchWorkspace, onCreateWorkspace, fullWidth = false }: WorkspaceSwitcherProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -58,7 +59,7 @@ export function WorkspaceSwitcher({ workspace, workspaces, onSwitchWorkspace, on
   const triggerLabel = isPersonal ? "Pessoal" : workspace.displayName;
 
   return (
-    <div ref={rootRef} className="relative min-w-0">
+    <div ref={rootRef} className={fullWidth ? "relative w-full min-w-0" : "relative min-w-0"}>
       <button
         ref={triggerRef}
         type="button"
@@ -73,7 +74,7 @@ export function WorkspaceSwitcher({ workspace, workspaces, onSwitchWorkspace, on
           event.preventDefault();
           setOpen(true);
         }}
-        className="flex h-11 min-w-0 max-w-[min(9rem,40vw)] items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel2)] px-3 text-sm font-medium transition-colors hover:bg-[var(--panel)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        className={`flex h-11 min-w-0 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel2)] px-3 text-sm font-medium transition-colors hover:bg-[var(--panel)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] ${fullWidth ? "w-full max-w-none justify-between" : "max-w-[min(9rem,40vw)]"}`}
       >
         <span className="truncate">{triggerLabel}</span>
         <ChevronDown aria-hidden="true" size={15} className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
@@ -89,7 +90,7 @@ export function WorkspaceSwitcher({ workspace, workspaces, onSwitchWorkspace, on
           onBlur={(event) => {
             if (!rootRef.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
           }}
-          className="absolute left-0 top-[calc(100%+0.5rem)] z-[60] w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-1.5 shadow-2xl"
+          className={`absolute left-0 top-[calc(100%+0.5rem)] z-[60] rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-1.5 shadow-2xl ${fullWidth ? "w-full" : "w-[min(18rem,calc(100vw-1.5rem))]"}`}
         >
           <p className="muted px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em]">Alternar espaço</p>
           <div className="max-h-[min(60vh,24rem)] overflow-y-auto">

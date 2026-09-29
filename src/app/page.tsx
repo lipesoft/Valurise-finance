@@ -33,6 +33,8 @@ import {
   SendHorizontal,
   ShieldCheck,
   SlidersHorizontal,
+  Sun,
+  Moon,
   Target,
   Tags,
   Trash2,
@@ -716,6 +718,8 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
   const [view, setView] = useState<View>("dashboard");
   const [sheet, setSheet] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
+  const mobileMenuRef = useRef<HTMLElement>(null);
+  const mobileMenuTriggerRef = useRef<HTMLButtonElement>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -736,6 +740,21 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
   const [theme, setTheme] = useState("dark");
   const [systemPrefersLight, setSystemPrefersLight] = useState(false);
   const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    if (!mobileMenu) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusFrame = window.requestAnimationFrame(() => mobileMenuRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.body.style.overflow = previousOverflow;
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [mobileMenu]);
   const [month, setMonth] = useState(startOfMonth(new Date()));
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<string[]>(() => {
     if (typeof window === "undefined") return [];
@@ -1166,6 +1185,11 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
   };
   const useLightTheme =
     theme === "light" || (theme === "system" && systemPrefersLight);
+  const AppearanceIcon = useLightTheme ? Sun : Moon;
+  const closeMobileMenu = () => {
+    setMobileMenu(false);
+    setNotificationsOpen(false);
+  };
   return (
     <MotionConfig reducedMotion="user">
     <main className={useLightTheme ? "light min-h-dvh overflow-x-clip" : "min-h-dvh overflow-x-clip"}>
@@ -1197,7 +1221,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
           className="fixed inset-0 z-50 lg:hidden"
           role="dialog"
           aria-modal="true"
-          aria-label="Menu principal"
+          aria-label="Menu de conta e navegação"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -1205,64 +1229,185 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
         >
           <button
             aria-label="Fechar menu"
-            onClick={() => setMobileMenu(false)}
-            className="absolute inset-0 bg-black/45 backdrop-blur-sm"
+            onClick={closeMobileMenu}
+            className="absolute inset-0 bg-black/45 backdrop-blur-[2px]"
           />
           <motion.aside
-            className="panel absolute right-3 top-3 max-h-[calc(100dvh-1.5rem)] w-[min(82vw,320px)] overflow-y-auto overscroll-contain rounded-3xl p-4 shadow-2xl"
-            initial={{ opacity: 0, x: 20 }}
+            ref={mobileMenuRef}
+            tabIndex={-1}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                if (mobileMenuRef.current?.querySelector('[role="menu"]')) return;
+                event.preventDefault();
+                closeMobileMenu();
+                return;
+              }
+              if (event.key !== "Tab") return;
+              const focusable = Array.from(mobileMenuRef.current?.querySelectorAll<HTMLElement>(
+                'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+              ) || []);
+              if (!focusable.length) return;
+              const first = focusable[0];
+              const last = focusable[focusable.length - 1];
+              if (event.shiftKey && (document.activeElement === first || document.activeElement === mobileMenuRef.current)) {
+                event.preventDefault();
+                last.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+              }
+            }}
+            className="absolute inset-y-0 right-0 flex h-[100dvh] w-[min(88vw,420px)] flex-col overflow-hidden rounded-l-3xl border border-y-0 border-r-0 border-[var(--border)] bg-[var(--bg)] shadow-2xl outline-none"
+            initial={{ x: "100%" }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 12 }}
-            transition={{ duration: 0.3, ease: motionTokens.ease.enter }}
+            exit={{ x: "100%" }}
+            transition={{ duration: 0.26, ease: motionTokens.ease.enter }}
           >
-            <div className="flex items-center justify-between">
+            <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
               <Brand />
               <button
                 aria-label="Fechar menu"
-                onClick={() => setMobileMenu(false)}
-                className="rounded-xl bg-[var(--panel2)] p-2"
+                onClick={closeMobileMenu}
+                className="grid h-11 w-11 place-items-center rounded-full bg-[var(--panel2)] transition-colors hover:bg-[var(--panel)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
               >
-                <X size={18} />
+                <X size={20} />
               </button>
             </div>
-            <button
-              onClick={() => {
-                setMobileMenu(false);
-                setSearchOpen(true);
-              }}
-              className="muted mt-4 flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm hover:bg-[var(--panel2)]"
-            >
-              <Search size={18} />
-              <span>Buscar em todo o Valurise</span>
-            </button>
-            <p className="muted mt-6 px-2 text-[11px] tracking-widest">
-              NAVEGAÇÃO
-            </p>
-            <nav className="mt-3 space-y-1">
-              {nav.map((n) => (
-                <button
-                  key={n[0]}
-                  onClick={() => {
-                    setView(n[0]);
-                    setMobileMenu(false);
+            {notificationsOpen ? (
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
+                <NotificationCenter
+                  embedded
+                  items={notifications}
+                  invites={inviteInbox.invites}
+                  loadError={inviteInbox.loadError}
+                  realtimeAvailable={inviteInbox.realtimeAvailable}
+                  respondingId={inviteInbox.respondingId}
+                  refreshInvites={inviteInbox.refresh}
+                  respondInvite={inviteInbox.respond}
+                  dismiss={dismissNotification}
+                  dismissAll={dismissAllNotifications}
+                  close={() => setNotificationsOpen(false)}
+                  go={(next) => {
+                    setView(next);
+                    closeMobileMenu();
                   }}
-                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm ${view === n[0] ? "bg-[var(--panel2)] text-[var(--accent)]" : "muted"}`}
-                >
-                  {(() => {
-                    const Icon = n[2];
-                    return <Icon size={18} />;
-                  })()}
-                  <span>{n[1]}</span>
-                </button>
-              ))}
-            </nav>
-            <button
-              onClick={logout}
-              className="muted mt-5 flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm hover:bg-[var(--panel2)]"
-            >
-              <LogOut size={16} />
-              Sair
-            </button>
+                />
+              </div>
+            ) : (
+              <>
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5">
+                  <button
+                    type="button"
+                    aria-label={`Configurações da conta de ${profile.displayName?.trim() || user.name}`}
+                    onClick={() => {
+                      closeMobileMenu();
+                      setProfileOpen(true);
+                    }}
+                    className="flex min-h-[92px] w-full items-center gap-4 rounded-3xl border border-[var(--border)] bg-[var(--panel2)] p-4 text-left transition-colors hover:border-[var(--accent)]/35 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                  >
+                    <span className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--panel)] text-lg font-semibold text-[var(--accent)]">
+                      {profile.photo ? (
+                        <Image unoptimized src={profile.photo} alt="" width={112} height={112} className="h-full w-full object-cover" />
+                      ) : (profile.displayName?.trim() || user.name)[0]}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <b className="block truncate text-base">{profile.displayName?.trim() || user.name}</b>
+                      <span className="muted mt-1 block truncate text-sm">@{user.username}</span>
+                      <span className="muted mt-1 block text-xs">Configurações da conta</span>
+                    </span>
+                    <ChevronRight aria-hidden="true" className="muted shrink-0" size={18} />
+                  </button>
+
+                  <section className="mt-5 rounded-2xl border border-[var(--border)] p-3">
+                    <p className="muted mb-2 px-1 text-[11px] font-semibold uppercase tracking-[0.12em]">Espaço financeiro</p>
+                    <WorkspaceSwitcher
+                      workspace={workspace}
+                      workspaces={workspaces}
+                      fullWidth
+                      onSwitchWorkspace={(workspaceId) => {
+                        closeMobileMenu();
+                        onSwitchWorkspace(workspaceId);
+                      }}
+                      onCreateWorkspace={() => {
+                        closeMobileMenu();
+                        onCreateWorkspace();
+                      }}
+                    />
+                  </section>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeMobileMenu();
+                      setSearchOpen(true);
+                    }}
+                    className="muted mt-4 flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors hover:bg-[var(--panel2)]"
+                  >
+                    <Search size={18} />
+                    Buscar em todo o Valurise
+                  </button>
+
+                  <p className="muted mt-6 px-2 text-[11px] font-semibold tracking-[0.12em]">NAVEGAÇÃO</p>
+                  <nav aria-label="Navegação principal" className="mt-2 space-y-1">
+                    {nav.map((n) => (
+                      <button
+                        key={n[0]}
+                        type="button"
+                        aria-current={view === n[0] ? "page" : undefined}
+                        onClick={() => {
+                          setView(n[0]);
+                          closeMobileMenu();
+                        }}
+                        className={`flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-sm transition-colors ${view === n[0] ? "bg-[var(--accent)]/10 font-medium text-[var(--accent)]" : "muted hover:bg-[var(--panel2)]"}`}
+                      >
+                        {(() => {
+                          const Icon = n[2];
+                          return <Icon size={18} />;
+                        })()}
+                        <span>{n[1]}</span>
+                      </button>
+                    ))}
+                  </nav>
+                </div>
+              </>
+            )}
+            <div className="shrink-0 border-t border-[var(--border)] px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+              <button
+                type="button"
+                aria-label={`Notificações${notifications.length + inviteInbox.invites.length ? ` (${notifications.length + inviteInbox.invites.length})` : ""}`}
+                aria-expanded={notificationsOpen}
+                onClick={() => setNotificationsOpen((open) => !open)}
+                className={`flex min-h-12 w-full items-center gap-3 rounded-2xl px-3 text-left transition-colors ${notificationsOpen ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "hover:bg-[var(--panel2)]"}`}
+              >
+                <span className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[var(--panel2)] text-[var(--accent)]">
+                  <Bell size={19} />
+                  {notifications.length + inviteInbox.invites.length > 0 && <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--accent)] px-1 text-[9px] font-bold text-[var(--accentfg)]">{notifications.length + inviteInbox.invites.length > 9 ? "9+" : notifications.length + inviteInbox.invites.length}</span>}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <b className="block text-sm">Notificações</b>
+                  <span className="muted mt-0.5 block truncate text-xs">Acompanhe atualizações do seu espaço</span>
+                </span>
+                <ChevronRight aria-hidden="true" className="muted" size={17} />
+              </button>
+              <div className="mt-2 rounded-2xl px-3 py-2">
+                <div className="flex items-center gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[var(--panel2)] text-[var(--accent)]"><AppearanceIcon size={18} /></span>
+                  <div className="min-w-0 flex-1">
+                    <b className="block text-sm">Aparência</b>
+                    <p className="muted mt-0.5 text-xs">Tema da sua experiência</p>
+                  </div>
+                </div>
+                <div className="mt-2 pl-[52px]"><Theme value={theme} change={setT} /></div>
+              </div>
+              <button
+                type="button"
+                onClick={logout}
+                className="mt-1 flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-medium text-[var(--danger)] transition-colors hover:bg-[var(--danger)]/10"
+              >
+                <LogOut size={18} />
+                <span>Sair do sistema</span>
+              </button>
+            </div>
           </motion.aside>
         </motion.div>
       )}
@@ -1272,10 +1417,10 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
           <div className="shrink-0 lg:hidden">
             <Brand compactOnMobile className="shrink-0" />
           </div>
-          <div className="flex min-w-0 items-center gap-1">
+          <div className="hidden min-w-0 items-center gap-1 lg:flex">
             <WorkspaceSwitcher workspace={workspace} workspaces={workspaces} onSwitchWorkspace={onSwitchWorkspace} onCreateWorkspace={onCreateWorkspace} />
           </div>
-          <div className="flex shrink-0 items-center gap-0.5 sm:gap-2">
+          <div className="hidden shrink-0 items-center gap-0.5 sm:gap-2 lg:flex">
             <button
               aria-label="Buscar em todo o Valurise"
               onClick={() => setSearchOpen(true)}
@@ -1313,14 +1458,20 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
                 user.name[0]
               )}
             </button>
-            <button
-              aria-label="Abrir menu"
-              onClick={() => setMobileMenu(true)}
-              className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] lg:hidden"
-            >
-              <Menu size={18} />
-            </button>
           </div>
+          <button
+            ref={mobileMenuTriggerRef}
+            aria-label="Abrir menu"
+            aria-haspopup="dialog"
+            aria-expanded={mobileMenu}
+            onClick={() => {
+              setNotificationsOpen(false);
+              setMobileMenu(true);
+            }}
+            className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] transition-colors hover:bg-[var(--panel)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] lg:hidden"
+          >
+            <Menu size={19} />
+          </button>
         </header>
         {stateConflict && <section role="alert" className="mx-4 mt-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 lg:mx-10"><b className="text-sm">Seus dados foram alterados em outro dispositivo</b><p className="muted mt-1 text-xs leading-5">A sincronização foi pausada para evitar sobrescrever uma versão. Exporte a cópia local ou recarregue para continuar com a versão mais recente da conta.</p><div className="mt-3 flex flex-wrap gap-2"><button onClick={() => { const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), data: dataRef.current, transactions: txRef.current, profile: profileRef.current }, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `valurise-copia-local-${format(new Date(), "yyyy-MM-dd")}.json`; link.click(); URL.revokeObjectURL(url); }} className="min-h-11 rounded-xl bg-[var(--panel2)] px-3 text-xs">Exportar cópia local</button><button onClick={() => window.location.reload()} className="min-h-11 rounded-xl bg-[var(--panel2)] px-3 text-xs">Recarregar versão sincronizada</button></div></section>}
         {profileOpen && (
@@ -1342,7 +1493,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
             toast={setToast}
           />
         )}
-        {notificationsOpen && (
+        {notificationsOpen && !mobileMenu && (
           <NotificationCenter
             items={notifications}
             invites={inviteInbox.invites}
@@ -1587,6 +1738,7 @@ function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNot
   return items.slice(0, 8);
 }
 function NotificationCenter({
+  embedded = false,
   items,
   invites,
   loadError,
@@ -1599,6 +1751,7 @@ function NotificationCenter({
   close,
   go,
 }: {
+  embedded?: boolean;
   items: AppNotification[];
   invites: SharedGoalInvite[];
   loadError: boolean;
@@ -1614,7 +1767,9 @@ function NotificationCenter({
   return (
     <motion.section
       aria-label="Notificações financeiras"
-      className="panel fixed left-4 right-4 top-[4.5rem] z-40 mx-auto max-h-[min(34rem,calc(100dvh-6rem))] w-auto max-w-md overflow-y-auto rounded-2xl p-3 shadow-2xl sm:left-auto sm:right-6"
+      className={`${embedded
+        ? "panel relative mx-auto max-h-[calc(100dvh-11rem)] w-full overflow-y-auto rounded-2xl p-3 shadow-lg"
+        : "panel fixed left-4 right-4 top-[4.5rem] z-40 mx-auto max-h-[min(34rem,calc(100dvh-6rem))] w-auto max-w-md overflow-y-auto rounded-2xl p-3 shadow-2xl sm:left-auto sm:right-6"}`}
       initial={{ opacity: 0, y: -4, scale: 0.98 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: motionTokens.duration.fast, ease: motionTokens.ease.enter }}
@@ -1789,11 +1944,14 @@ function Nav({ n, active, go }: any) {
 }
 function Theme({ value, change }: any) {
   return (
-    <div className="flex rounded-full bg-[var(--panel2)] p-1 text-[10px]">
+    <div aria-label="Tema da Valurise" className="flex shrink-0 rounded-full bg-[var(--panel2)] p-1 text-[10px]">
       {["light", "dark", "system"].map((x) => (
         <button
+          type="button"
+          aria-pressed={value === x}
+          aria-label={`Tema ${x === "light" ? "claro" : x === "dark" ? "escuro" : "do sistema"}`}
           onClick={() => change(x)}
-          className={`rounded-full px-2 py-1 ${value === x ? "bg-[var(--panel)]" : ""}`}
+          className={`min-h-8 rounded-full px-2 transition-colors ${value === x ? "bg-[var(--panel)] text-[var(--fg)]" : "muted"}`}
           key={x}
         >
           {x === "light" ? "Claro" : x === "dark" ? "Escuro" : "Sistema"}

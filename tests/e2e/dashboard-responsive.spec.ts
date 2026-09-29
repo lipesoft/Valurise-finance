@@ -326,8 +326,8 @@ test("Configurações mantêm as explicações longas acessíveis pelo botão de
   await page.setViewportSize({ width: 375, height: 844 });
   await page.goto("/");
   await page.getByRole("button", { name: "Abrir menu" }).click();
-  const menu = page.getByRole("dialog", { name: "Menu principal" });
-  await menu.getByRole("button", { name: "Configurações" }).click();
+  const menu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
+  await menu.getByRole("button", { name: "Configurações", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Configurações" })).toBeVisible();
   await expect(page.getByText("Exporte uma cópia dos dados financeiros ou restaure um arquivo JSON.")).toHaveCount(0);
   await expect(page.getByText("A chave é enviada ao servidor e criptografada antes de ser salva.")).toHaveCount(0);
@@ -489,7 +489,7 @@ test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px
   await expect.poll(() => page.locator("header").evaluate((header) => Math.abs(header.getBoundingClientRect().top))).toBeLessThanOrEqual(1);
 });
 
-test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", async ({ page }) => {
+test("cabeçalho simplifica o mobile e mantém a troca de espaço acessível", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 15_000 });
@@ -497,45 +497,35 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
   const workspaceSwitcher = page.getByRole("button", { name: "Alternar espaço financeiro" });
   const header = workspaceSwitcher.locator("xpath=ancestor::header");
   const searchButton = page.getByRole("button", { name: "Buscar em todo o Valurise" });
+  const menuButton = page.getByRole("button", { name: "Abrir menu" });
 
   for (const width of [320, 360, 375, 390, 430, 768, 1023, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-    const headerBounds = await header.boundingBox();
-    const switcherBounds = await workspaceSwitcher.boundingBox();
-    expect(headerBounds).not.toBeNull();
-    expect(switcherBounds).not.toBeNull();
-    expect(switcherBounds!.width).toBeGreaterThanOrEqual(70);
-    expect(switcherBounds!.width).toBeLessThanOrEqual(160);
-
-    const controls = await header.locator("button").evaluateAll((elements) => elements
-      .map((element) => {
-        const rect = element.getBoundingClientRect();
-        const style = getComputedStyle(element);
-        return { label: element.getAttribute("aria-label") || element.tagName, x: rect.x, right: rect.right, width: rect.width, height: rect.height, visible: style.display !== "none" && style.visibility !== "hidden" };
-      })
-      .filter((control) => control.visible && control.width > 0));
-
-    for (const control of controls) {
-      expect(control.x).toBeGreaterThanOrEqual(headerBounds!.x - 1);
-      expect(control.right).toBeLessThanOrEqual(headerBounds!.x + headerBounds!.width + 1);
-      if (control.label !== "Alternar espaço financeiro") expect(control.width).toBeGreaterThanOrEqual(44);
-      if (control.label !== "Alternar espaço financeiro") expect(control.height).toBeGreaterThanOrEqual(44);
-    }
-    for (let index = 1; index < controls.length; index += 1) {
-      expect(controls[index - 1].right).toBeLessThanOrEqual(controls[index].x + 1);
-    }
-
     if (width < 1024) {
+      await expect(workspaceSwitcher).toBeHidden();
       await expect(searchButton).toBeHidden();
+      await expect(page.getByRole("button", { name: /Abrir notificações/ })).toBeHidden();
+      await expect(page.getByRole("button", { name: "Abrir perfil" })).toBeHidden();
+      await expect(menuButton).toBeVisible();
     } else {
+      await expect(workspaceSwitcher).toBeVisible();
       await expect(searchButton).toBeVisible();
       await expect(searchButton).toBeInViewport();
+      await expect(page.getByRole("button", { name: /Abrir notificações/ })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Abrir perfil" })).toBeVisible();
+      await expect(menuButton).toBeHidden();
+      const headerBounds = await header.boundingBox();
+      const switcherBounds = await workspaceSwitcher.boundingBox();
+      expect(headerBounds).not.toBeNull();
+      expect(switcherBounds).not.toBeNull();
+      expect(switcherBounds!.width).toBeGreaterThanOrEqual(70);
+      expect(switcherBounds!.width).toBeLessThanOrEqual(240);
     }
   }
 
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1280, height: 844 });
   await workspaceSwitcher.focus();
   await page.keyboard.press("ArrowDown");
   const workspaceMenu = page.getByRole("menu", { name: "Espaços financeiros" });
@@ -543,15 +533,64 @@ test("cabeçalho mantém seletor e ações utilizáveis em telas estreitas", asy
   const workspaceMenuBounds = await workspaceMenu.boundingBox();
   expect(workspaceMenuBounds).not.toBeNull();
   expect(workspaceMenuBounds!.x).toBeGreaterThanOrEqual(0);
-  expect(workspaceMenuBounds!.x + workspaceMenuBounds!.width).toBeLessThanOrEqual(390);
+  expect(workspaceMenuBounds!.x + workspaceMenuBounds!.width).toBeLessThanOrEqual(1280);
   await page.keyboard.press("Escape");
   await expect(workspaceMenu).toBeHidden();
   await expect(workspaceSwitcher).toBeFocused();
 
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Abrir menu" }).click();
-  const menu = page.getByRole("dialog", { name: "Menu principal" });
+  const menu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
+  await expect(menu.getByRole("button", { name: /Configurações da conta de Pessoa de teste/ })).toBeVisible();
+  await expect(menu.getByText("Espaço financeiro")).toBeVisible();
+  await expect(menu.getByRole("button", { name: /^Notificações/ })).toBeVisible();
+  await expect(menu.getByText("Aparência")).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 780 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect.poll(() => menu.locator("aside").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(320);
+  const mobileWorkspaceSwitcher = menu.getByRole("button", { name: "Alternar espaço financeiro" });
+  await mobileWorkspaceSwitcher.focus();
+  await page.keyboard.press("ArrowDown");
+  const mobileWorkspaceMenu = menu.getByRole("menu", { name: "Espaços financeiros" });
+  await expect(mobileWorkspaceMenu).toBeVisible();
+  const mobileWorkspaceMenuBounds = await mobileWorkspaceMenu.boundingBox();
+  expect(mobileWorkspaceMenuBounds).not.toBeNull();
+  expect(mobileWorkspaceMenuBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(mobileWorkspaceMenuBounds!.x + mobileWorkspaceMenuBounds!.width).toBeLessThanOrEqual(320);
+  await page.keyboard.press("Escape");
+  await expect(mobileWorkspaceMenu).toBeHidden();
+  await expect(mobileWorkspaceSwitcher).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
   await menu.getByRole("button", { name: "Buscar em todo o Valurise" }).click();
   await expect(page.getByPlaceholder("Ex.: gasolina, reserva, Nubank")).toBeVisible();
+});
+
+test("menu lateral mobile abre notificações no próprio painel e controla aparência", async ({ page }) => {
+  await installMockSession(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Abrir menu" }).click();
+  const menu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
+  await expect.poll(() => menu.locator("aside").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(390);
+  await menu.getByRole("button", { name: /^Notificações/ }).click();
+  await expect(menu.getByRole("region", { name: "Notificações financeiras" })).toBeVisible();
+  await expect(menu.getByText("Alimentação chegou a 80%")).toBeVisible();
+  await menu.getByRole("button", { name: "Fechar notificações" }).click();
+  await expect(menu.getByRole("region", { name: "Notificações financeiras" })).toHaveCount(0);
+
+  const lightTheme = menu.getByRole("button", { name: "Tema claro" });
+  await lightTheme.click();
+  await expect(lightTheme).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("main.light")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(page.getByRole("button", { name: "Abrir menu" })).toBeFocused();
+
+  await page.getByRole("button", { name: "Abrir menu" }).click();
+  const accountMenu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
+  await accountMenu.getByRole("button", { name: /Configurações da conta de Pessoa de teste/ }).click();
+  await expect(page.getByLabel("Nome de exibição")).toBeVisible();
 });
 
 test("chat financeiro ocupa a tela inteira e mantém os atalhos responsivos", async ({ page }) => {
@@ -857,7 +896,7 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
       for (const view of ["Dashboard", "Extrato", "Contas", "Cartões", "Investimentos", "Orçamentos", "Metas", "Receitas", "Planejamento", "Relatórios", "Categorias", "Configurações"]) {
       if (mobile) {
         await page.getByRole("button", { name: "Abrir menu" }).click();
-        const menu = page.getByRole("dialog", { name: "Menu principal" });
+        const menu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
         await menu.getByRole("button", { name: view, exact: true }).click();
         await expect(menu).toBeHidden();
       } else {
