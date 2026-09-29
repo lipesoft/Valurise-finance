@@ -85,6 +85,15 @@ import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceSettings } from "@/components/business-finance";
+import {
+  firstDayOfMonthValue,
+  getReceivableOccurrences,
+  lastBusinessDayOfMonthValue,
+  outstandingReceivablesCents,
+  toIncomeTransaction,
+  type PlannedReceivable,
+  type ReceivableOccurrence,
+} from "@/lib/receivables";
 import { HelpHint } from "@/components/help-hint";
 import { WorkspaceDashboardHeader } from "@/components/dashboard/workspace-dashboard-header";
 import { WorkspaceSwitcher } from "@/components/dashboard/workspace-switcher";
@@ -103,12 +112,13 @@ type View =
   | "budgets"
   | "goals"
   | "categories"
+  | "receivables"
   | "planning"
   | "reports"
   | "settings";
 type AccountStatus = "pending" | "active" | "disabled" | "trashed";
 type User = { username: string; name: string; status?: AccountStatus; role?: "user" | "master" };
-type ProfilePreference = { photo?: string; publicId: string };
+type ProfilePreference = { photo?: string; publicId: string; displayName?: string };
 type AppNotification = {
   id: string;
   title: string;
@@ -174,6 +184,7 @@ type Data = {
     paidMonth?: string;
     paidMonths?: string[];
   }[];
+  plannedReceivables?: PlannedReceivable[];
   activity?: { id: string; text: string; date: string }[];
   monthlyReview?: Record<string, string[]>;
   dashboardWidgets?: { id: string; visible: boolean }[];
@@ -861,6 +872,30 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
     localStorage.setItem(key + ":tx", JSON.stringify(next));
     persistState({ data: reconciledData, transactions: next, profile: profileRef.current });
   };
+  const markReceivableReceived = (occurrence: ReceivableOccurrence) => {
+    const plan = dataRef.current.plannedReceivables?.find((item) => item.id === occurrence.id);
+    if (!plan) {
+      setToast("Esta receita planejada foi removida. Atualize a tela antes de registrar.");
+      return;
+    }
+    const currentOccurrence = getReceivableOccurrences(
+      [plan],
+      occurrence.period,
+      txRef.current,
+    )[0];
+    if (!currentOccurrence || currentOccurrence.status === "received") {
+      setToast("Este recebimento já foi registrado.");
+      return;
+    }
+    const account = plan.account || financialAccountOptions(dataRef.current)[0]?.value || "Carteira";
+    const transaction = toIncomeTransaction(currentOccurrence, account);
+    if (txRef.current.some((item) => item.plannedIncomeOccurrenceId === currentOccurrence.occurrenceId)) {
+      setToast("Este recebimento já foi registrado.");
+      return;
+    }
+    saveTx([...txRef.current, transaction]);
+    setToast(`Recebimento de “${plan.name}” registrado no extrato.`);
+  };
   const restoreFinancialBackup = (nextData: Data, nextTransactions: FinanceTransaction[]) => {
     dataRef.current = nextData;
     txRef.current = nextTransactions;
@@ -1353,6 +1388,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
             setMonth={setMonth}
             go={setView}
             sharedGoals={inviteInbox.sharedGoals}
+            displayName={profile.displayName?.trim() || user.name}
           />
         )}{" "}
         {view === "statement" && (
@@ -1376,8 +1412,11 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onRegisterBeforeW
         {view === "categories" && (
           <Categories data={data} tx={tx} month={month} save={saveData} saveTx={saveTx} toast={setToast} />
         )}{" "}
+        {view === "receivables" && (
+          <Receivables data={data} tx={tx} month={month} setMonth={setMonth} save={saveData} toast={setToast} onReceive={markReceivableReceived} />
+        )}
         {view === "planning" && (
-          <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} />
+          <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} />
         )}
         {view === "reports" && <Reports tx={tx} data={data} month={month} />}
         {view === "settings" && (
@@ -1465,10 +1504,11 @@ const nav: any = [
   ["investments", "Investimentos", BarChart3],
   ["budgets", "Orçamentos", PiggyBank],
   ["goals", "Metas", Target],
+  ["receivables", "Receitas", ArrowDownLeft],
   ["planning", "Planejamento", CalendarDays],
   ["reports", "Relatórios", ChartNoAxesCombined],
   ["categories", "Categorias", Tags],
-  ["settings", "Ajustes", Menu],
+  ["settings", "Configurações", Menu],
 ];
 function getFinancialNotifications(data: Data, tx: FinanceTransaction[]): AppNotification[] {
   const today = new Date();
@@ -1783,6 +1823,13 @@ function ProfileSheet({
   toast,
 }: any) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [displayName, setDisplayName] = useState(profile.displayName || user.name);
+  const saveDisplayName = () => {
+    const clean = displayName.trim().slice(0, 60);
+    save({ ...profile, displayName: clean || undefined });
+    setDisplayName(clean || user.name);
+    toast(clean ? "Nome de exibição atualizado." : "O nome de exibição voltou ao nome da conta.");
+  };
   return (
     <Sheet close={close}>
       <section className="space-y-5">
@@ -1813,11 +1860,11 @@ function ProfileSheet({
                 className="h-full w-full object-cover"
               />
             ) : (
-              user.name[0]
+              displayName[0] || user.name[0]
             )}
           </label>
           <div>
-            <b className="block text-lg">{user.name}</b>
+            <b className="block text-lg">{profile.displayName?.trim() || user.name}</b>
             <p className="muted text-sm">@{user.username}</p>
             <label className="mt-1 inline-block cursor-pointer text-xs text-[var(--accent)]">
               Alterar foto
@@ -1842,6 +1889,14 @@ function ProfileSheet({
             </label>
           </div>
         </div>
+        <section className="rounded-2xl bg-[var(--panel2)] p-4">
+          <label htmlFor="profile-display-name" className="block text-sm font-medium">Nome de exibição</label>
+          <p className="muted mt-1 text-xs">Você pode alterar como seu nome aparece no Dashboard. Isso não altera seus dados de acesso.</p>
+          <div className="mt-3 flex gap-2">
+            <input id="profile-display-name" className="field min-w-0 flex-1" value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={60} />
+            <button type="button" onClick={saveDisplayName} className="primary min-h-11 shrink-0 rounded-xl px-3 text-xs font-semibold">Salvar</button>
+          </div>
+        </section>
         <section className="rounded-2xl bg-[var(--panel2)] p-4">
           <div className="flex items-center justify-between">
             <div>
@@ -1932,6 +1987,7 @@ function ProfileSheet({
 }
 function Dashboard({
   user,
+  displayName,
   workspace,
   workspaceId,
   sum,
@@ -1967,26 +2023,30 @@ function Dashboard({
     data.recurringBills || [],
     month,
   );
+  const scheduledReceivablesCents = outstandingReceivablesCents(
+    getReceivableOccurrences(data.plannedReceivables || [], format(month, "yyyy-MM"), allTx),
+  );
   return (
     <StaggerContainer className="mx-auto max-w-5xl px-4 pt-5 lg:px-10">
-      <WorkspaceDashboardHeader workspace={workspace} userName={user.name} month={month} setMonth={setMonth} />
+      <WorkspaceDashboardHeader workspace={workspace} userName={displayName || user.name} month={month} setMonth={setMonth} />
       {isBusinessWorkspace ? (
-        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} go={go} />
+        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} scheduledReceivablesCents={scheduledReceivablesCents} go={go} />
       ) : (
         <>
       <StaggerItem>
       <AnimatedCard className="panel mt-5 rounded-3xl p-6">
-        <p className="muted text-sm">Patrimônio total</p>
+        <p className="muted text-sm">Total</p>
         <p className="mt-2 text-4xl font-semibold">
           <AnimatedNumber cents={total.balanceCents} />
         </p>
-        <div className="mt-7 grid grid-cols-2 gap-x-5 gap-y-4 border-t border-[var(--border)] pt-4 sm:grid-cols-4 sm:gap-3">
+        <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-[var(--border)] pt-4 sm:grid-cols-5 sm:gap-3">
           <K l="Entrou" v={sum.incomeCents} />
           <K l="Consumo" v={sum.expenseCents} />
           <K l="Aportes" v={sum.investmentCents} />
           <K l="Resultado" v={sum.incomeCents - sum.expenseCents} />
+          <K l="A receber" v={scheduledReceivablesCents} />
         </div>
-        <div className="mt-5 grid gap-3 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
+        <div className="mt-4 grid gap-2 border-t border-[var(--border)] pt-3 sm:grid-cols-3">
           <FinancialMetric label="Saldo disponível" value={accountBalanceCents} />
           <FinancialMetric label="Compromissos do mês" value={availability.committedCents} negative />
           <FinancialMetric label="Disponível para gastar" value={availability.freeToSpendCents} accent help="Saldo disponível menos contas recorrentes ainda pendentes neste mês." />
@@ -2022,9 +2082,9 @@ function Dashboard({
 }
 function FinancialMetric({ label, value, negative, accent, help }: { label: string; value: number; negative?: boolean; accent?: boolean; help?: string }) {
   return (
-    <div className="min-w-0 rounded-2xl bg-[var(--panel2)] px-4 py-3" title={help}>
-      <p className="muted text-[11px]">{label}{help ? " · ⓘ" : ""}</p>
-      <b className={`mt-1 block truncate text-sm ${negative ? "text-[var(--danger)]" : accent ? "text-[var(--accent)]" : ""}`}>
+    <div className="min-w-0 rounded-xl bg-[var(--panel2)] px-3 py-2.5" title={help}>
+      <p className="muted text-[10px]">{label}{help ? " · ⓘ" : ""}</p>
+      <b className={`mt-0.5 block truncate text-[13px] ${negative ? "text-[var(--danger)]" : accent ? "text-[var(--accent)]" : ""}`}>
         {negative ? "−" : ""}{formatBRL(Math.abs(value))}
       </b>
     </div>
@@ -2089,7 +2149,7 @@ function DashboardWidgets({
     ) : id === "investment" ? (
       <InvestmentPreview key={id} data={data} go={go} />
     ) : id === "calendar" ? (
-      <CalendarDashboardPreview key={id} data={data} go={go} />
+      <CalendarDashboardPreview key={id} data={data} tx={allTx} go={go} />
     ) : id === "accounts" ? (
       <AccountsDashboardPreview key={id} data={data} allTx={allTx} go={go} />
     ) : (
@@ -2097,11 +2157,11 @@ function DashboardWidgets({
     );
   return (
     <section className="mt-4">
-      <StaggerContainer className="grid gap-4 md:grid-cols-2">
+      <StaggerContainer className="columns-1 md:columns-2 md:gap-4">
         {widgets
           .filter((widget) => widget.visible)
           .map((widget) => (
-            <StaggerItem key={widget.id} layout>
+            <StaggerItem key={widget.id} className="mb-4 break-inside-avoid">
               {render(widget.id)}
             </StaggerItem>
           ))}
@@ -2424,18 +2484,32 @@ function RecentStatementPreview({ tx, go, categoryIcons }: { tx: FinanceTransact
     </section>
   );
 }
-function CalendarDashboardPreview({ data, go }: any) {
+function CalendarDashboardPreview({ data, tx = [], go }: any) {
   const today = new Date();
   const key = format(today, "yyyy-MM");
   const bills = (data.recurringBills || []).filter((bill: any) => bill.active);
   const nextSevenDays = Array.from({ length: 7 }, (_, offset) => new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset));
+  const receivablesByMonth = new Map<string, ReceivableOccurrence[]>();
+  for (const day of nextSevenDays) {
+    const monthKey = format(day, "yyyy-MM");
+    if (!receivablesByMonth.has(monthKey)) {
+      receivablesByMonth.set(monthKey, getReceivableOccurrences(data.plannedReceivables || [], monthKey, tx, today));
+    }
+  }
+  const receiptsForDay = (day: Date) => (receivablesByMonth.get(format(day, "yyyy-MM")) || [])
+    .filter((item) => item.status !== "received" && item.dueDate === format(day, "yyyy-MM-dd"));
   const upcoming = nextSevenDays.flatMap((day) => {
     const monthKey = format(day, "yyyy-MM");
-    return bills
+    const billEvents = bills
       .filter((bill: any) => isRecurringBillScheduledInMonth(bill, monthKey) && !isRecurringBillPaidInMonth(bill, monthKey) && recurringBillDueDay(bill, monthKey) === day.getDate())
-      .map((bill: any) => ({ bill, day }));
+      .map((bill: any) => ({ id: bill.id, name: bill.name, amountCents: bill.amountCents, day, kind: "bill" }));
+    const receiptEvents = receiptsForDay(day)
+      .map((item) => ({ id: item.occurrenceId, name: item.name, amountCents: item.amountCents, day, kind: "receipt" }));
+    return [...billEvents, ...receiptEvents];
   }).slice(0, 3);
-  const late = bills.filter((bill: any) => isRecurringBillScheduledInMonth(bill, key) && !isRecurringBillPaidInMonth(bill, key) && recurringBillDueDay(bill, key) < today.getDate()).length;
+  const lateBills = bills.filter((bill: any) => isRecurringBillScheduledInMonth(bill, key) && !isRecurringBillPaidInMonth(bill, key) && recurringBillDueDay(bill, key) < today.getDate()).length;
+  const lateReceivables = getReceivableOccurrences(data.plannedReceivables || [], key, tx, today).filter((item) => item.status === "overdue").length;
+  const late = lateBills + lateReceivables;
   return (
     <section className="panel rounded-2xl p-5">
       <div className="flex items-center justify-between">
@@ -2468,11 +2542,12 @@ function CalendarDashboardPreview({ data, go }: any) {
               !isRecurringBillPaidInMonth(bill, dayMonth) &&
               recurringBillDueDay(bill, dayMonth) === day.getDate(),
           );
+          const dayReceivables = receiptsForDay(day);
           const active = day.toDateString() === today.toDateString();
           return (
             <div
               key={day.toISOString()}
-              className={`min-h-14 rounded-xl p-1 text-center ${dayBills.length ? "bg-[var(--panel2)]" : ""}`}
+              className={`min-h-14 rounded-xl p-1 text-center ${dayBills.length || dayReceivables.length ? "bg-[var(--panel2)]" : ""}`}
             >
               <span className="muted block text-[9px] uppercase">
                 {format(day, "EEEEE", { locale: ptBR })}
@@ -2482,30 +2557,28 @@ function CalendarDashboardPreview({ data, go }: any) {
               >
                 {format(day, "d")}
               </b>
-              {dayBills.length ? (
-                <i className="mx-auto mt-1 block h-1.5 w-1.5 rounded-full bg-amber-400" />
-              ) : null}
+              {(dayBills.length > 0 || dayReceivables.length > 0) && <span aria-hidden="true" className="mx-auto mt-1 flex h-1.5 items-center gap-0.5">{dayBills.length > 0 && <i className="block h-1.5 w-1.5 rounded-full bg-amber-400" />}{dayReceivables.length > 0 && <i className="block h-1.5 w-1.5 rounded-full bg-sky-300" />}</span>}
             </div>
           );
         })}
       </div>
       {upcoming.length ? (
         <div className="mt-4 space-y-2">
-          {upcoming.slice(0, 2).map(({ bill, day }: any) => (
+          {upcoming.slice(0, 2).map(({ id, name, amountCents, day, kind }: any) => (
             <div
-              key={`${bill.id}-${day.toISOString()}`}
+              key={`${id}-${day.toISOString()}`}
               className="flex items-center justify-between text-xs"
             >
               <span className="truncate">
-                <b>{bill.name}</b>
-                <small className="muted"> · {format(day, "dd/MM")}</small>
+                <b>{name}</b>
+                <small className="muted"> · {format(day, "dd/MM")} · {kind === "receipt" ? "a receber" : "a pagar"}</small>
               </span>
-              <b>{formatBRL(bill.amountCents)}</b>
+              <b>{formatBRL(amountCents)}</b>
             </div>
           ))}
         </div>
       ) : (
-        <Empty text="Cadastre contas recorrentes para acompanhar seus vencimentos." />
+        <Empty text="Cadastre contas a pagar ou receitas a receber para acompanhar o calendário." />
       )}
     </section>
   );
@@ -3806,7 +3879,110 @@ function isCommitmentLateInMonth(bill: any, monthKey: string, today: Date) {
   return monthKey < currentMonth || (monthKey === currentMonth && dueDay < today.getDate());
 }
 
-function Planning({ data, tx, month, save, toast }: any) {
+function parseReceivableAmountCents(value: string) {
+  const normalized = value.includes(",")
+    ? value.replace(/\./g, "").replace(",", ".")
+    : value.trim();
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const cents = Math.round(amount * 100);
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+}
+
+function Receivables({ data, tx, month, setMonth, save, toast, onReceive }: any) {
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<PlannedReceivable | null>(null);
+  const [deleting, setDeleting] = useState<PlannedReceivable | null>(null);
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [dueDate, setDueDate] = useState(format(month, "yyyy-MM-01"));
+  const [frequency, setFrequency] = useState<PlannedReceivable["frequency"]>("once");
+  const [dueRule, setDueRule] = useState<NonNullable<PlannedReceivable["dueRule"]>>("day");
+  const [category, setCategory] = useState("");
+  const [account, setAccount] = useState("");
+  const [error, setError] = useState("");
+  const plans: PlannedReceivable[] = data.plannedReceivables || [];
+  const period = format(month, "yyyy-MM");
+  const occurrences = getReceivableOccurrences(plans, period, tx);
+  const pending = occurrences.filter((item) => item.status !== "received");
+  const received = occurrences.filter((item) => item.status === "received");
+  const accounts = financialAccountOptions(data);
+
+  const openNew = () => {
+    setEditing(null);
+    setName(""); setAmount(""); setDueDate(firstDayOfMonthValue(month));
+    setFrequency("once"); setDueRule("day"); setCategory("");
+    setAccount(accounts[0]?.value || ""); setError(""); setAdding(true);
+  };
+  const startEdit = (item: PlannedReceivable) => {
+    setEditing(item); setName(item.name); setAmount(centsInput(item.amountCents));
+    setDueDate(item.dueDate); setFrequency(item.frequency); setDueRule(item.dueRule || "day");
+    setCategory(item.category || ""); setAccount(item.account || ""); setError("");
+  };
+  const closeEditor = () => { setAdding(false); setEditing(null); setError(""); };
+  const persist = () => {
+    const amountCents = parseReceivableAmountCents(amount);
+    if (!name.trim()) return setError("Informe a origem ou descrição da receita.");
+    if (!amountCents) return setError("Informe um valor maior que zero.");
+    const parsedDueDate = new Date(`${dueDate}T12:00:00`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || Number.isNaN(parsedDueDate.getTime()) || format(parsedDueDate, "yyyy-MM-dd") !== dueDate) return setError("Escolha uma data válida.");
+    const item: PlannedReceivable = {
+      id: editing?.id || crypto.randomUUID(),
+      name: name.trim(),
+      amountCents,
+      dueDate,
+      frequency,
+      dueRule,
+      ...(category.trim() ? { category: category.trim() } : {}),
+      ...(account ? { account } : {}),
+    };
+    save({
+      ...data,
+      plannedReceivables: editing
+        ? plans.map((current) => current.id === editing.id ? item : current)
+        : [...plans, item],
+    });
+    toast(editing ? "Receita planejada atualizada." : frequency === "monthly" ? "Receita mensal adicionada ao calendário." : "Receita adicionada ao calendário.");
+    closeEditor();
+  };
+
+  return <section className="mx-auto max-w-3xl px-4 pt-8">
+    <SectionTitle title="Receitas" help="Planeje valores que espera receber. A previsão não altera o saldo; ao confirmar o recebimento, a Valurise cria o lançamento no extrato." onAdd={openNew} addLabel="Adicionar receita" />
+    <div className="panel mt-5 flex items-center justify-between gap-3 rounded-2xl p-3">
+      <button aria-label="Mês anterior" onClick={() => setMonth(startOfMonth(addMonths(month, -1)))} className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--panel2)]"><ChevronLeft size={18} /></button>
+      <b className="text-sm capitalize">{format(month, "MMMM yyyy", { locale: ptBR })}</b>
+      <button aria-label="Próximo mês" onClick={() => setMonth(startOfMonth(addMonths(month, 1)))} className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--panel2)]"><ChevronRight size={18} /></button>
+    </div>
+    <div className="mt-3 grid grid-cols-2 gap-3">
+      <article className="panel rounded-2xl p-4"><p className="muted text-xs">A receber</p><b className="mt-1 block text-xl">{formatBRL(outstandingReceivablesCents(occurrences))}</b><small className="muted">{pending.length} prevista{pending.length === 1 ? "" : "s"}</small></article>
+      <article className="panel rounded-2xl p-4"><p className="muted text-xs">Recebido</p><b className="mt-1 block text-xl text-[var(--accent)]">{formatBRL(received.reduce((sum, item) => sum + item.amountCents, 0))}</b><small className="muted">{received.length} confirmada{received.length === 1 ? "" : "s"}</small></article>
+    </div>
+    <section className="panel mt-4 rounded-2xl p-5">
+      <div className="flex items-center justify-between gap-3"><div><b>Receitas do período</b><p className="muted mt-1 text-xs">Receitas pessoais ou da empresa, conforme o espaço ativo.</p></div><span className="muted text-xs">{format(month, "MM/yyyy")}</span></div>
+      {occurrences.length ? <div className="mt-3 divide-y divide-[var(--border)]">
+        {occurrences.map((item) => <div key={item.occurrenceId} className="flex items-center justify-between gap-3 py-3">
+          <div className="min-w-0"><b className="block truncate text-sm">{item.name}</b><small className="muted block truncate">{format(new Date(`${item.dueDate}T12:00:00`), "dd/MM/yyyy")} · {item.frequency === "monthly" ? item.dueRule === "last_business_day" ? "todo último dia útil" : "mensal" : "uma vez"}{item.category ? ` · ${item.category}` : ""}</small><span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] ${item.status === "received" ? "bg-[var(--accent)]/10 text-[var(--accent)]" : item.status === "overdue" ? "bg-[var(--danger)]/10 text-[var(--danger)]" : "bg-amber-400/10 text-amber-300"}`}>{item.status === "received" ? "Recebida" : item.status === "overdue" ? "Atrasada" : "Pendente"}</span></div>
+          <div className="shrink-0 text-right"><b className="block text-sm">{formatBRL(item.amountCents)}</b>{item.status !== "received" && <button onClick={() => onReceive(item)} className="mt-1 min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)]">Marcar recebida</button>}<ItemActions className="mt-1 justify-end" label={`a receita ${item.name}`} onEdit={() => startEdit(item)} onDelete={() => setDeleting(item)} /></div>
+        </div>)}
+      </div> : <Empty text="Nenhuma receita planejada neste mês. Cadastre salário, mensalidades, vendas, serviços ou outros valores a receber." />}
+    </section>
+    {(adding || editing) && <Sheet close={closeEditor}><section className="space-y-3">
+      <b className="text-lg">{editing ? "Editar receita planejada" : "Nova receita planejada"}</b>
+      <label className="block space-y-1.5 text-sm"><span>Origem da receita</span><input autoFocus className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Salário, mensalidade, venda" maxLength={120} /></label>
+      <label className="block space-y-1.5 text-sm"><span>Valor previsto</span><input className="field" value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="Ex.: 1.234,56" /></label>
+      <label className="block space-y-1.5 text-sm"><span>Data prevista para receber</span><input aria-label="Data prevista para receber" className="field" type="date" value={dueDate} onChange={(event) => { setDueDate(event.target.value); setDueRule("day"); }} /></label>
+      <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => { setDueDate(firstDayOfMonthValue(month)); setDueRule("day"); }} className="min-h-10 rounded-xl bg-[var(--panel2)] px-2 text-xs">1º dia do mês</button><button type="button" onClick={() => { setDueDate(lastBusinessDayOfMonthValue(month)); setDueRule("last_business_day"); }} className="min-h-10 rounded-xl bg-[var(--panel2)] px-2 text-xs">Último dia útil</button></div>
+      <label className="block space-y-1.5 text-sm"><span>Repetição</span><select aria-label="Repetição da receita" className="field" value={frequency} onChange={(event) => setFrequency(event.target.value as PlannedReceivable["frequency"])}><option value="once">Uma vez</option><option value="monthly">Todo mês</option></select></label>
+      <label className="block space-y-1.5 text-sm"><span>Categoria (opcional)</span><input className="field" value={category} onChange={(event) => setCategory(event.target.value)} list="receivable-categories" placeholder="Ex.: Salário, vendas" maxLength={100} /><datalist id="receivable-categories">{data.categories.map((item: string) => <option key={item} value={item} />)}</datalist></label>
+      <label className="block space-y-1.5 text-sm"><span>Conta onde será recebido (opcional)</span><select aria-label="Conta onde será recebido" className="field" value={account} onChange={(event) => setAccount(event.target.value)}><option value="">Escolher ao marcar recebida</option>{accounts.map((item: { value: string; label: string }) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      {error && <p role="alert" className="text-sm text-[var(--danger)]">{error}</p>}
+      <button onClick={persist} className="primary h-11 w-full rounded-xl text-sm">{editing ? "Salvar alterações" : "Adicionar receita"}</button>
+    </section></Sheet>}
+    {deleting && <DeleteConfirm title="Excluir receita planejada?" description={`“${deleting.name}” deixará de aparecer nas próximas previsões. Recebimentos já registrados continuarão no extrato.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, plannedReceivables: plans.filter((item) => item.id !== deleting.id) }); toast("Receita planejada excluída."); setDeleting(null); }} />}
+  </section>;
+}
+
+function Planning({ data, tx, month, save, toast, onReceive }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
@@ -3824,6 +4000,7 @@ function Planning({ data, tx, month, save, toast }: any) {
     .filter((bill: any) => isRecurringBillScheduledInMonth(bill, currentMonth))
     .map((bill: any) => ({ ...bill, occurrenceDay: recurringBillDueDay(bill, currentMonth) }))
     .sort((a: any, b: any) => a.occurrenceDay - b.occurrenceDay);
+  const monthReceivables = getReceivableOccurrences(data.plannedReceivables || [], currentMonth, tx);
   const monthlyCommitted = monthBills.reduce((total: number, bill: any) => total + bill.amountCents, 0);
   const spent = tx
     .filter(
@@ -3924,6 +4101,8 @@ function Planning({ data, tx, month, save, toast }: any) {
         data={data}
         toast={toast}
         onAddForDate={openNew}
+        transactions={tx}
+        onReceive={onReceive}
       />
       <section className="panel mt-4 rounded-2xl p-5">
         <div className="flex items-center justify-between">
@@ -3951,6 +4130,10 @@ function Planning({ data, tx, month, save, toast }: any) {
         ) : (
           <Empty text="Nenhum compromisso neste mês. Adicione aluguel, internet, água, luz ou assinaturas para planejar os próximos vencimentos." />
         )}
+      </section>
+      <section className="panel mt-4 rounded-2xl p-5">
+        <div className="flex items-center justify-between gap-3"><b>Receitas previstas</b><span className="muted text-xs">{formatBRL(outstandingReceivablesCents(monthReceivables))} a receber</span></div>
+        {monthReceivables.length ? <div className="mt-3 divide-y divide-[var(--border)]">{monthReceivables.map((item) => <div key={item.occurrenceId} className="flex items-center justify-between gap-3 py-3"><span className="min-w-0"><b className="block truncate text-sm">{item.name}</b><small className="muted">{format(new Date(`${item.dueDate}T12:00:00`), "dd/MM/yyyy")} · {item.status === "received" ? "Recebida" : item.status === "overdue" ? "Atrasada" : "Pendente"}</small></span><span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(item.amountCents)}</b>{item.status !== "received" && <button onClick={() => onReceive(item)} className="mt-1 min-h-9 rounded-lg px-2 text-xs text-[var(--accent)]">Marcar recebida</button>}</span></div>)}</div> : <p className="muted mt-3 text-sm">Nenhuma receita prevista neste período.</p>}
       </section>
       <CardInvoicePreview data={data} tx={tx} />
       <MonthlyReview data={data} save={save} />
@@ -4146,7 +4329,7 @@ function MonthlyReview({ data, save }: any) {
     </section>
   );
 }
-function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddForDate }: any) {
+function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddForDate, transactions = [], onReceive }: any) {
   const [selectedDay, setSelectedDay] = useState<number | null>(() => {
     const now = new Date();
     return format(month, "yyyy-MM") === format(now, "yyyy-MM") ? now.getDate() : null;
@@ -4159,11 +4342,15 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
   const cellCount = Math.ceil((firstWeekday + days) / 7) * 7;
   const cells = Array.from({ length: cellCount }, (_, index) => index - firstWeekday + 1);
   const monthBills = bills.filter((bill: any) => isRecurringBillScheduledInMonth(bill, key));
+  const monthReceivables = getReceivableOccurrences(data.plannedReceivables || [], key, transactions, today);
   const dayBills = (day: number) => monthBills.filter((bill: any) => recurringBillDueDay(bill, key) === day);
+  const dayReceivables = (day: number) => monthReceivables.filter((item) => Number(item.dueDate.slice(-2)) === day);
   const status = (bill: any) => isRecurringBillPaidInMonth(bill, key) ? "paid" : isCommitmentLateInMonth(bill, key, today) ? "late" : "pending";
   const total = monthBills.reduce((sum: number, bill: any) => sum + Number(bill.amountCents || 0), 0);
   const unpaid = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, key)).reduce((sum: number, bill: any) => sum + Number(bill.amountCents || 0), 0);
-  const selected = selectedDay === null ? [] : dayBills(selectedDay);
+  const selectedBills = selectedDay === null ? [] : dayBills(selectedDay);
+  const selectedReceivables = selectedDay === null ? [] : dayReceivables(selectedDay);
+  const selectedCount = selectedBills.length + selectedReceivables.length;
   const changeMonth = (offset: number) => {
     setMonth(startOfMonth(addMonths(month, offset)));
     setSelectedDay(null);
@@ -4196,8 +4383,10 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
           <span><b>{monthBills.length}</b><span className="muted"> compromisso{monthBills.length === 1 ? "" : "s"}</span></span>
+          <span><b>{monthReceivables.length}</b><span className="muted"> receita{monthReceivables.length === 1 ? "" : "s"}</span></span>
           <span><b>{formatBRL(total)}</b><span className="muted"> previsto</span></span>
           <span><b className="text-amber-400">{formatBRL(unpaid)}</b><span className="muted"> em aberto</span></span>
+          <span><b className="text-[var(--accent)]">{formatBRL(outstandingReceivablesCents(monthReceivables))}</b><span className="muted"> a receber</span></span>
         </div>
       </div>
       <div className="p-3 sm:p-5">
@@ -4208,20 +4397,21 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
           {cells.map((day, index) => {
             if (day < 1 || day > days) return <span key={`blank-${index}`} aria-hidden="true" className="min-h-[54px] sm:min-h-16" />;
             const items = dayBills(day);
-            const statuses = items.map(status);
+            const receipts = dayReceivables(day);
+            const statuses = [...items.map(status), ...receipts.map((item) => item.status === "received" ? "received" : item.status === "overdue" ? "overdue" : "planned-income")];
             const todayCell = isCurrent && day === today.getDate();
             const selectedCell = selectedDay === day;
-            const label = `${format(new Date(month.getFullYear(), month.getMonth(), day), "d 'de' MMMM", { locale: ptBR })}${items.length ? `, ${items.length} vencimento${items.length === 1 ? "" : "s"}` : ", sem vencimentos"}`;
+            const label = `${format(new Date(month.getFullYear(), month.getMonth(), day), "d 'de' MMMM", { locale: ptBR })}${items.length ? `, ${items.length} vencimento${items.length === 1 ? "" : "s"}` : ""}${receipts.length ? `, ${receipts.length} receita${receipts.length === 1 ? "" : "s"}` : ""}${items.length || receipts.length ? "" : ", sem eventos"}`;
             return (
               <button
                 key={day}
                 aria-label={label}
                 aria-pressed={selectedCell}
                 onClick={() => setSelectedDay(day)}
-                className={`relative flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-xl border text-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] sm:min-h-16 ${selectedCell ? "border-[var(--accent)] bg-[var(--accent)]/10" : items.length ? "border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)]/60" : "border-transparent hover:bg-[var(--panel2)]"}`}
+                className={`relative flex min-h-[54px] flex-col items-center justify-center gap-1 rounded-xl border text-xs transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] sm:min-h-16 ${selectedCell ? "border-[var(--accent)] bg-[var(--accent)]/10" : items.length || receipts.length ? "border-[var(--border)] bg-[var(--panel2)] hover:border-[var(--accent)]/60" : "border-transparent hover:bg-[var(--panel2)]"}`}
               >
                 <span className={`grid h-7 w-7 place-items-center rounded-full font-medium ${todayCell ? "bg-[var(--accent)] text-[var(--accentfg)]" : ""}`}>{day}</span>
-                {items.length > 0 && <span aria-hidden="true" className="flex h-1.5 items-center gap-0.5">{statuses.slice(0, 3).map((item: string, dotIndex: number) => <i key={dotIndex} className={`h-1.5 w-1.5 rounded-full ${item === "late" ? "bg-[var(--danger)]" : item === "paid" ? "bg-[var(--accent)]" : "bg-amber-400"}`} />)}</span>}
+                {statuses.length > 0 && <span aria-hidden="true" className="flex h-1.5 items-center gap-0.5">{statuses.slice(0, 4).map((item: string, dotIndex: number) => <i key={dotIndex} className={`h-1.5 w-1.5 rounded-full ${item === "overdue" || item === "late" ? "bg-[var(--danger)]" : item === "received" || item === "paid" ? "bg-[var(--accent)]" : item === "planned-income" ? "bg-sky-300" : "bg-amber-400"}`} />)}</span>}
               </button>
             );
           })}
@@ -4230,15 +4420,16 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
           <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-amber-400" />Pendente</span>
           <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--danger)]" />Atrasada</span>
           <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />Paga</span>
+          <span><i className="mr-1 inline-block h-2 w-2 rounded-full bg-sky-300" />Receita a receber</span>
         </div>
         {selectedDay !== null && (
           <div className="mt-4 border-t border-[var(--border)] pt-4">
             <div className="flex items-center justify-between gap-3">
-              <div><b className="text-sm capitalize">{format(new Date(month.getFullYear(), month.getMonth(), selectedDay), "EEEE, d 'de' MMMM", { locale: ptBR })}</b><p className="muted mt-0.5 text-xs">{selected.length ? `${selected.length} compromisso${selected.length === 1 ? "" : "s"} neste dia` : "Dia livre no planejamento"}</p></div>
+              <div><b className="text-sm capitalize">{format(new Date(month.getFullYear(), month.getMonth(), selectedDay), "EEEE, d 'de' MMMM", { locale: ptBR })}</b><p className="muted mt-0.5 text-xs">{selectedCount ? `${selectedCount} evento${selectedCount === 1 ? "" : "s"} neste dia` : "Dia livre no planejamento"}</p></div>
               <button onClick={() => onAddForDate?.(key, selectedDay)} className="flex min-h-10 shrink-0 items-center gap-1 rounded-xl px-3 text-xs font-medium text-[var(--accent)] hover:bg-[var(--panel2)]"><Plus size={15} />Adicionar</button>
             </div>
-            {selected.length > 0 && <div className="mt-3 divide-y divide-[var(--border)] rounded-xl bg-[var(--panel2)] px-3">
-              {selected.map((bill: any) => (
+            {selectedBills.length > 0 && <div className="mt-3 divide-y divide-[var(--border)] rounded-xl bg-[var(--panel2)] px-3">
+              {selectedBills.map((bill: any) => (
                 <div key={bill.id} className="flex items-center justify-between gap-3 py-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${status(bill) === "paid" ? "bg-[var(--accent)]/15 text-[var(--accent)]" : status(bill) === "late" ? "bg-[var(--danger)]/10 text-[var(--danger)]" : "bg-[var(--panel)] text-amber-400"}`}><ReceiptText size={16} /></span>
@@ -4248,7 +4439,15 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
                 </div>
               ))}
             </div>}
-            {!selected.length && <p className="muted mt-3 rounded-xl bg-[var(--panel2)] p-3 text-sm">Nenhum vencimento cadastrado para este dia. Use “Adicionar” para planejar uma conta ou pagamento.</p>}
+            {selectedReceivables.length > 0 && <div className="mt-3 divide-y divide-[var(--border)] rounded-xl bg-[var(--panel2)] px-3">
+              {selectedReceivables.map((item) => (
+                <div key={item.occurrenceId} className="flex items-center justify-between gap-3 py-3">
+                  <div className="flex min-w-0 items-center gap-3"><span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${item.status === "received" ? "bg-[var(--accent)]/15 text-[var(--accent)]" : item.status === "overdue" ? "bg-[var(--danger)]/10 text-[var(--danger)]" : "bg-sky-400/10 text-sky-300"}`}><ArrowDownLeft size={16} /></span><span className="min-w-0"><b className="block truncate text-sm">{item.name}</b><small className="muted block truncate">{item.category || "Receita"} · {item.frequency === "monthly" ? item.dueRule === "last_business_day" ? "todo último dia útil" : "mensal" : "uma vez"} · {item.status === "received" ? "Recebida" : item.status === "overdue" ? "Atrasada" : "A receber"}</small></span></div>
+                  <div className="shrink-0 text-right"><b className="block text-sm">{formatBRL(item.amountCents)}</b>{item.status !== "received" && <button onClick={() => onReceive(item)} className="mt-1 min-h-9 rounded-lg px-2 text-xs text-[var(--accent)] hover:bg-[var(--panel)]">Marcar recebida</button>}</div>
+                </div>
+              ))}
+            </div>}
+            {!selectedCount && <p className="muted mt-3 rounded-xl bg-[var(--panel2)] p-3 text-sm">Nenhum compromisso ou recebimento cadastrado neste dia. Use “Adicionar” para planejar um evento.</p>}
           </div>
         )}
       </div>
@@ -6057,14 +6256,18 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
     toast(`${imported.length} lançamento(s) importado(s).`);
   };
   return (
-    <section className="mx-auto max-w-3xl px-4 pt-8">
+    <section className="mx-auto max-w-5xl px-4 pb-8 pt-8">
       <SectionTitle
         title="Configurações"
         help="Personalize a aparência, gerencie seus dados e configure privacidade e a assistente Val."
       />
       {businessWorkspace && <BusinessFinanceSettings workspaceId={workspaceId} toast={toast} />}
-      <Theme value={theme} change={setTheme} />
-      <section className="panel mt-6 rounded-2xl p-5">
+      <section className="panel mt-5 flex flex-wrap items-center justify-between gap-4 rounded-2xl p-5">
+        <div><b>Aparência</b><p className="muted mt-1 text-sm">Escolha o tema que prefere usar.</p></div>
+        <Theme value={theme} change={setTheme} />
+      </section>
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+      <section className="panel rounded-2xl p-5">
         <div className="flex items-center gap-2"><b>Seus dados</b><HelpHint label="Backup e importação"><p>Exporte uma cópia dos dados financeiros ou restaure um arquivo JSON. Restaurar substitui os dados financeiros atuais, mas não altera sua conta, acesso ou preferências.</p><p>O aviso de confirmação mostrará os dados que serão substituídos antes da restauração.</p></HelpHint></div>
         <div className="mt-4 flex flex-wrap gap-2">
           <button
@@ -6097,13 +6300,14 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
         </div>
         {backupError && <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{backupError}</p>}
       </section>
-      <section className="panel mt-4 rounded-2xl p-5">
+      <section className="panel rounded-2xl p-5">
         <div className="flex items-center gap-2"><b>Privacidade</b><HelpHint label="Privacidade e sincronização"><p>{syncEnabled ? "A sincronização segura está disponível para sessões autenticadas." : "A sincronização entre dispositivos ainda não está disponível nesta sessão; use o backup JSON antes de trocar de dispositivo."}</p><p>Consulte a Política de Privacidade, os Termos de Uso e as informações sobre cookies nos links abaixo. Você pode alterar sua escolha sobre armazenamento opcional a qualquer momento.</p></HelpHint></div>
         <LegalPreferences toast={toast} />
       </section>
-      <AccountDeletion logout={logout} localStoragePrefix={localStoragePrefix} />
+      <div className="xl:col-span-2"><AccountDeletion logout={logout} localStoragePrefix={localStoragePrefix} /></div>
+      </div>
       <PersonalAISettings toast={toast} workspaceId={workspaceId} />
-      {restoreCandidate && <Sheet close={() => setRestoreCandidate(null)}><section className="space-y-4"><div><b className="text-lg">Restaurar backup?</b><p className="muted mt-2 text-sm leading-6">Isso substituirá contas, cartões, categorias, metas, orçamentos, investimentos e lançamentos atuais pelos dados do arquivo. Essa ação não pode ser desfeita dentro do app. Exporte o estado atual antes se quiser preservá-lo.</p><p className="muted mt-2 text-xs">{restoreCandidate.transactions.length} lançamento(s) no arquivo{restoreCandidate.exportedAt ? ` · exportado em ${format(new Date(restoreCandidate.exportedAt), "dd/MM/yyyy 'às' HH:mm")}` : " · formato legado"}</p></div><div className="flex gap-2"><button onClick={() => setRestoreCandidate(null)} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium">Cancelar</button><button onClick={() => { restoreFinancialBackup(restoreCandidate.data, restoreCandidate.transactions); setRestoreCandidate(null); toast("Backup restaurado e sincronização iniciada."); }} className="primary h-11 flex-1 rounded-xl text-sm font-semibold">Restaurar dados</button></div></section></Sheet>}
+      {restoreCandidate && <Sheet close={() => setRestoreCandidate(null)}><section className="space-y-4"><div><b className="text-lg">Restaurar backup?</b><p className="muted mt-2 text-sm leading-6">Isso substituirá contas, cartões, categorias, receitas planejadas, metas, orçamentos, investimentos e lançamentos atuais pelos dados do arquivo. Essa ação não pode ser desfeita dentro do app. Exporte o estado atual antes se quiser preservá-lo.</p><p className="muted mt-2 text-xs">{restoreCandidate.transactions.length} lançamento(s) no arquivo{restoreCandidate.exportedAt ? ` · exportado em ${format(new Date(restoreCandidate.exportedAt), "dd/MM/yyyy 'às' HH:mm")}` : " · formato legado"}</p></div><div className="flex gap-2"><button onClick={() => setRestoreCandidate(null)} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium">Cancelar</button><button onClick={() => { restoreFinancialBackup(restoreCandidate.data, restoreCandidate.transactions); setRestoreCandidate(null); toast("Backup restaurado e sincronização iniciada."); }} className="primary h-11 flex-1 rounded-xl text-sm font-semibold">Restaurar dados</button></div></section></Sheet>}
     </section>
   );
 }

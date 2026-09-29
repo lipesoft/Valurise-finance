@@ -19,7 +19,7 @@ test("entra com conta de teste e consegue sair", async ({ page }) => {
   await page.getByLabel("Senha").fill(process.env.E2E_TEST_PASSWORD!);
   await page.getByRole("button", { name: "Entrar na conta" }).click();
 
-  await expect(page.getByText(/Patrimônio disponível|Patrimônio total/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/Patrimônio disponível|Total/)).toBeVisible({ timeout: 30_000 });
   const logout = page.getByRole("button", { name: /Sair|Encerrar sessão|Logout/i });
   await expect(logout).toBeVisible();
   await logout.click();

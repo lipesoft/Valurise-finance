@@ -3,6 +3,12 @@ import { z } from "zod";
 const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
 const MAX_TRANSACTIONS = 50_000;
 
+function isValidDateOnly(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 const accountSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -65,6 +71,16 @@ const dataSchema = z.object({
     paidMonth: z.string().optional(),
     paidMonths: z.array(z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/)).max(240).optional(),
   }).passthrough()).max(2_000).optional(),
+  plannedReceivables: z.array(z.object({
+    id: z.string().min(1),
+    name: z.string().trim().min(1).max(120),
+    amountCents: z.number().int().positive().safe(),
+    dueDate: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/).refine(isValidDateOnly),
+    frequency: z.enum(["once", "monthly"]),
+    dueRule: z.enum(["day", "last_business_day"]).optional(),
+    category: z.string().max(100).optional(),
+    account: z.string().max(180).optional(),
+  }).passthrough()).max(2_000).optional(),
   activity: z.array(z.object({ id: z.string(), text: z.string(), date: z.string() }).passthrough()).max(5_000).optional(),
   monthlyReview: z.record(z.string(), z.array(z.string())).optional(),
   dashboardWidgets: z.array(z.object({ id: z.string(), visible: z.boolean() }).passthrough()).max(100).optional(),
@@ -92,6 +108,7 @@ const transactionSchema = z.object({
   investmentId: z.string().optional(),
   goalId: z.string().optional(),
   sharedGoalId: z.string().uuid().optional(),
+  plannedIncomeOccurrenceId: z.string().min(1).max(180).optional(),
 }).passthrough();
 
 const backupSchema = z.object({

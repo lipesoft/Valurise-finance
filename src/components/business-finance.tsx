@@ -99,10 +99,10 @@ function currentCash(data: BusinessInstitutionData, transactions: FinanceTransac
 }
 
 export function BusinessFinanceDashboard({
-  workspaceId, month, data, allTransactions, go,
+  workspaceId, month, data, allTransactions, scheduledReceivablesCents = 0, go,
 }: {
   workspaceId: string; month: Date; data: BusinessInstitutionData;
-  allTransactions: FinanceTransaction[]; go: (view: "settings") => void;
+  allTransactions: FinanceTransaction[]; scheduledReceivablesCents?: number; go: (view: "settings") => void;
 }) {
   const period = monthKey(month);
   const [assumptions, setAssumptions] = useState<AssumptionRecord>({});
@@ -136,11 +136,12 @@ export function BusinessFinanceDashboard({
   return <section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-4 sm:p-6">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Building2 size={17} className="text-[var(--accent)]"/><h2 className="text-lg font-semibold">Visão da empresa</h2></div><p className="muted mt-1 text-xs">Regime de caixa · movimentações registradas e referências informadas</p></div><button type="button" onClick={() => go("settings")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Perfil financeiro</button></header>
     {error && <p role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">{error} Para evitar números desatualizados, os indicadores não foram substituídos por zeros.</p>}
-    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
       <Metric label="Faturamento do período" item={snapshot.grossRevenue} currency={profile.default_currency}/>
       <Metric label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency}/>
       <Metric label="Caixa disponível" item={snapshot.cashAvailable} currency={profile.default_currency}/>
       <Metric label="A receber · informado" item={snapshot.receivables} currency={profile.default_currency}/>
+      <Metric label="A receber · programado" item={{ amountCents: scheduledReceivablesCents, nature: "projected", explanation: "Soma das receitas planejadas ainda não marcadas como recebidas no período selecionado. Não inclui estimativas do perfil financeiro." }} currency={profile.default_currency}/>
     </div>
     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <Metric label="Despesas registradas" item={snapshot.registeredExpenses} currency={profile.default_currency}/>

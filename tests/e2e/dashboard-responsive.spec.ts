@@ -174,20 +174,52 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByRole("button", { name: "Registrar movimentação" })).toBeVisible();
   await expect(page.locator("h1")).toHaveText("Empresa QA");
   await expect(page.getByRole("region", { name: "Resumo empresarial" })).toBeVisible();
-  await expect(page.getByText("Patrimônio total", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Total", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
   await page.getByRole("menuitemradio", { name: /Pessoal.*Pessoa de teste/ }).click();
   await expect(personalGreeting).toBeVisible();
-  await expect(page.getByText("Patrimônio total", { exact: true })).toBeVisible();
+  await expect(page.getByText("Total", { exact: true })).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
   await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
   await page.getByRole("menuitemradio", { name: /Empresa QA.*Espaço empresarial/ }).click();
   await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
   await expect(personalGreeting).toHaveCount(0);
   await expect(page.getByText("Mercado QA")).toHaveCount(0);
+});
+
+test("receita prevista empresarial aparece no resumo sem alterar valores realizados", async ({ page }) => {
+  await installMockSession(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
+  const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
+  await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
+  await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
+  await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
+  await dialog.getByRole("button", { name: "Criar empresa" }).click();
+
+  await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Pular por enquanto" }).click();
+  await expect(page.getByRole("region", { name: "Resumo empresarial" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Resumo empresarial" })).not.toContainText("R$ 750,00");
+
+  await page.getByRole("button", { name: "Receitas", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar receita", exact: true }).click();
+  await page.getByLabel("Origem da receita").fill("Contrato empresa QA");
+  await page.getByLabel("Valor previsto").fill("750,00");
+  await page.getByLabel("Repetição da receita").selectOption("monthly");
+  await page.getByLabel("Conta onde será recebido").selectOption("Banco Empresa QA • Conta da empresa");
+  await page.getByRole("button", { name: "Adicionar receita", exact: true }).last().click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+
+  await expect(page.getByRole("region", { name: "Resumo empresarial" })).toContainText("A receber · programado");
+  await expect(page.getByRole("region", { name: "Resumo empresarial" })).toContainText("R$ 750,00");
+  await expect(page.getByRole("region", { name: "Resumo empresarial" })).not.toContainText("Receita realizada");
 });
 
 test("salva referências empresariais, distingue realizado de estimado e mantém o mobile utilizável", async ({ page }) => {
@@ -231,13 +263,13 @@ test("salva referências empresariais, distingue realizado de estimado e mantém
   }
 });
 
-test("Ajustes mantêm as explicações longas acessíveis pelo botão de ajuda em telas móveis", async ({ page }) => {
+test("Configurações mantêm as explicações longas acessíveis pelo botão de ajuda em telas móveis", async ({ page }) => {
   await installMockSession(page);
   await page.setViewportSize({ width: 375, height: 844 });
   await page.goto("/");
   await page.getByRole("button", { name: "Abrir menu" }).click();
   const menu = page.getByRole("dialog", { name: "Menu principal" });
-  await menu.getByRole("button", { name: "Ajustes" }).click();
+  await menu.getByRole("button", { name: "Configurações" }).click();
   await expect(page.getByRole("heading", { name: "Configurações" })).toBeVisible();
   await expect(page.getByText("Exporte uma cópia dos dados financeiros ou restaure um arquivo JSON.")).toHaveCount(0);
   await expect(page.getByText("A chave é enviada ao servidor e criptografada antes de ser salva.")).toHaveCount(0);
@@ -290,7 +322,7 @@ test("atualiza a disponibilidade da Val depois de uma pausa temporária do servi
   });
 
   await page.goto("/");
-  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await page.getByRole("button", { name: "Configurações", exact: true }).click();
   await expect(page.getByRole("status").getByText("Val temporariamente indisponível")).toBeVisible();
   serviceAvailable = true;
   await page.getByRole("button", { name: "Verificar agora" }).click();
@@ -605,7 +637,7 @@ test("a área comum da Val não expõe providers, modelos técnicos nem configur
   } }));
 
   await page.goto("/");
-  await page.getByRole("button", { name: "Ajustes", exact: true }).click();
+  await page.getByRole("button", { name: "Configurações", exact: true }).click();
   await expect(page.getByText("Val · sua assistente financeira")).toBeVisible();
   await expect(page.getByText("8 de 10 consultas disponíveis")).toBeVisible();
   await expect(page.getByLabel("Provedor", { exact: true })).toHaveCount(0);
@@ -764,7 +796,7 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
   for (const width of [1280, 375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
       const mobile = width < 1024;
-      for (const view of ["Dashboard", "Extrato", "Contas", "Cartões", "Investimentos", "Orçamentos", "Metas", "Planejamento", "Relatórios", "Categorias", "Ajustes"]) {
+      for (const view of ["Dashboard", "Extrato", "Contas", "Cartões", "Investimentos", "Orçamentos", "Metas", "Receitas", "Planejamento", "Relatórios", "Categorias", "Configurações"]) {
       if (mobile) {
         await page.getByRole("button", { name: "Abrir menu" }).click();
         const menu = page.getByRole("dialog", { name: "Menu principal" });
@@ -805,7 +837,7 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
         await page.getByRole("button", { name: "Fechar" }).click();
       }
 
-      if (view === "Ajustes") {
+      if (view === "Configurações") {
         const checkboxes = page.getByRole("checkbox");
         await expect(checkboxes).toHaveCount(2);
         const checkboxSizes = await checkboxes.evaluateAll((elements) => elements.map((element) => {
@@ -825,10 +857,10 @@ test("navegação, formulários e controles mantêm dimensões em desktop e mobi
 
     const headerButtons = await page.locator("header button[aria-label]").evaluateAll((elements) => elements.filter((element) => element.getClientRects().length > 0).map((element) => {
       const { width: buttonWidth, height } = element.getBoundingClientRect();
-      return { width: buttonWidth, height };
-    }));
+      return { label: element.getAttribute("aria-label"), width: buttonWidth, height };
+    }).filter((button) => button.label !== "Alternar espaço financeiro"));
     expect(headerButtons.length).toBeGreaterThan(0);
-    expect(headerButtons.every((button) => button.width === 44 && button.height === 44)).toBe(true);
+    expect(headerButtons.every((button) => button.width === 44 && button.height === 44), JSON.stringify(headerButtons)).toBe(true);
   }
 });
 
@@ -918,7 +950,7 @@ test("planejamento cria, edita e exclui uma conta recorrente", async ({ page }) 
 test("backup JSON substitui somente dados financeiros após confirmação", async ({ page }) => {
   await installMockSession(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "Ajustes" }).click();
+  await page.getByRole("button", { name: "Configurações" }).click();
 
   const backup = {
     format: "valurise-backup",

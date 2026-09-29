@@ -244,7 +244,7 @@ test("convite de meta chega, pode ser aceito e a meta compartilhada atualiza no 
   await expect(goalCard).toContainText("+R$ 125,00");
 
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
-  const summary = page.locator(".panel").filter({ hasText: "Patrimônio total" });
+  const summary = page.locator(".panel").filter({ hasText: "Total" });
   await expect(summary).toContainText("R$ 875,00");
   await expect(page.getByText("Casa própria").last()).toBeVisible();
 });
@@ -275,6 +275,53 @@ test("criador pode excluir meta compartilhada e o participante não recebe açã
 
   await expect(goalCard).toHaveCount(0);
   await expect(page.getByText("Meta compartilhada excluída para todos os participantes.")).toBeVisible();
+});
+
+test("receitas planejadas aparecem no Dashboard e calendário, e só entram no extrato quando recebidas", async ({ page }) => {
+  await loginWithFinancialSeed(page);
+  await page.getByRole("button", { name: "Receitas", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar receita", exact: true }).click();
+  await page.getByLabel("Origem da receita").fill("Mensalidade cliente QA");
+  await page.getByLabel("Valor previsto").fill("1.200,00");
+  await page.getByRole("button", { name: "Último dia útil" }).click();
+  await page.getByLabel("Repetição da receita").selectOption("monthly");
+  await page.getByLabel("Categoria (opcional)").fill("Serviços");
+  await page.getByRole("button", { name: "Adicionar receita", exact: true }).last().click();
+
+  await expect(page.getByText("Mensalidade cliente QA", { exact: true })).toBeVisible();
+  await expect(page.getByText("todo último dia útil", { exact: false })).toBeVisible();
+  await expect(page.getByText("R$ 1.200,00").first()).toBeVisible();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  const summary = page.locator(".panel").filter({ hasText: "Total" });
+  await expect(summary).toContainText("A receber");
+  await expect(summary).toContainText("R$ 1.200,00");
+
+  await page.getByRole("button", { name: "Planejamento", exact: true }).click();
+  const receiptDate = page.getByRole("button", { name: /\d+ de .*1 receita/ });
+  await expect(receiptDate).toBeVisible();
+  await receiptDate.click();
+  await expect(page.getByText("Mensalidade cliente QA", { exact: true }).last()).toBeVisible();
+  await page.getByRole("button", { name: "Marcar recebida", exact: true }).first().click();
+  await expect(page.getByText("Recebimento de “Mensalidade cliente QA” registrado no extrato.")).toBeVisible();
+  await page.getByRole("button", { name: "Receitas", exact: true }).click();
+  await expect(page.getByText("Recebida", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Extrato", exact: true }).click();
+  await expect(page.getByRole("button").filter({ hasText: "Mensalidade cliente QA" }).first()).toContainText("R$ 1.200,00");
+
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+});
+
+test("permite editar o nome de exibição sem alterar os dados de acesso", async ({ page }) => {
+  await loginWithFinancialSeed(page);
+  await page.getByRole("button", { name: "Abrir perfil" }).click();
+  await page.getByLabel("Nome de exibição").fill("Lipe da QA");
+  await page.getByRole("button", { name: "Salvar", exact: true }).click();
+  await page.getByRole("button", { name: "Concluído", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /Lipe da QA/ })).toBeVisible();
 });
 
 test("registra aporte com conta de origem e reverte o saldo ao excluir o lançamento", async ({ page }) => {
@@ -314,7 +361,7 @@ test("contribuição de meta debita a conta, aparece no histórico e não vira d
   await expect(page.getByText(/Banco Teste • Conta/).last()).toBeVisible();
 
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
-  const summaryCard = page.locator(".panel").filter({ hasText: "Patrimônio total" });
+  const summaryCard = page.locator(".panel").filter({ hasText: "Total" });
   await expect(summaryCard).toContainText("Saldo disponível");
   await expect(summaryCard).toContainText("R$ 875,00");
   const consumptionMetric = page.getByText("Consumo", { exact: true }).first().locator("..");

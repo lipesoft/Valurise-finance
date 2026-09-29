@@ -21,6 +21,7 @@ export type FinanceTransaction = {
   investmentId?: string;
   goalId?: string;
   sharedGoalId?: string;
+  plannedIncomeOccurrenceId?: string;
 };
 
 const MAX_INSTALLMENTS = 48;

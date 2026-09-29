@@ -4,6 +4,7 @@ import { createValuriseBackup, parseValuriseBackup } from "./backup";
 const data = {
   categories: ["Mercado"],
   institutions: [{ id: "bank-1", name: "Banco de teste", color: "#4edea3", accounts: [], cards: [] }],
+  plannedReceivables: [{ id: "income-monthly", name: "Mensalidade", amountCents: 120000, dueDate: "2026-09-30", frequency: "monthly" as const, dueRule: "last_business_day" as const }],
   goals: [{ id: "goal-1", name: "Reserva", targetCents: 10000, currentCents: 5000 }],
   onboarded: true,
 };
@@ -51,5 +52,28 @@ describe("backup Valurise", () => {
     };
 
     expect(() => parseValuriseBackup(JSON.stringify(invalid))).toThrow("backup válido");
+  });
+
+  it("recusa datas impossíveis em receitas planejadas", () => {
+    const invalid = {
+      ...createValuriseBackup(data, transactions),
+      data: { ...data, plannedReceivables: [{ id: "invalid", name: "Receita", amountCents: 100, dueDate: "2026-02-31", frequency: "once" }] },
+    };
+    expect(() => parseValuriseBackup(JSON.stringify(invalid))).toThrow("backup válido");
+  });
+
+  it("preserva o vínculo do lançamento com a ocorrência planejada", () => {
+    const linkedIncome = [{
+      id: "receivable:income-monthly:2026-09",
+      type: "income" as const,
+      amountCents: 120000,
+      category: "Outras receitas",
+      account: "Conta teste",
+      date: "2026-09-30T12:00:00.000Z",
+      createdAt: "2026-09-30T12:00:00.000Z",
+      plannedIncomeOccurrenceId: "income-monthly:2026-09",
+    }];
+    const restored = parseValuriseBackup<typeof data, typeof linkedIncome[number]>(JSON.stringify(createValuriseBackup(data, linkedIncome)));
+    expect(restored.transactions[0].plannedIncomeOccurrenceId).toBe("income-monthly:2026-09");
   });
 });
