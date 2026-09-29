@@ -96,8 +96,7 @@ function emptySnapshot(period: string): BusinessFinanceSnapshot {
 }
 function natureBadge(nature: FinancialDataNature | null) {
   if (!nature) return null;
-  const tone = natureTone(nature);
-  return <span data-nature={nature} title={natureDescriptions[nature]} aria-label={`${natureLabels[nature]}. ${natureDescriptions[nature]}`} className={`${styles.statusBadge} ${tone} rounded-full px-2 py-1 text-[10px] font-medium`}>{natureLabels[nature]}</span>;
+  return <span data-nature={nature} title={natureDescriptions[nature]} aria-label={`${natureLabels[nature]}. ${natureDescriptions[nature]}`} className={`${styles.statusBadge} whitespace-nowrap text-[10px] font-medium`}>{natureLabels[nature]}</span>;
 }
 function natureTone(nature: FinancialDataNature | null) {
   if (nature === "actual") return styles.metricActual;
@@ -108,10 +107,9 @@ function Metric({ label, item, currency = "BRL" }: { label: string; item: { amou
   const tone = natureTone(item.nature);
   const amountLabel = exactMonthlyMoney(item.amountCents, currency);
   return <article data-nature={item.nature || "none"} className={`min-w-0 rounded-2xl p-4 ${styles.metricCard} ${tone}`} title={item.explanation}>
-    <div className="min-h-5">{natureBadge(item.nature)}</div>
-    <p className="muted mt-2 min-h-10 text-xs leading-5">{label}</p>
+    <h3 className="min-h-10 text-sm font-semibold leading-5 text-[var(--fg)]">{label}</h3>
     <p data-metric-value aria-label={amountLabel} title={item.amountCents === null ? undefined : amountLabel} className={`mt-1 font-semibold tracking-tight ${item.amountCents === null ? "break-words text-base leading-tight sm:text-lg" : "whitespace-nowrap text-lg tabular-nums sm:text-xl 2xl:text-2xl"}`}>{displayMonthlyMoney(item.amountCents, currency)}</p>
-    <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{item.explanation}</p></details>
+    <div className="mt-2 flex min-w-0 items-center justify-between gap-2"><details className="muted min-w-0 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{item.explanation}</p></details>{natureBadge(item.nature)}</div>
   </article>;
 }
 type DashboardTotals = {
@@ -251,10 +249,9 @@ function DreRow({ label, item, currency, strong = false }: { label: string; item
 function PercentageMetric({ label, percent, nature, explanation }: { label: string; percent: number | null; nature: FinancialDataNature | null; explanation: string }) {
   const tone = natureTone(nature);
   return <article data-nature={nature || "none"} className={`min-w-0 rounded-2xl p-4 ${styles.metricCard} ${tone}`} title={explanation}>
-    <div className="min-h-5">{natureBadge(nature)}</div>
-    <p className="muted mt-2 min-h-10 text-xs leading-5">{label}</p>
+    <h3 className="min-h-10 text-sm font-semibold leading-5 text-[var(--fg)]">{label}</h3>
     <p data-metric-value className={`mt-1 font-semibold tracking-tight ${percent === null ? "break-words text-base leading-tight sm:text-lg" : "whitespace-nowrap text-lg tabular-nums sm:text-xl 2xl:text-2xl"}`}>{percent === null ? "Sem dados" : `${percent.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`}</p>
-    <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{explanation}</p></details>
+    <div className="mt-2 flex min-w-0 items-center justify-between gap-2"><details className="muted min-w-0 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{explanation}</p></details>{natureBadge(nature)}</div>
   </article>;
 }
 function FlowRow({ label, amount, icon, currency }: { label: string; amount: number | null; icon: "neutral" | "in" | "out"; currency: string }) {
