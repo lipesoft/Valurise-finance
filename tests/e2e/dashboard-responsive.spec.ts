@@ -153,6 +153,7 @@ async function installMockSession(page: import("@playwright/test").Page, financi
 }
 
 test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", async ({ page }) => {
+  await page.setViewportSize({ width: 1348, height: 618 });
   await installMockSession(page);
   await page.goto("/");
   const personalGreeting = page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ });
@@ -173,7 +174,13 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await page.getByRole("button", { name: "Pular por enquanto" }).click();
   await expect(page.getByRole("button", { name: "Registrar movimentação" })).toBeVisible();
   await expect(page.locator("h1")).toHaveText("Empresa QA");
-  await expect(page.getByRole("region", { name: "Resumo empresarial" })).toBeVisible();
+  const businessSummary = page.getByRole("region", { name: "Resumo empresarial" });
+  await expect(businessSummary).toBeVisible();
+  const summaryBounds = await businessSummary.boundingBox();
+  expect(summaryBounds?.width ?? 0).toBeGreaterThan(1000);
+  const primaryMetricGrid = businessSummary.locator(".mt-4.grid").first();
+  await expect.poll(() => primaryMetricGrid.evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(4);
+  await expect(businessSummary.locator("article").first().locator("p").nth(1)).toHaveCSS("white-space", "nowrap");
   await expect(page.getByText("Total", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Disponível para gastar", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Organizar cards do Dashboard" })).toHaveCount(0);

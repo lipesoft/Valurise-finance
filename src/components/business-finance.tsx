@@ -86,7 +86,7 @@ function natureBadge(nature: FinancialDataNature | null) {
 function Metric({ label, item, currency = "BRL" }: { label: string; item: { amountCents: number | null; nature: FinancialDataNature | null; explanation: string }; currency?: string }) {
   return <article className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--panel2)]/65 p-4" title={item.explanation}>
     <div className="flex flex-wrap items-center justify-between gap-2"><p className="muted text-xs">{label}</p>{natureBadge(item.nature)}</div>
-    <p className="mt-2 break-words text-xl font-semibold tracking-tight sm:text-2xl">{monthlyMoney(item.amountCents, currency)}</p>
+    <p className="mt-2 whitespace-nowrap text-lg font-semibold tracking-tight tabular-nums sm:text-xl 2xl:text-2xl">{monthlyMoney(item.amountCents, currency)}</p>
     <details className="muted mt-2 text-[11px]"><summary className="inline-flex cursor-pointer list-none items-center gap-1"><Info size={12}/> Como calculamos?</summary><p className="mt-1 leading-5">{item.explanation}</p></details>
   </article>;
 }
@@ -136,7 +136,7 @@ export function BusinessFinanceDashboard({
   return <section aria-label="Resumo empresarial" className="panel mt-5 rounded-3xl p-4 sm:p-6">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Building2 size={17} className="text-[var(--accent)]"/><h2 className="text-lg font-semibold">Visão da empresa</h2></div><p className="muted mt-1 text-xs">Regime de caixa · movimentações registradas e referências informadas</p></div><button type="button" onClick={() => go("settings")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Perfil financeiro</button></header>
     {error && <p role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100">{error} Para evitar números desatualizados, os indicadores não foram substituídos por zeros.</p>}
-    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
       <Metric label="Faturamento do período" item={snapshot.grossRevenue} currency={profile.default_currency}/>
       <Metric label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency}/>
       <Metric label="Caixa disponível" item={snapshot.cashAvailable} currency={profile.default_currency}/>

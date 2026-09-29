@@ -2003,6 +2003,7 @@ function Dashboard({
 }: any) {
   const [customizingDashboard, setCustomizingDashboard] = useState(false);
   const isBusinessWorkspace = workspace?.type === "business";
+  const dashboardWidth = isBusinessWorkspace ? "max-w-[1600px] lg:px-8" : "max-w-5xl lg:px-10";
   const accountBalanceCents = (data.institutions || []).reduce(
     (institutionTotal: number, institution: Institution) =>
       institutionTotal +
@@ -2027,7 +2028,7 @@ function Dashboard({
     getReceivableOccurrences(data.plannedReceivables || [], format(month, "yyyy-MM"), allTx),
   );
   return (
-    <StaggerContainer className="mx-auto max-w-5xl px-4 pt-5 lg:px-10">
+    <StaggerContainer className={`mx-auto w-full px-4 pt-5 ${dashboardWidth}`}>
       <WorkspaceDashboardHeader workspace={workspace} userName={displayName || user.name} month={month} setMonth={setMonth} />
       {isBusinessWorkspace ? (
         <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} scheduledReceivablesCents={scheduledReceivablesCents} go={go} />
