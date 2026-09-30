@@ -9,7 +9,7 @@ function encode(value: unknown) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
-async function signInAsMaster(page: import("@playwright/test").Page, options: { manyRequests?: boolean; manyUsers?: boolean; inviteHistory?: boolean; failedAudit?: boolean; needsAttentionAudit?: boolean } = {}) {
+async function signInAsMaster(page: import("@playwright/test").Page, options: { manyRequests?: boolean; emailOnly?: boolean; manyUsers?: boolean; inviteHistory?: boolean; failedAudit?: boolean; needsAttentionAudit?: boolean } = {}) {
   let pendingRequestArchived = false;
   let activeInviteRevoked = false;
   const now = Math.floor(Date.now() / 1000);
@@ -82,7 +82,7 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
     }
     const status = new URL(route.request().url()).searchParams.get("status");
     const requestedPage = Number(new URL(route.request().url()).searchParams.get("page") || 1);
-    const confirmedRequests = options.manyRequests
+    const confirmedRequests = options.emailOnly ? [] : options.manyRequests
       ? Array.from({ length: 26 }, (_, index) => {
         const number = index + 1;
         return {
@@ -196,7 +196,7 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ items: pageItems, total: status === "trashed" ? 1 : options.manyUsers && pageItems === displayedManyUsers ? filteredManyUsers.length : pendingTotal, page: requestedPage, pageSize: 25, stats: { pending: pendingRequestArchived ? 0 : options.manyRequests ? 26 : 1, email_pending: 1, total: options.manyUsers ? 206 : options.manyRequests ? 27 : 2, active: options.manyUsers ? 206 : 1, disabled: 0, trashed: status === "trashed" ? 1 : 0, rejected: 0 } }),
+      body: JSON.stringify({ items: pageItems, total: status === "trashed" ? 1 : options.manyUsers && pageItems === displayedManyUsers ? filteredManyUsers.length : pendingTotal, page: requestedPage, pageSize: 25, stats: { pending: pendingRequestArchived || options.emailOnly ? 0 : options.manyRequests ? 26 : 1, email_pending: 1, total: options.manyUsers ? 206 : options.manyRequests ? 27 : options.emailOnly ? 1 : 2, active: options.manyUsers ? 206 : options.emailOnly ? 0 : 1, disabled: 0, trashed: status === "trashed" ? 1 : 0, rejected: 0 } }),
     });
   });
   await page.route("**/api/admin/invites**", async (route) => {
@@ -301,9 +301,11 @@ test("arquiva um pedido sem recusá-lo e permite reabri-lo pela lixeira", async 
 test("notificação do Master abre a fila e leva ao pedido correto", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signInAsMaster(page);
-  const notifications = page.getByRole("button", { name: /Solicitações aguardando análise: 1/ });
+  const notifications = page.getByRole("button", { name: /Solicitações de acesso: 1 aguardando análise; 1 aguardando confirmação do e-mail/ });
   await notifications.click();
   const dialog = page.getByRole("dialog", { name: "Notificações de acesso do Master" });
+  await expect(dialog.getByText("1 com e-mail confirmado para análise · 1 aguardando confirmação")).toBeVisible();
+  await expect(dialog.getByText("Aguardando confirmação do e-mail", { exact: true })).toBeVisible();
   const sheet = await dialog.boundingBox();
   expect(sheet).not.toBeNull();
   expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(844);
@@ -314,6 +316,20 @@ test("notificação do Master abre a fila e leva ao pedido correto", async ({ pa
   await dialog.getByRole("button", { name: /Pedido Confirmado/ }).click();
   await expect(page.getByLabel("Buscar solicitações por nome, usuário ou e-mail")).toHaveValue("pedido@valurise.invalid");
   await expect(page.locator(`#master-request-${pendingId}`)).toBeFocused();
+});
+
+test("pedido aguardando confirmação aparece no sino do Master sem liberar aprovação", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signInAsMaster(page, { emailOnly: true });
+
+  const notifications = page.getByRole("button", { name: /Solicitações de acesso: 0 aguardando análise; 1 aguardando confirmação do e-mail/ });
+  await notifications.click();
+  const dialog = page.getByRole("dialog", { name: "Notificações de acesso do Master" });
+  const waitingRequest = dialog.getByRole("button", { name: /Aguardando E-mail/ });
+  await expect(waitingRequest).toBeVisible();
+  await waitingRequest.click();
+  await expect(page.getByLabel("Buscar solicitações por nome, usuário ou e-mail")).toHaveValue("confirmar@valurise.invalid");
+  await expect(page.getByRole("button", { name: "Aprovar" })).toHaveCount(0);
 });
 
 test("fila de solicitações pagina sem saltar resultados", async ({ page }) => {
