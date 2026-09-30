@@ -399,21 +399,17 @@ export function BusinessFinanceDashboard({ workspaceId, companyName, month, data
   return <section aria-label="Visão geral empresarial" className="mt-5 space-y-4">
     <header className="flex flex-wrap items-end justify-between gap-3">
       <div><p className="muted text-xs">Visão geral</p><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{companyName}</h1></div>
-      <div className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--panel)] px-3 py-2 shadow-sm">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/10 text-[var(--accent)]"><CalendarDays size={17} aria-hidden="true"/></span>
-        <div className="min-w-0">
-          <p className="muted text-[10px] font-semibold uppercase tracking-[.12em]">Faturamento</p>
-          <div ref={yearPickerContainerRef} className="relative mt-1" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setYearMenuOpen(false); }} onKeyDown={(event) => { if (event.key === "Escape") { setYearMenuOpen(false); yearPickerRef.current?.focus(); } }}>
-            <button ref={yearPickerRef} type="button" aria-label="Ano do faturamento" aria-expanded={yearMenuOpen} aria-controls={yearMenuOpen ? "business-revenue-year-options" : undefined} onClick={() => setYearMenuOpen((open) => !open)} className="inline-flex min-h-9 min-w-[92px] items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--panel2)] px-3 text-sm font-semibold tabular-nums text-[var(--fg)] transition-colors hover:border-[var(--accent)]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60">
-              {selectedYear}<ChevronDown size={15} aria-hidden="true" className={`transition-transform ${yearMenuOpen ? "rotate-180" : ""}`}/>
-            </button>
-            {yearMenuOpen && <div id="business-revenue-year-options" role="group" aria-label="Anos disponíveis" className="absolute right-0 z-30 mt-1 max-h-56 min-w-full overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl">
-              {years.map((year) => <button type="button" key={year} aria-pressed={selectedYear === year} onClick={() => { setSelectedYear(year); setYearMenuOpen(false); yearPickerRef.current?.focus(); }} className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-lg px-3 text-left text-sm tabular-nums transition-colors hover:bg-[var(--panel2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60 ${selectedYear === year ? "font-semibold text-[var(--accent)]" : "text-[var(--fg)]"}`}>
-                {year}{selectedYear === year && <Check size={15} aria-hidden="true"/>}
-              </button>)}
-            </div>}
-          </div>
-        </div>
+      <div ref={yearPickerContainerRef} className="relative" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setYearMenuOpen(false); }} onKeyDown={(event) => { if (event.key === "Escape") { setYearMenuOpen(false); yearPickerRef.current?.focus(); } }}>
+        <button ref={yearPickerRef} type="button" aria-label="Ano do faturamento" aria-expanded={yearMenuOpen} aria-controls={yearMenuOpen ? "business-revenue-year-options" : undefined} onClick={() => setYearMenuOpen((open) => !open)} className="group inline-flex min-h-[52px] items-center gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--panel2)] px-3 py-2.5 text-left transition-colors hover:border-[var(--accent)]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60">
+          <CalendarDays size={16} aria-hidden="true" className="shrink-0 text-[var(--accent)]"/>
+          <span className="min-w-[76px]"><span className="muted block text-[9px] font-semibold uppercase leading-3 tracking-[.12em]">Faturamento</span><span className="mt-0.5 block text-sm font-semibold leading-4 tabular-nums text-[var(--fg)]">{selectedYear}</span></span>
+          <ChevronDown size={14} aria-hidden="true" className={`shrink-0 text-[var(--muted)] transition-transform ${yearMenuOpen ? "rotate-180" : ""}`}/>
+        </button>
+        {yearMenuOpen && <div id="business-revenue-year-options" role="group" aria-label="Anos disponíveis" className="absolute right-0 z-30 mt-1 max-h-56 min-w-full overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl">
+          {years.map((year) => <button type="button" key={year} aria-pressed={selectedYear === year} onClick={() => { setSelectedYear(year); setYearMenuOpen(false); yearPickerRef.current?.focus(); }} className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-lg px-3 text-left text-sm tabular-nums transition-colors hover:bg-[var(--panel2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60 ${selectedYear === year ? "font-semibold text-[var(--accent)]" : "text-[var(--fg)]"}`}>
+            {year}{selectedYear === year && <Check size={15} aria-hidden="true"/>}
+          </button>)}
+        </div>}
       </div>
     </header>
     {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100"><span>Não foi possível atualizar as metas empresariais. Os valores registrados continuam disponíveis.</span><button type="button" onClick={() => setRequestRevision((value) => value + 1)} className="min-h-9 rounded-lg bg-[var(--panel2)] px-3 font-medium">Tentar novamente</button></div>}
