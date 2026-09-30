@@ -81,7 +81,16 @@ export async function POST(request: NextRequest) {
     .eq("username", username)
     .maybeSingle();
   if (usernameError) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
-  if (existingUsername) return genericAccepted();
+  if (existingUsername) {
+    // Unlike duplicate e-mail responses, a username conflict must be actionable:
+    // otherwise the UI says "Próximo passo" even though no Auth user or request
+    // was created. Keep the response free of the existing account's identity.
+    console.info("[auth.request-access.rejected]", { reason: "username_conflict" });
+    return responseError(
+      "Não foi possível iniciar o cadastro com esses dados. Confira o usuário escolhido ou, se já tiver uma conta, entre ou recupere sua senha.",
+      409,
+    );
+  }
 
   const emailLimit = await consumeLimit(admin, bucket("access-request:v2:email", email), RATE_LIMITS.email);
   if (emailLimit.error) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);

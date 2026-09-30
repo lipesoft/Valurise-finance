@@ -53,7 +53,7 @@ import { POST } from "./route";
 const userId = "00000000-0000-4000-8000-000000000002";
 const rateLimitKey = (scope: string, value: string) => createHash("sha256").update(`${scope}\0${value}`).digest("hex");
 
-function request() {
+function request(overrides: Record<string, unknown> = {}) {
   return new NextRequest("http://localhost/api/auth/request-access", {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: "http://localhost" },
@@ -64,6 +64,7 @@ function request() {
       password: "senha-ficticia-e-segura",
       privacyAccepted: true,
       termsAccepted: true,
+      ...overrides,
     }),
   });
 }
@@ -105,6 +106,40 @@ describe("POST /api/auth/request-access", () => {
     });
     expect(tables.access_request_details.update).not.toHaveBeenCalled();
     expect(deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("permite nomes de exibição iguais quando usuário e e-mail são distintos", async () => {
+    const response = await POST(request({ username: "pessoa.teste2", email: "outra@example.invalid" }));
+
+    expect(response.status).toBe(202);
+    expect(signUp).toHaveBeenCalledWith(expect.objectContaining({
+      email: "outra@example.invalid",
+      options: expect.objectContaining({ data: expect.objectContaining({ full_name: "Pessoa de Teste", username: "pessoa.teste2" }) }),
+    }));
+    expect(tables.access_request_details.insert).toHaveBeenCalledWith(expect.objectContaining({ request_status: "pending_email" }));
+  });
+
+  it("explica que o usuário precisa ser trocado sem criar conta nem solicitação para o Master", async () => {
+    tables.profiles.maybeSingle.mockResolvedValueOnce({ data: { id: userId }, error: null });
+
+    const response = await POST(request());
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toMatch(/Confira o usuário escolhido/i);
+    expect(signUp).not.toHaveBeenCalled();
+    expect(tables.access_request_details.insert).not.toHaveBeenCalled();
+    expect(JSON.stringify(payload)).not.toContain("Pessoa@Example.invalid");
+  });
+
+  it("impede e-mail já cadastrado antes de criar uma solicitação para o Master", async () => {
+    signUp.mockResolvedValueOnce({ data: { user: null, session: null }, error: { code: "user_already_exists", message: "User already registered" } });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(202);
+    expect(tables.access_request_details.insert).not.toHaveBeenCalled();
+    expect(tables.user_consents.upsert).not.toHaveBeenCalled();
   });
 
   it("não cria uma solicitação quando o projeto aceita cadastro sem confirmação de e-mail", async () => {
