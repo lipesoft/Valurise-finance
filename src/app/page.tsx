@@ -88,6 +88,7 @@ import { formatValResponse } from "@/lib/personal-ai/presentation";
 import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise-splash";
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
 import { parseMoneyInputToCents } from "@/lib/numeric-input";
+import { withTimeout } from "@/lib/async";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceDetail, BusinessFinanceSettings } from "@/components/business-finance";
 import { BusinessWorkspaceDangerZone } from "@/components/business-workspace-danger-zone";
@@ -236,6 +237,7 @@ const choices = [
 const WORKSPACE_REQUEST_TIMEOUT_MS = 8_000;
 const WORKSPACE_STATE_LOAD_TIMEOUT_MS = 12_000;
 const WORKSPACE_WRITE_FLUSH_GRACE_MS = 1_500;
+const SESSION_LOOKUP_TIMEOUT_MESSAGE = "A sessão demorou mais que o esperado. Tente novamente.";
 
 async function waitForWorkspaceWrites(flush: () => Promise<void>, timeoutMs: number) {
   let timeout: number | undefined;
@@ -268,6 +270,7 @@ export default function Page() {
     setAuthProfileIssue(false);
     setUser(nextUser);
   }, []);
+  const completeSplash = useCallback(() => setSplashVisible(false), []);
   useEffect(() => {
     let cancelled = false;
     setCheckingAuth(true);
@@ -279,10 +282,13 @@ export default function Page() {
     }
     void (async () => {
       try {
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        const { data: sessionData, error: sessionError } = await withTimeout(
+          supabase.auth.getSession(), WORKSPACE_REQUEST_TIMEOUT_MS, SESSION_LOOKUP_TIMEOUT_MESSAGE,
+        );
+        if (cancelled) return;
         if (sessionError) {
           if (!cancelled) setAuthProfileIssue(true);
-          setSplashStatus("ready");
+          if (!cancelled) setSplashStatus("ready");
           return;
         }
         if (!sessionData.session) {
@@ -290,18 +296,21 @@ export default function Page() {
             setUser(null);
             setAuthProfileIssue(false);
           }
-          setSplashStatus("ready");
+          if (!cancelled) setSplashStatus("ready");
           return;
         }
-        const { data: authData, error: authError } = await supabase.auth.getUser();
+        const { data: authData, error: authError } = await withTimeout(
+          supabase.auth.getUser(), WORKSPACE_REQUEST_TIMEOUT_MS, SESSION_LOOKUP_TIMEOUT_MESSAGE,
+        );
+        if (cancelled) return;
         if (authError) {
           if (authError.status === 401) {
-            await supabase.auth.signOut();
+            await withTimeout(supabase.auth.signOut(), WORKSPACE_REQUEST_TIMEOUT_MS, SESSION_LOOKUP_TIMEOUT_MESSAGE);
             if (!cancelled) setUser(null);
           } else if (!cancelled) {
             setAuthProfileIssue(true);
           }
-          setSplashStatus("ready");
+          if (!cancelled) setSplashStatus("ready");
           return;
         }
         if (!authData.user) {
@@ -309,20 +318,25 @@ export default function Page() {
             setUser(null);
             setAuthProfileIssue(false);
           }
-          setSplashStatus("ready");
+          if (!cancelled) setSplashStatus("ready");
           return;
         }
-        const { data: profile, error: profileError } = await supabase
-          .from("profiles")
-          .select("full_name, account_status, account_role")
-          .eq("id", authData.user.id)
-          .maybeSingle();
+        const { data: profile, error: profileError } = await withTimeout(
+          supabase
+            .from("profiles")
+            .select("full_name, account_status, account_role")
+            .eq("id", authData.user.id)
+            .maybeSingle(),
+          WORKSPACE_REQUEST_TIMEOUT_MS,
+          SESSION_LOOKUP_TIMEOUT_MESSAGE,
+        );
+        if (cancelled) return;
         if (profileError || !profile) {
           if (!cancelled) {
             setUser(null);
             setAuthProfileIssue(true);
           }
-          setSplashStatus("ready");
+          if (!cancelled) setSplashStatus("ready");
           return;
         }
         const authenticatedUser: User = {
@@ -335,13 +349,13 @@ export default function Page() {
           setAuthProfileIssue(false);
           setUser(authenticatedUser);
         }
-        setSplashStatus(authenticatedUser.role === "user" && authenticatedUser.status === "active" ? "syncing" : "ready");
+        if (!cancelled) setSplashStatus(authenticatedUser.role === "user" && authenticatedUser.status === "active" ? "syncing" : "ready");
       } catch {
         if (!cancelled) {
           setUser(null);
           setAuthProfileIssue(true);
         }
-        setSplashStatus("ready");
+        if (!cancelled) setSplashStatus("ready");
       } finally {
         if (!cancelled) setCheckingAuth(false);
       }
@@ -366,7 +380,7 @@ export default function Page() {
       <div aria-hidden={splashVisible} inert={splashVisible ? true : undefined} className="min-h-dvh">
         {content}
       </div>
-      {splashVisible && <ValuriseSplash status={splashStatus} onComplete={() => setSplashVisible(false)} />}
+      {splashVisible && <ValuriseSplash status={splashStatus} onComplete={completeSplash} />}
     </>
   );
 }
@@ -389,18 +403,22 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
 
   const loadWorkspaces = useCallback(async () => {
     const supabase = getSupabaseBrowserClient();
-    const { data } = await supabase?.auth.getSession() || {};
-    const token = data?.session?.access_token;
+    const session = supabase
+      ? await withTimeout(supabase.auth.getSession(), WORKSPACE_REQUEST_TIMEOUT_MS, SESSION_LOOKUP_TIMEOUT_MESSAGE)
+      : undefined;
+    const token = session?.data.session?.access_token;
     if (!token) throw new Error("Sua sessão expirou. Entre novamente para carregar seus espaços.");
-    const response = await fetch("/api/workspaces", {
-      headers: { Authorization: `Bearer ${token}` },
-      cache: "no-store",
-      signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Não foi possível carregar seus espaços.");
-    if (!Array.isArray(result.workspaces) || !result.activeWorkspaceId) throw new Error("Nenhum espaço financeiro está disponível para esta conta.");
-    return { workspaces: result.workspaces as WorkspaceSummary[], activeWorkspaceId: String(result.activeWorkspaceId) };
+    return withTimeout((async () => {
+      const response = await fetch("/api/workspaces", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+        signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Não foi possível carregar seus espaços.");
+      if (!Array.isArray(result.workspaces) || !result.activeWorkspaceId) throw new Error("Nenhum espaço financeiro está disponível para esta conta.");
+      return { workspaces: result.workspaces as WorkspaceSummary[], activeWorkspaceId: String(result.activeWorkspaceId) };
+    })(), WORKSPACE_REQUEST_TIMEOUT_MS, "O carregamento dos espaços demorou mais que o esperado. Tente novamente.");
   }, []);
 
   useEffect(() => {
@@ -423,29 +441,34 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
   const switchWorkspace = async (workspaceId: string) => {
     if (!workspaceId || workspaceId === activeWorkspaceId || switching) return;
     const flushPreviousWorkspaceWrites = beforeSwitchRef.current;
-    const supabase = getSupabaseBrowserClient();
-    const { data } = await supabase?.auth.getSession() || {};
-    const token = data?.session?.access_token;
-    if (!token) return setLoadError("Sua sessão expirou. Entre novamente para trocar de espaço.");
     setSwitching(true);
     setLoadError("");
     onLoadingStatusChange("syncing");
     try {
+      const supabase = getSupabaseBrowserClient();
+      const session = supabase
+        ? await withTimeout(supabase.auth.getSession(), WORKSPACE_REQUEST_TIMEOUT_MS, SESSION_LOOKUP_TIMEOUT_MESSAGE)
+        : undefined;
+      const token = session?.data.session?.access_token;
+      if (!token) throw new Error("Sua sessão expirou. Entre novamente para trocar de espaço.");
       const writesFlushed = await waitForWorkspaceWrites(flushPreviousWorkspaceWrites, WORKSPACE_WRITE_FLUSH_GRACE_MS);
-      const response = await fetch("/api/workspaces/active", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ workspaceId }),
-        signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Não foi possível trocar o espaço ativo.");
+      const result = await withTimeout((async () => {
+        const response = await fetch("/api/workspaces/active", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ workspaceId }),
+          signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Não foi possível trocar o espaço ativo.");
+        return payload;
+      })(), WORKSPACE_REQUEST_TIMEOUT_MS, "A troca demorou mais que o esperado. Tente novamente.");
       setActiveWorkspaceId(result.activeWorkspaceId);
       if (!writesFlushed) {
         setLoadError("A troca foi concluída. Uma sincronização do espaço anterior ainda está pendente; os dados foram mantidos neste dispositivo.");
       }
     } catch (error) {
-      const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+      const timedOut = error instanceof Error && error.name === "TimeoutError";
       setLoadError(timedOut
         ? "A troca demorou mais que o esperado. O espaço atual foi mantido; verifique sua conexão e tente novamente."
         : error instanceof Error ? error.message : "Não foi possível trocar o espaço ativo.");
@@ -459,27 +482,33 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
     if (switching) throw new Error("Aguarde a operação atual terminar e tente novamente.");
     const personalWorkspace = workspaces.find((item) => item.type === "personal");
     if (!personalWorkspace) throw new Error("Seu espaço Pessoal não foi encontrado. A empresa não foi alterada.");
-    const supabase = getSupabaseBrowserClient();
-    const { data } = await supabase?.auth.getSession() || {};
-    const token = data?.session?.access_token;
-    if (!token) throw new Error("Sua sessão expirou. Entre novamente para excluir a empresa.");
 
     setSwitching(true);
     setLoadError("");
     onLoadingStatusChange("syncing");
     try {
-      await beforeSwitchRef.current();
-      const response = await fetch("/api/workspaces/business", {
-        method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          "X-Valurise-Workspace-Id": workspaceId,
-        },
-        body: JSON.stringify({ confirmationName }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Não foi possível excluir a empresa.");
+      const supabase = getSupabaseBrowserClient();
+      const session = supabase
+        ? await withTimeout(supabase.auth.getSession(), WORKSPACE_REQUEST_TIMEOUT_MS, SESSION_LOOKUP_TIMEOUT_MESSAGE)
+        : undefined;
+      const token = session?.data.session?.access_token;
+      if (!token) throw new Error("Sua sessão expirou. Entre novamente para excluir a empresa.");
+      const writesFlushed = await waitForWorkspaceWrites(beforeSwitchRef.current, WORKSPACE_WRITE_FLUSH_GRACE_MS);
+      if (!writesFlushed) throw new Error("A sincronização ainda está finalizando. Aguarde um instante antes de excluir a empresa.");
+      await withTimeout((async () => {
+        const response = await fetch("/api/workspaces/business", {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            "X-Valurise-Workspace-Id": workspaceId,
+          },
+          body: JSON.stringify({ confirmationName }),
+          signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Não foi possível excluir a empresa.");
+      })(), WORKSPACE_REQUEST_TIMEOUT_MS, "A exclusão demorou mais que o esperado. Tente novamente.");
 
       // Clear only browser cache keys belonging to this exact business workspace.
       const localPrefix = `valurise:v2:${user.username}:workspace:${workspaceId}`;
@@ -520,21 +549,29 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
       setFormError("Informe o nome fantasia, a razão social e um CNPJ válido.");
       return;
     }
-    const supabase = getSupabaseBrowserClient();
-    const { data } = await supabase?.auth.getSession() || {};
-    const token = data?.session?.access_token;
-    if (!token) return setFormError("Sua sessão expirou. Entre novamente para criar uma empresa.");
+    if (creating) return;
     setCreating(true);
     onLoadingStatusChange("syncing");
     try {
-      await beforeSwitchRef.current();
-      const response = await fetch("/api/workspaces/business", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ tradeName: tradeName.trim(), legalName: legalName.trim(), cnpj }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Não foi possível criar o espaço empresarial.");
+      const supabase = getSupabaseBrowserClient();
+      const session = supabase
+        ? await withTimeout(supabase.auth.getSession(), WORKSPACE_REQUEST_TIMEOUT_MS, SESSION_LOOKUP_TIMEOUT_MESSAGE)
+        : undefined;
+      const token = session?.data.session?.access_token;
+      if (!token) throw new Error("Sua sessão expirou. Entre novamente para criar uma empresa.");
+      const writesFlushed = await waitForWorkspaceWrites(beforeSwitchRef.current, WORKSPACE_WRITE_FLUSH_GRACE_MS);
+      if (!writesFlushed) throw new Error("A sincronização ainda está finalizando. Aguarde um instante antes de criar a empresa.");
+      const result = await withTimeout((async () => {
+        const response = await fetch("/api/workspaces/business", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ tradeName: tradeName.trim(), legalName: legalName.trim(), cnpj }),
+          signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Não foi possível criar o espaço empresarial.");
+        return payload;
+      })(), WORKSPACE_REQUEST_TIMEOUT_MS, "A criação da empresa demorou mais que o esperado. Tente novamente.");
       const created = result.workspace as WorkspaceSummary;
       setWorkspaces((current) => [...current.filter((item) => item.id !== created.id), created]);
       setActiveWorkspaceId(created.id);

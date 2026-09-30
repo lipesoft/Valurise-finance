@@ -20,6 +20,11 @@ export function ValuriseSplash({ status, onComplete }: ValuriseSplashProps) {
   const [revealing, setRevealing] = useState(false);
   const [exitComplete, setExitComplete] = useState(false);
   const completed = useRef(false);
+  const onCompleteRef = useRef(onComplete);
+
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
 
   useEffect(() => {
     setHasHydrated(true);
@@ -65,10 +70,10 @@ export function ValuriseSplash({ status, onComplete }: ValuriseSplashProps) {
     const fallback = window.setTimeout(() => {
       if (completed.current) return;
       completed.current = true;
-      onComplete();
+      onCompleteRef.current();
     }, 400);
     return () => window.clearTimeout(fallback);
-  }, [exitComplete, onComplete]);
+  }, [exitComplete]);
 
   const waiting =
     !reducedMotion && introComplete && (status === "opening" || status === "syncing") && !revealing;
@@ -82,7 +87,7 @@ export function ValuriseSplash({ status, onComplete }: ValuriseSplashProps) {
   function finish() {
     if (completed.current) return;
     completed.current = true;
-    onComplete();
+    onCompleteRef.current();
   }
 
   function handleRootTransitionEnd(event: TransitionEvent<HTMLDivElement>) {

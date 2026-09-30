@@ -7,6 +7,7 @@ import { accountBalance, formatBRL, type FinanceTransaction } from "@/lib/financ
 import { HelpHint } from "@/components/help-hint";
 import { AnimatedCard } from "@/components/motion";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { withTimeout } from "@/lib/async";
 import { isRecurringBillPaidInMonth, isRecurringBillScheduledInMonth, recurringBillDueDay } from "@/lib/recurring-bills";
 import styles from "@/components/business-finance.module.css";
 import {
@@ -46,6 +47,7 @@ type BusinessInstitutionData = {
   recurringBills?: BusinessCashSchedule[];
   plannedReceivables?: PlannedReceivable[];
 };
+const BUSINESS_REQUEST_TIMEOUT_MS = 8_000;
 
 const blankProfile: Profile = {
   legal_name: "", trade_name: "", cnpj: "", email: null, phone: null, postal_code: null, street: null,
@@ -100,23 +102,27 @@ function exactMonthlyMoney(cents: number | null, currency = "BRL") {
 }
 async function authorizedRequest(workspaceId: string, path: string, init?: RequestInit) {
   const supabase = getSupabaseBrowserClient();
-  const { data } = await supabase?.auth.getSession() || {};
-  const token = data?.session?.access_token;
+  const session = supabase
+    ? await withTimeout(supabase.auth.getSession(), BUSINESS_REQUEST_TIMEOUT_MS, "A sessão demorou mais que o esperado. Tente novamente.")
+    : undefined;
+  const token = session?.data.session?.access_token;
   if (!token) throw new Error("Sua sessão expirou. Entre novamente para continuar.");
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "X-Valurise-Workspace-Id": workspaceId,
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
-    signal: init?.signal || AbortSignal.timeout(15_000),
-    cache: "no-store",
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "Não foi possível carregar os dados empresariais.");
-  return payload;
+  return withTimeout((async () => {
+    const response = await fetch(path, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Valurise-Workspace-Id": workspaceId,
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...init?.headers,
+      },
+      signal: init?.signal || AbortSignal.timeout(BUSINESS_REQUEST_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "Não foi possível carregar os dados empresariais.");
+    return payload;
+  })(), BUSINESS_REQUEST_TIMEOUT_MS, "A consulta dos dados empresariais demorou mais que o esperado.");
 }
 function emptySnapshot(period: string): BusinessFinanceSnapshot {
   return calculateBusinessFinanceSnapshot({ period, transactions: [], assumptions: [], cashAvailableCents: null });

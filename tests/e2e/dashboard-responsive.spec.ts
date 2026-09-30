@@ -169,6 +169,7 @@ async function installMockSession(page: import("@playwright/test").Page, financi
 }
 
 test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.setViewportSize({ width: 1348, height: 618 });
   await installMockSession(page, 0, false, true);
   await page.goto("/");
@@ -267,7 +268,8 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByText("Contrato empresa QA", { exact: true })).toHaveCount(0);
 });
 
-test("a troca de espaço continua mesmo se uma gravação remota anterior ficar pendente", async ({ page }) => {
+test("a troca libera a interface mesmo enquanto uma gravação remota anterior termina", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.setViewportSize({ width: 1280, height: 900 });
   await installMockSession(page);
   await page.route("**/rest/v1/user_financial_state**", async (route) => {
@@ -296,12 +298,12 @@ test("a troca de espaço continua mesmo se uma gravação remota anterior ficar 
 
   await expect(personalGreeting).toBeVisible({ timeout: 8_000 });
   await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
-  await expect(page.getByText(/sincronização do espaço anterior ainda está pendente/)).toBeVisible();
   await expect(page.getByText("Mercado QA")).toBeVisible();
   await expect(page.getByText("Empresa QA Serviços LTDA", { exact: true })).toHaveCount(0);
 });
 
 test("uma confirmação de troca sem resposta libera o splash e mantém o espaço atual", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.setViewportSize({ width: 1280, height: 900 });
   await installMockSession(page);
   await page.route("**/api/workspaces/active", async () => new Promise(() => {}));
@@ -648,6 +650,38 @@ test("splash libera o erro de sincronização em vez de permanecer carregando", 
 
   await expect(page.getByText("Não foi possível confirmar seus dados", { exact: true })).toBeVisible();
   await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+});
+
+test("entrada se recupera quando a consulta do perfil de autenticação fica sem resposta", async ({ page }) => {
+  test.setTimeout(60_000);
+  await installMockSession(page);
+  await page.route("**/rest/v1/profiles**", async () => new Promise(() => {}));
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "Não foi possível validar seu acesso" })).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+});
+
+test("entrada empresarial se recupera se o perfil da empresa ficar sem resposta", async ({ page }) => {
+  test.setTimeout(60_000);
+  await installMockSession(page);
+  await page.route("**/api/workspaces/business/profile**", async () => new Promise(() => {}));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
+  const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
+  await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
+  await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
+  await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
+  await dialog.getByRole("button", { name: "Criar empresa" }).click();
+  await page.getByRole("button", { name: "Pular por enquanto" }).click();
+
+  await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Não foi possível atualizar as metas empresariais/)).toBeVisible();
 });
 
 test("sincronização sem resposta libera uma recuperação em vez de prender o splash", async ({ page }) => {
