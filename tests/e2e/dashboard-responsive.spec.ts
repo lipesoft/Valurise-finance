@@ -626,11 +626,19 @@ test("cabeçalho simplifica o mobile e mantém a troca de espaço acessível", a
   await expect(menu.getByRole("button", { name: "Sair do sistema" })).toHaveCount(1);
   await expect(menu.getByText("Aparência")).toHaveCount(0);
   const mobileMenuHeader = menu.locator("aside > div").first();
-  await expect(mobileMenuHeader.getByRole("button", { name: "Tema claro" })).toBeVisible();
-  await expect(mobileMenuHeader.getByRole("button", { name: "Tema escuro" })).toBeVisible();
+  await expect(mobileMenuHeader.getByRole("switch", { name: "Tema escuro" })).toBeVisible();
   await page.setViewportSize({ width: 320, height: 780 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect.poll(() => menu.locator("aside").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(320);
+  const narrowAsideBounds = await menu.locator("aside").boundingBox();
+  const narrowThemeBounds = await mobileMenuHeader.getByRole("switch", { name: "Tema escuro" }).boundingBox();
+  const narrowCloseBounds = await mobileMenuHeader.getByRole("button", { name: "Fechar menu" }).boundingBox();
+  expect(narrowAsideBounds).not.toBeNull();
+  expect(narrowThemeBounds).not.toBeNull();
+  expect(narrowCloseBounds).not.toBeNull();
+  expect(narrowThemeBounds!.x).toBeGreaterThanOrEqual(narrowAsideBounds!.x);
+  expect(narrowThemeBounds!.x + narrowThemeBounds!.width).toBeLessThanOrEqual(narrowAsideBounds!.x + narrowAsideBounds!.width);
+  expect(narrowCloseBounds!.x + narrowCloseBounds!.width).toBeLessThanOrEqual(narrowAsideBounds!.x + narrowAsideBounds!.width);
   const mobileWorkspaceSwitcher = menu.getByRole("button", { name: "Alternar espaço financeiro" });
   await mobileWorkspaceSwitcher.focus();
   await page.keyboard.press("ArrowDown");
@@ -656,11 +664,12 @@ test("menu lateral mobile abre notificações no próprio painel e controla apar
   const menu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
   await expect.poll(() => menu.locator("aside").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(390);
   const menuHeader = menu.locator("aside > div").first();
-  const lightTheme = menuHeader.getByRole("button", { name: "Tema claro" });
-  const darkTheme = menuHeader.getByRole("button", { name: "Tema escuro" });
+  const themeToggle = menuHeader.getByRole("switch", { name: "Tema escuro" });
+  const themeThumb = themeToggle.locator("[data-theme-toggle-thumb]");
   const menuFooter = menu.locator("aside > div").last();
-  await expect(lightTheme).toBeVisible();
-  await expect(darkTheme).toBeVisible();
+  await expect(themeToggle).toBeVisible();
+  await expect(themeToggle.locator("svg")).toHaveCount(2);
+  await expect(themeThumb).toHaveClass(/transition-transform/);
   await expect(menu.getByText("Aparência")).toHaveCount(0);
   await expect(menuFooter.getByRole("button", { name: /^Notificações/ })).toBeVisible();
   await expect(menuFooter.getByRole("button", { name: "Sair do sistema" })).toHaveCount(0);
@@ -670,13 +679,16 @@ test("menu lateral mobile abre notificações no próprio painel e controla apar
   await menu.getByRole("button", { name: "Fechar notificações" }).click();
   await expect(menu.getByRole("region", { name: "Notificações financeiras" })).toHaveCount(0);
 
-  await lightTheme.click();
-  await expect(lightTheme).toHaveAttribute("aria-pressed", "true");
-  await expect(darkTheme).toHaveAttribute("aria-pressed", "false");
+  if (await themeToggle.getAttribute("aria-checked") === "true") {
+    await themeToggle.click();
+  }
+  await expect(themeToggle).toHaveAttribute("aria-checked", "false");
+  await expect(themeThumb).toHaveClass(/translate-x-0/);
   await expect(page.locator("main.light")).toBeVisible();
-  await darkTheme.click();
-  await expect(darkTheme).toHaveAttribute("aria-pressed", "true");
-  await expect(lightTheme).toHaveAttribute("aria-pressed", "false");
+  await themeToggle.click();
+  await expect(themeToggle).toHaveAttribute("aria-checked", "true");
+  await expect(themeThumb).toHaveClass(/translate-x-7/);
+  await expect(page.locator("main.light")).toHaveCount(0);
 
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();

@@ -1354,26 +1354,23 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
           >
             <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
               <Brand />
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex shrink-0 items-center gap-1">
                 <button
                   type="button"
-                  aria-label="Tema claro"
-                  aria-pressed={useLightTheme}
-                  title="Tema claro"
-                  onClick={() => setT("light")}
-                  className={`grid h-10 w-10 place-items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${useLightTheme ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--muted)] hover:bg-[var(--panel)] hover:text-[var(--fg)]"}`}
-                >
-                  <Sun aria-hidden="true" size={18} />
-                </button>
-                <button
-                  type="button"
+                  role="switch"
                   aria-label="Tema escuro"
-                  aria-pressed={!useLightTheme}
-                  title="Tema escuro"
-                  onClick={() => setT("dark")}
-                  className={`grid h-10 w-10 place-items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${!useLightTheme ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--muted)] hover:bg-[var(--panel)] hover:text-[var(--fg)]"}`}
+                  aria-checked={!useLightTheme}
+                  title={`Ativar tema ${useLightTheme ? "escuro" : "claro"}`}
+                  onClick={() => setT(useLightTheme ? "dark" : "light")}
+                  className="relative grid h-9 w-16 shrink-0 grid-cols-2 items-center rounded-full bg-[var(--panel2)] p-1 text-[var(--muted)] transition-colors hover:bg-[var(--panel)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                 >
-                  <Moon aria-hidden="true" size={18} />
+                  <span
+                    aria-hidden="true"
+                    data-theme-toggle-thumb
+                    className={`pointer-events-none absolute left-1 top-1 z-0 h-7 w-7 rounded-full bg-[var(--accent)]/15 shadow-sm ring-1 ring-[var(--accent)]/20 transition-transform duration-300 ease-in-out motion-reduce:transition-none ${useLightTheme ? "translate-x-0" : "translate-x-7"}`}
+                  />
+                  <Sun aria-hidden="true" className={`relative z-10 mx-auto transition-colors duration-200 ${useLightTheme ? "text-[var(--accent)]" : ""}`} size={18} />
+                  <Moon aria-hidden="true" className={`relative z-10 mx-auto transition-colors duration-200 ${!useLightTheme ? "text-[var(--accent)]" : ""}`} size={18} />
                 </button>
                 <button
                   type="button"
