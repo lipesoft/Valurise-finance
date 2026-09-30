@@ -267,6 +267,64 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(page.getByText("Contrato empresa QA", { exact: true })).toHaveCount(0);
 });
 
+test("a troca de espaço continua mesmo se uma gravação remota anterior ficar pendente", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installMockSession(page);
+  await page.route("**/rest/v1/user_financial_state**", async (route) => {
+    if (route.request().method() === "PATCH") await new Promise((resolve) => setTimeout(resolve, 4_000));
+    await route.fallback();
+  });
+  await page.goto("/");
+  const personalGreeting = page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ });
+  await expect(personalGreeting).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
+  const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
+  await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
+  await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
+  await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
+  await dialog.getByRole("button", { name: "Criar empresa" }).click();
+  await expect(page.getByRole("button", { name: "Pular por enquanto" })).toBeVisible();
+
+  const pendingWrite = page.waitForRequest((request) => request.url().includes("user_financial_state") && request.method() === "PATCH");
+  await page.getByRole("button", { name: "Pular por enquanto" }).click();
+  await pendingWrite;
+  await expect(page.getByRole("button", { name: "Alternar espaço financeiro" })).toBeVisible();
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitemradio", { name: /Pessoal.*Pessoa de teste/ }).click();
+
+  await expect(personalGreeting).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/sincronização do espaço anterior ainda está pendente/)).toBeVisible();
+  await expect(page.getByText("Mercado QA")).toBeVisible();
+  await expect(page.getByText("Empresa QA Serviços LTDA", { exact: true })).toHaveCount(0);
+});
+
+test("uma confirmação de troca sem resposta libera o splash e mantém o espaço atual", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installMockSession(page);
+  await page.route("**/api/workspaces/active", async () => new Promise(() => {}));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: /^(Bom dia|Boa tarde|Boa noite), Pessoa de teste\.$/ })).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitem", { name: "Criar espaço empresarial" }).click();
+  const dialog = page.getByRole("dialog", { name: "Criar espaço empresarial" });
+  await dialog.getByLabel("Nome fantasia").fill("Empresa QA");
+  await dialog.getByLabel("Razão social").fill("Empresa QA Serviços LTDA");
+  await dialog.getByLabel("CNPJ").fill("11.222.333/0001-81");
+  await dialog.getByRole("button", { name: "Criar empresa" }).click();
+  await page.getByRole("button", { name: "Pular por enquanto" }).click();
+  await expect(page.getByRole("button", { name: "Alternar espaço financeiro" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Alternar espaço financeiro" }).click();
+  await page.getByRole("menuitemradio", { name: /Pessoal.*Pessoa de teste/ }).click();
+  await expect(page.getByText("A troca demorou mais que o esperado.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Empresa QA", exact: true })).toBeVisible();
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+});
+
 test("Dashboard empresarial sem dados mostra estado vazio e continua responsivo", async ({ page }) => {
   await installMockSession(page, 0, false, false, true);
   await page.goto("/");
@@ -580,6 +638,19 @@ test("splash libera o erro de sincronização em vez de permanecer carregando", 
   await page.goto("/");
 
   await expect(page.getByText("Não foi possível confirmar seus dados", { exact: true })).toBeVisible();
+  await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
+});
+
+test("sincronização sem resposta libera uma recuperação em vez de prender o splash", async ({ page }) => {
+  await installMockSession(page);
+  await page.route("**/rest/v1/user_financial_state**", async (route) => {
+    if (route.request().method() === "GET") await new Promise(() => {});
+    await route.fallback();
+  });
+  await page.goto("/");
+
+  await expect(page.getByText("Não foi possível confirmar seus dados", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "Tentar novamente" })).toBeVisible();
   await expect(page.getByText("Sincronizando sua conta…", { exact: true })).toHaveCount(0);
 });
 

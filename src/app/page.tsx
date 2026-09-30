@@ -231,6 +231,24 @@ const choices = [
   ["investment", "Investi", BarChart3],
   ["transfer", "Transferi", WalletCards],
 ] as const;
+const WORKSPACE_REQUEST_TIMEOUT_MS = 8_000;
+const WORKSPACE_STATE_LOAD_TIMEOUT_MS = 12_000;
+const WORKSPACE_WRITE_FLUSH_GRACE_MS = 1_500;
+
+async function waitForWorkspaceWrites(flush: () => Promise<void>, timeoutMs: number) {
+  let timeout: number | undefined;
+  try {
+    return await Promise.race([
+      flush().then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = window.setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
+  }
+}
+
 export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -372,7 +390,11 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
     const { data } = await supabase?.auth.getSession() || {};
     const token = data?.session?.access_token;
     if (!token) throw new Error("Sua sessão expirou. Entre novamente para carregar seus espaços.");
-    const response = await fetch("/api/workspaces", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const response = await fetch("/api/workspaces", {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
+    });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Não foi possível carregar seus espaços.");
     if (!Array.isArray(result.workspaces) || !result.activeWorkspaceId) throw new Error("Nenhum espaço financeiro está disponível para esta conta.");
@@ -407,17 +429,24 @@ function WorkspaceGate({ user, logout, onLoadingStatusChange }: { user: User; lo
     setLoadError("");
     onLoadingStatusChange("syncing");
     try {
-      await flushPreviousWorkspaceWrites();
+      const writesFlushed = await waitForWorkspaceWrites(flushPreviousWorkspaceWrites, WORKSPACE_WRITE_FLUSH_GRACE_MS);
       const response = await fetch("/api/workspaces/active", {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ workspaceId }),
+        signal: AbortSignal.timeout(WORKSPACE_REQUEST_TIMEOUT_MS),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Não foi possível trocar o espaço ativo.");
       setActiveWorkspaceId(result.activeWorkspaceId);
+      if (!writesFlushed) {
+        setLoadError("A troca foi concluída. Uma sincronização do espaço anterior ainda está pendente; os dados foram mantidos neste dispositivo.");
+      }
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Não foi possível trocar o espaço ativo.");
+      const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+      setLoadError(timedOut
+        ? "A troca demorou mais que o esperado. O espaço atual foi mantido; verifique sua conexão e tente novamente."
+        : error instanceof Error ? error.message : "Não foi possível trocar o espaço ativo.");
       onLoadingStatusChange("ready");
     } finally {
       setSwitching(false);
@@ -847,6 +876,11 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
   const completeBusinessOverviewLoad = useCallback(() => setBusinessOverviewReady(true), []);
   useEffect(() => {
     let stale = false;
+    const timeout = window.setTimeout(() => {
+      if (stale) return;
+      stale = true;
+      setStateLoadError(true);
+    }, WORKSPACE_STATE_LOAD_TIMEOUT_MS);
     setStateReady(false);
     setStateLoadError(false);
     void (async () => {
@@ -908,9 +942,11 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
         setProfile(state.profile);
         if (!remote) {
           const result = await saveValuriseState(state, workspace, null);
+          if (stale) return;
           if (result.synced) stateVersionRef.current = result.version ?? 1;
           if (result.reason === "conflict") {
             const latest = await loadValuriseState<Data, FinanceTransaction, ProfilePreference>(workspace.id);
+            if (stale) return;
             if (!latest) throw new Error("Outra sessão criou seus dados durante o carregamento.");
             stateVersionRef.current = latest.version;
             setData(latest.state.data); setTx(latest.state.transactions); setProfile(latest.state.profile);
@@ -923,10 +959,13 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
         if (!stale) setStateReady(true);
       } catch {
         if (!stale) setStateLoadError(true);
+      } finally {
+        window.clearTimeout(timeout);
       }
     })();
     return () => {
       stale = true;
+      window.clearTimeout(timeout);
     };
   }, [key, legacyKey, oldPersonalKey, user.username, workspace]);
   useEffect(() => {

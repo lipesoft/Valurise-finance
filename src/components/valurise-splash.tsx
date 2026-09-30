@@ -48,6 +48,28 @@ export function ValuriseSplash({ status, onComplete }: ValuriseSplashProps) {
     }
   }, [introComplete, reducedMotion, status]);
 
+  useEffect(() => {
+    if (status !== "ready") return;
+    // Bound the reveal even if an animation/transition event is lost by the browser.
+    const fallback = window.setTimeout(() => {
+      setRevealing(true);
+      setExitComplete(true);
+    }, 2_000);
+    return () => window.clearTimeout(fallback);
+  }, [status]);
+
+  useEffect(() => {
+    if (!exitComplete) return;
+    // Transition events can be skipped when the document is backgrounded or
+    // reduced-motion settings remove the transition entirely.
+    const fallback = window.setTimeout(() => {
+      if (completed.current) return;
+      completed.current = true;
+      onComplete();
+    }, 400);
+    return () => window.clearTimeout(fallback);
+  }, [exitComplete, onComplete]);
+
   const waiting =
     !reducedMotion && introComplete && (status === "opening" || status === "syncing") && !revealing;
   const statusText =
