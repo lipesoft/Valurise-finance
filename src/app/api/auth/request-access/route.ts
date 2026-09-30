@@ -18,16 +18,25 @@ const requestSchema = z.object({
 
 const genericAccepted = () => NextResponse.json({ ok: true }, { status: 202 });
 const bucket = (scope: string, value: string) => createHash("sha256").update(`${scope}\0${value}`).digest("hex");
+const RATE_LIMITS = { ip: 20, email: 8, windowSeconds: 3600 } as const;
 
 async function consumeLimit(admin: ReturnType<typeof getSupabaseAdminClient>, key: string, attempts: number) {
   return admin.rpc("consume_public_rate_limit", {
     p_key: key,
     p_max_attempts: attempts,
-    p_window_seconds: 3600,
+    p_window_seconds: RATE_LIMITS.windowSeconds,
   });
 }
 
 const responseError = (message: string, status: number) => NextResponse.json({ error: message }, { status });
+function rateLimited(scope: "ip" | "email") {
+  // Keep logs useful for operations without writing the visitor's IP or email.
+  console.warn("[auth.request-access.rate-limited]", { scope });
+  return NextResponse.json(
+    { error: "Você atingiu o limite de tentativas de cadastro. Aguarde até 1 hora e tente novamente." },
+    { status: 429, headers: { "Retry-After": "3600", "Cache-Control": "no-store, max-age=0" } },
+  );
+}
 
 /**
  * Starts a Supabase Auth email-confirmation flow. The Master queue is populated
@@ -59,9 +68,9 @@ export async function POST(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const forwardedFor = request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim();
   const clientAddress = forwardedFor || request.headers.get("x-real-ip") || "unknown";
-  const addressLimit = await consumeLimit(admin, bucket("access-request:ip", clientAddress), 10);
+  const addressLimit = await consumeLimit(admin, bucket("access-request:ip", clientAddress), RATE_LIMITS.ip);
   if (addressLimit.error) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
-  if (addressLimit.data !== true) return NextResponse.json({ error: "Muitas tentativas. Aguarde um pouco e tente novamente." }, { status: 429, headers: { "Retry-After": "3600" } });
+  if (addressLimit.data !== true) return rateLimited("ip");
 
   if (!/^[a-z0-9._-]{3,32}$/.test(username)) return responseError("Escolha um usuário com pelo menos 3 caracteres.", 400);
   const { data: existingUsername, error: usernameError } = await admin
@@ -72,9 +81,9 @@ export async function POST(request: NextRequest) {
   if (usernameError) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
   if (existingUsername) return genericAccepted();
 
-  const emailLimit = await consumeLimit(admin, bucket("access-request:email", email), 4);
+  const emailLimit = await consumeLimit(admin, bucket("access-request:email", email), RATE_LIMITS.email);
   if (emailLimit.error) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
-  if (emailLimit.data !== true) return NextResponse.json({ error: "Muitas tentativas. Aguarde um pouco e tente novamente." }, { status: 429, headers: { "Retry-After": "3600" } });
+  if (emailLimit.data !== true) return rateLimited("email");
 
   let inviteId: string | null = null;
   if (parsed.data.inviteToken) {

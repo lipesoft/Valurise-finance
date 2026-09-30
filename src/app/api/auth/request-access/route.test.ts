@@ -129,4 +129,43 @@ describe("POST /api/auth/request-access", () => {
     expect(tables.access_request_details.eq).toHaveBeenNthCalledWith(1, "user_id", userId);
     expect(tables.access_request_details.eq).toHaveBeenNthCalledWith(2, "request_status", "pending_email");
   });
+
+  it("aplica um limite por IP que permite a rodada normal de testes sem liberar tentativas ilimitadas", async () => {
+    const response = await POST(request());
+
+    expect(response.status).toBe(202);
+    expect(admin.rpc).toHaveBeenNthCalledWith(1, "consume_public_rate_limit", expect.objectContaining({
+      p_max_attempts: 20,
+      p_window_seconds: 3600,
+    }));
+  });
+
+  it("não chama o provedor quando o limite por IP é atingido e não registra dados pessoais", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    admin.rpc.mockResolvedValueOnce({ data: false, error: null });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("3600");
+    expect(signUp).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("[auth.request-access.rate-limited]", { scope: "ip" });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("Pessoa@Example.invalid");
+    warn.mockRestore();
+  });
+
+  it("mantém limite específico por e-mail e não chama o provedor após excedê-lo", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: true, error: null })
+      .mockResolvedValueOnce({ data: false, error: null });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(429);
+    expect(signUp).not.toHaveBeenCalled();
+    expect(admin.rpc).toHaveBeenNthCalledWith(2, "consume_public_rate_limit", expect.objectContaining({
+      p_max_attempts: 8,
+      p_window_seconds: 3600,
+    }));
+  });
 });
