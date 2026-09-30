@@ -284,7 +284,7 @@ test("arquiva um pedido sem recusá-lo e permite reabri-lo pela lixeira", async 
   await page.getByRole("button", { name: "Usuários" }).click();
   await page.locator("#master-account-status").selectOption("trashed");
   await expect(page.getByText("Pedido arquivado — ainda não aprovado nem recusado.")).toBeVisible();
-  await page.locator('summary[aria-label="Ações de Pedido Confirmado"]').click();
+  await page.getByRole("button", { name: "Ações de Pedido Confirmado" }).click();
   await page.getByRole("button", { name: "Reabrir solicitação" }).click();
   const reopenDialog = page.getByRole("dialog", { name: "Reabrir solicitação" });
   await expect(reopenDialog.getByText(/Reabrir não aprova nem libera a conta/)).toBeVisible();
@@ -339,9 +339,33 @@ test("lista mais de 200 contas com paginação, busca e menu de ações", async 
   await expect(page.getByText("Usuário de teste 206", { exact: true })).toBeVisible();
   await page.getByLabel("Buscar por nome, usuário ou e-mail").fill("usuario206@");
   await expect(page.getByText("Página 1 de 1 · 1 registro")).toBeVisible();
-  await page.locator('summary[aria-label="Ações de Usuário de teste 206"]').click();
+  await page.getByRole("button", { name: "Ações de Usuário de teste 206" }).click();
   await expect(page.getByRole("button", { name: "Desativar conta" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("menu de ações fica inteiro na tela em viewport estreita e abre para cima quando necessário", async ({ page }) => {
+  await signInAsMaster(page, { manyUsers: true });
+  await page.getByRole("button", { name: "Usuários" }).click();
+  await page.setViewportSize({ width: 320, height: 520 });
+
+  const trigger = page.getByRole("button", { name: "Ações de Usuário de teste 1", exact: true });
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.click();
+
+  const menu = page.getByTestId("account-actions-menu");
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Desativar conta" })).toBeVisible();
+  const bounds = await menu.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320);
+  expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(520);
+
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(trigger).toBeFocused();
 });
 
 test("convites mostram validade e uso, e o Master consegue revogar um convite ativo", async ({ page }) => {
@@ -397,7 +421,7 @@ test("recusa exige motivo e exclusão definitiva exige reautenticação e confir
   await page.getByRole("button", { name: "Usuários" }).click();
   await page.getByLabel("Filtrar contas").selectOption("trashed");
   await expect(page.getByText("Conta de Teste na Lixeira")).toBeVisible();
-  await page.locator('summary[aria-label="Ações de Conta de Teste na Lixeira"]').click();
+  await page.getByRole("button", { name: "Ações de Conta de Teste na Lixeira" }).click();
   await expect(page.getByRole("button", { name: "Restaurar conta" })).toHaveCount(0);
   await page.getByRole("button", { name: "Excluir definitivamente" }).click();
   const deleteDialog = page.getByRole("dialog", { name: "Excluir definitivamente?" });

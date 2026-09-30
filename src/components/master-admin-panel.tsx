@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Activity,
   Bell,
@@ -44,6 +45,7 @@ type PageData = { items: Account[]; total: number; page: number; pageSize: numbe
 type Invite = { id: string; token: string; link: string; createdAt: string; expiresAt: string; usedAt: string | null; usedByName: string | null; revokedAt: string | null; status: string };
 type AuditEntry = { id: string; action: string; outcome: string; reason_code: string | null; reason_note: string | null; detail_code: string | null; created_at: string; actor_name: string | null; actor_email: string | null; target_ref: string | null; target_name: string | null; target_email: string | null };
 type PendingAction = { user: Account; action: "approve" | "reject" | "disable" | "restore" | "trash" | "archive_request" | "reopen_request" | "delete_permanently" };
+type AccountActionOption = { action: PendingAction["action"]; label: string; danger?: boolean; destructive?: boolean };
 type RequestTarget = { search: string; userId?: string; nonce: number };
 
 const pageSize = 25;
@@ -116,6 +118,116 @@ function dateInputEndExclusive(value: string): string | undefined {
   if (!year || !month || !day) return undefined;
   const date = new Date(year, month - 1, day + 1);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function AccountActionsMenu({
+  account,
+  actions,
+  rowBusy,
+  onChoose,
+}: {
+  account: Account;
+  actions: AccountActionOption[];
+  rowBusy: boolean;
+  onChoose: (account: Account, action: PendingAction["action"], trigger?: HTMLElement) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuId = `account-actions-${account.id}`;
+
+  useLayoutEffect(() => {
+    if (!open) return;
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      const menu = menuRef.current;
+      if (!trigger || !menu) return;
+
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = window.innerHeight;
+      const edge = 8;
+      const rect = trigger.getBoundingClientRect();
+      const menuWidth = menu.getBoundingClientRect().width;
+      const menuHeight = menu.getBoundingClientRect().height;
+      const below = Math.max(0, viewportHeight - rect.bottom - edge);
+      const above = Math.max(0, rect.top - edge);
+      const placeAbove = menuHeight > below && above > below;
+      const maxHeight = Math.max(80, viewportHeight - edge * 2);
+      const left = Math.min(Math.max(edge, rect.right - menuWidth), viewportWidth - menuWidth - edge);
+      const top = placeAbove
+        ? Math.max(edge, rect.top - Math.min(menuHeight, maxHeight) - 6)
+        : Math.min(viewportHeight - Math.min(menuHeight, maxHeight) - edge, rect.bottom + 6);
+
+      setPosition({ left, top, maxHeight });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return <>
+    <button
+      ref={triggerRef}
+      type="button"
+      aria-label={`Ações de ${accountName(account)}`}
+      aria-expanded={open}
+      aria-controls={menuId}
+      onClick={() => setOpen((value) => !value)}
+      className="flex min-h-10 cursor-pointer items-center gap-2 rounded-xl bg-[var(--panel)] px-3 text-xs font-medium"
+    >Ações <ChevronRight size={14} aria-hidden="true" className="rotate-90" /></button>
+    {open && typeof document !== "undefined" && createPortal(
+      <div
+        ref={menuRef}
+        id={menuId}
+        role="group"
+        aria-label={`Ações de ${accountName(account)}`}
+        data-testid="account-actions-menu"
+        className="fixed z-[100] grid w-56 gap-1 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1.5 shadow-xl"
+        style={{
+          left: position?.left ?? 8,
+          top: position?.top ?? 8,
+          maxWidth: "calc(100vw - 1rem)",
+          maxHeight: position?.maxHeight ?? "calc(100dvh - 1rem)",
+          visibility: position ? "visible" : "hidden",
+        }}
+      >
+        {actions.map(({ action, label, danger, destructive }) => <button
+          key={action}
+          type="button"
+          disabled={rowBusy}
+          onClick={() => {
+            setOpen(false);
+            onChoose(account, action, triggerRef.current ?? undefined);
+          }}
+          className={`min-h-10 rounded-lg px-3 text-left text-xs font-medium disabled:opacity-50 ${danger ? "text-[var(--danger)] hover:bg-[var(--danger)]/10" : "hover:bg-[var(--panel2)]"}`}
+        >
+          {destructive && <Trash2 className="mr-1.5 inline" size={14} aria-hidden="true" />}{label}
+        </button>)}
+      </div>,
+      document.body,
+    )}
+  </>;
 }
 
 export function MasterAdminPanel({
@@ -410,7 +522,7 @@ export function MasterAdminPanel({
   const accountCard = (account: Account, request = false) => {
     const statusColor = account.status === "pending" ? "text-[var(--accent)]" : account.status === "trashed" || account.status === "rejected" ? "text-[var(--danger)]" : "muted";
     const rowBusy = busy?.startsWith(account.id + ":") ?? false;
-    const actions: { action: PendingAction["action"]; label: string; danger?: boolean; destructive?: boolean }[] = [];
+    const actions: AccountActionOption[] = [];
     if (account.role !== "master") {
       if (account.status === "active") actions.push({ action: "disable", label: "Desativar conta" }, { action: "trash", label: "Mover para a lixeira", danger: true });
       if (account.status === "disabled") actions.push({ action: "restore", label: "Reativar conta" }, { action: "trash", label: "Mover para a lixeira", danger: true });
@@ -440,24 +552,7 @@ export function MasterAdminPanel({
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "reject", event.currentTarget)} className="min-h-10 rounded-xl border border-[var(--danger)]/30 px-3.5 text-xs font-medium text-[var(--danger)] disabled:opacity-50">Recusar</button>
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "archive_request", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3.5 text-xs font-medium disabled:opacity-50">Arquivar solicitação</button>
           </>}
-          {!request && actions.length > 0 && <details className="relative" onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
-            const menu = event.currentTarget;
-            menu.open = false;
-            menu.querySelector("summary")?.focus();
-          }}>
-            <summary aria-label={`Ações de ${accountName(account)}`} className="flex min-h-10 cursor-pointer list-none items-center gap-2 rounded-xl bg-[var(--panel)] px-3 text-xs font-medium [&::-webkit-details-marker]:hidden">Ações <ChevronRight size={14} aria-hidden="true" className="rotate-90" /></summary>
-            <div className="absolute right-0 top-full z-20 mt-1 grid w-56 gap-1 rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1.5 shadow-xl">
-              {actions.map(({ action, label, danger, destructive }) => <button key={action} type="button" disabled={rowBusy} onClick={(event) => {
-                const menu = event.currentTarget.closest("details");
-                const summary = menu?.querySelector("summary") ?? undefined;
-                if (menu) menu.open = false;
-                chooseAction(account, action, summary);
-              }} className={`min-h-10 rounded-lg px-3 text-left text-xs font-medium disabled:opacity-50 ${danger ? "text-[var(--danger)] hover:bg-[var(--danger)]/10" : "hover:bg-[var(--panel2)]"}`}>
-                {destructive && <Trash2 className="mr-1.5 inline" size={14} aria-hidden="true" />}{label}
-              </button>)}
-            </div>
-          </details>}
+          {!request && actions.length > 0 && <AccountActionsMenu account={account} actions={actions} rowBusy={rowBusy} onChoose={chooseAction} />}
           {!request && account.status === "trashed" && account.request_status === "pending_review" && <small className="muted block w-full text-xs">Pedido arquivado — ainda não aprovado nem recusado.</small>}
         </div>
       </div>
