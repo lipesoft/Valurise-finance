@@ -620,8 +620,14 @@ test("cabeçalho simplifica o mobile e mantém a troca de espaço acessível", a
   const menu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
   await expect(menu.getByRole("button", { name: /Configurações da conta de Pessoa de teste/ })).toBeVisible();
   await expect(menu.getByText("Espaço financeiro")).toBeVisible();
-  await expect(menu.getByRole("button", { name: /^Notificações/ })).toBeVisible();
-  await expect(menu.getByText("Aparência")).toBeVisible();
+  const menuFooter = menu.locator("aside > div").last();
+  await expect(menuFooter.getByRole("button", { name: /^Notificações/ })).toBeVisible();
+  await expect(menuFooter.getByRole("button", { name: "Sair do sistema" })).toHaveCount(0);
+  await expect(menu.getByRole("button", { name: "Sair do sistema" })).toHaveCount(1);
+  await expect(menu.getByText("Aparência")).toHaveCount(0);
+  const mobileMenuHeader = menu.locator("aside > div").first();
+  await expect(mobileMenuHeader.getByRole("button", { name: "Tema claro" })).toBeVisible();
+  await expect(mobileMenuHeader.getByRole("button", { name: "Tema escuro" })).toBeVisible();
   await page.setViewportSize({ width: 320, height: 780 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect.poll(() => menu.locator("aside").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(320);
@@ -649,16 +655,28 @@ test("menu lateral mobile abre notificações no próprio painel e controla apar
   await page.getByRole("button", { name: "Abrir menu" }).click();
   const menu = page.getByRole("dialog", { name: "Menu de conta e navegação" });
   await expect.poll(() => menu.locator("aside").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(390);
-  await menu.getByRole("button", { name: /^Notificações/ }).click();
+  const menuHeader = menu.locator("aside > div").first();
+  const lightTheme = menuHeader.getByRole("button", { name: "Tema claro" });
+  const darkTheme = menuHeader.getByRole("button", { name: "Tema escuro" });
+  const menuFooter = menu.locator("aside > div").last();
+  await expect(lightTheme).toBeVisible();
+  await expect(darkTheme).toBeVisible();
+  await expect(menu.getByText("Aparência")).toHaveCount(0);
+  await expect(menuFooter.getByRole("button", { name: /^Notificações/ })).toBeVisible();
+  await expect(menuFooter.getByRole("button", { name: "Sair do sistema" })).toHaveCount(0);
+  await menuFooter.getByRole("button", { name: /^Notificações/ }).click();
   await expect(menu.getByRole("region", { name: "Notificações financeiras" })).toBeVisible();
   await expect(menu.getByText("Alimentação chegou a 80%")).toBeVisible();
   await menu.getByRole("button", { name: "Fechar notificações" }).click();
   await expect(menu.getByRole("region", { name: "Notificações financeiras" })).toHaveCount(0);
 
-  const lightTheme = menu.getByRole("button", { name: "Tema claro" });
   await lightTheme.click();
   await expect(lightTheme).toHaveAttribute("aria-pressed", "true");
+  await expect(darkTheme).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("main.light")).toBeVisible();
+  await darkTheme.click();
+  await expect(darkTheme).toHaveAttribute("aria-pressed", "true");
+  await expect(lightTheme).toHaveAttribute("aria-pressed", "false");
 
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();

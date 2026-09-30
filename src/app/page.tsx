@@ -1278,7 +1278,6 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
   };
   const useLightTheme =
     theme === "light" || (theme === "system" && systemPrefersLight);
-  const AppearanceIcon = useLightTheme ? Sun : Moon;
   const navigation = workspace.type === "business" ? businessNav : personalNav;
   const closeMobileMenu = () => {
     setMobileMenu(false);
@@ -1355,13 +1354,36 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
           >
             <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
               <Brand />
-              <button
-                aria-label="Fechar menu"
-                onClick={closeMobileMenu}
-                className="grid h-11 w-11 place-items-center rounded-full bg-[var(--panel2)] transition-colors hover:bg-[var(--panel)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
-              >
-                <X size={20} />
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  aria-label="Tema claro"
+                  aria-pressed={useLightTheme}
+                  title="Tema claro"
+                  onClick={() => setT("light")}
+                  className={`grid h-10 w-10 place-items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${useLightTheme ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--muted)] hover:bg-[var(--panel)] hover:text-[var(--fg)]"}`}
+                >
+                  <Sun aria-hidden="true" size={18} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Tema escuro"
+                  aria-pressed={!useLightTheme}
+                  title="Tema escuro"
+                  onClick={() => setT("dark")}
+                  className={`grid h-10 w-10 place-items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${!useLightTheme ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--muted)] hover:bg-[var(--panel)] hover:text-[var(--fg)]"}`}
+                >
+                  <Moon aria-hidden="true" size={18} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Fechar menu"
+                  onClick={closeMobileMenu}
+                  className="grid h-11 w-11 place-items-center rounded-full bg-[var(--panel2)] transition-colors hover:bg-[var(--panel)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+                >
+                  <X aria-hidden="true" size={20} />
+                </button>
+              </div>
             </div>
             {notificationsOpen ? (
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4">
@@ -1446,6 +1468,14 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
                       </button>
                     </div>)}
                   </nav>
+                  <button
+                    type="button"
+                    onClick={logout}
+                    className="mt-5 flex min-h-12 w-full items-center gap-3 border-t border-[var(--border)] px-3 pt-4 text-left text-sm font-medium text-[var(--danger)] transition-colors hover:bg-[var(--danger)]/10"
+                  >
+                    <LogOut size={18} />
+                    <span>Sair do sistema</span>
+                  </button>
                 </div>
               </>
             )}
@@ -1466,24 +1496,6 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
                   <span className="muted mt-0.5 block truncate text-xs">Acompanhe atualizações do seu espaço</span>
                 </span>
                 <ChevronRight aria-hidden="true" className="muted" size={17} />
-              </button>
-              <div className="mt-2 rounded-2xl px-3 py-2">
-                <div className="flex items-center gap-3">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[var(--panel2)] text-[var(--accent)]"><AppearanceIcon size={18} /></span>
-                  <div className="min-w-0 flex-1">
-                    <b className="block text-sm">Aparência</b>
-                    <p className="muted mt-0.5 text-xs">Tema da sua experiência</p>
-                  </div>
-                </div>
-                <div className="mt-2 pl-[52px]"><Theme value={theme} change={setT} /></div>
-              </div>
-              <button
-                type="button"
-                onClick={logout}
-                className="mt-1 flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-sm font-medium text-[var(--danger)] transition-colors hover:bg-[var(--danger)]/10"
-              >
-                <LogOut size={18} />
-                <span>Sair do sistema</span>
               </button>
             </div>
           </motion.aside>
