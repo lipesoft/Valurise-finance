@@ -519,9 +519,13 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   expect(JSON.stringify(await page.evaluate(() => localStorage))).not.toContain(keySentinel);
   await page.getByRole("button", { name: "Cotas e limites" }).click();
   await expect(page.getByText(/Para disponibilizar a Val aos usuários, habilite Val, roteador/)).toBeVisible();
-  await expect(page.getByRole("spinbutton", { name: "Falhas para abrir circuito" })).toHaveValue("3");
+  await expect(page.getByRole("textbox", { name: "Falhas para abrir circuito" })).toHaveValue("3");
+  const monthlyTokens = page.getByRole("textbox", { name: "Tokens por mês" });
+  await expect(monthlyTokens).toHaveValue("1.000.000");
+  await monthlyTokens.fill("2500000");
+  await expect(monthlyTokens).toHaveValue("2.500.000");
   await page.getByRole("button", { name: "Salvar limites e controles" }).click();
-  expect(adminActions.at(-1)).toMatchObject({ action: "save_limits", circuitFailureThreshold: 3, circuitCooldownSeconds: 120 });
+  expect(adminActions.at(-1)).toMatchObject({ action: "save_limits", monthlyTokens: 2_500_000, circuitFailureThreshold: 3, circuitCooldownSeconds: 120 });
   for (const width of [375, 390, 430, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

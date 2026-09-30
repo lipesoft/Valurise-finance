@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { GroupedIntegerInput } from "@/components/numeric-inputs";
 import { Activity, Check, CircleAlert, KeyRound, RefreshCw, ShieldCheck, Users, Zap } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { providerQuotaUtilizationPercent } from "@/lib/val-ai/policy";
+import { parseGroupedInteger } from "@/lib/numeric-input";
 
 type Provider = { id: "groq" | "openrouter"; enabled: boolean; free_tier_confirmed: boolean; health_status: string; failure_count: number; circuit_open_until: string | null; priority: number; last_health_check: string | null; last_latency_ms: number | null; last_error_category: string | null; quota_headers: Record<string, string>; updated_at: string };
 type KeyInfo = { id: string; provider_id: "groq" | "openrouter"; key_suffix: string; is_active: boolean; updated_at: string };
@@ -240,7 +242,15 @@ function UserQuotaCard({ row, onPost, run }: { row: ValAIData["users"][number]; 
   return <article className="panel rounded-2xl p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><b className="block break-words text-sm">{String(row.user.full_name || row.user.username || row.user.id)}</b><p className="muted mt-1 break-all text-[10px]">ID {String(row.user.id)} · {String(row.user.account_status)}</p><p className="muted mt-1 text-xs">Hoje: {Number(row.daily.requests || 0)} consultas · {Number(row.daily.tokens || 0).toLocaleString("pt-BR")} tokens medidos</p><p className="muted mt-1 text-xs">Mês: {Number(row.monthly.requests || 0)} consultas · {Number(row.monthly.tokens || 0).toLocaleString("pt-BR")} tokens medidos</p></div><label className="flex min-h-10 items-center gap-2 rounded-lg bg-[var(--panel2)] px-3 text-xs"><input type="checkbox" checked={blocked} onChange={(event) => setBlocked(event.target.checked)} className="h-4 w-4 accent-[var(--accent)]"/>Bloquear</label></div><div className="mt-3 grid gap-2 sm:grid-cols-2">{quotaFields.map(({ label, value, update }) => <NumberInput key={label} label={label} value={value} nullable onChange={(next) => update(next === null ? "" : String(next))}/> )}</div><button type="button" onClick={save} className="mt-3 min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Salvar limite deste usuário</button></article>;
 }
 
-function NumberInput({ label, value, onChange, min = 0, max = 1000000000, nullable = false }: { label: string; value: unknown; onChange: (value: number | null) => void; min?: number; max?: number; nullable?: boolean }) {
+function NumberInput({ label, value, onChange, min = 0, max = 1_000_000_000, nullable = false }: { label: string; value: unknown; onChange: (value: number | null) => void; min?: number; max?: number; nullable?: boolean }) {
   const text = value == null ? "" : String(value);
-  return <label className="block text-xs">{label}<input type="number" min={min} max={max} value={text} onChange={(event) => onChange(event.target.value === "" && nullable ? null : Number(event.target.value))} className="field mt-1 min-h-10 w-full" /></label>;
+  return <label className="block text-xs">{label}<GroupedIntegerInput value={text} onValueChange={(next) => {
+    if (next === "") {
+      const emptyValue = nullable ? null : 0;
+      if (emptyValue === null || (emptyValue >= min && emptyValue <= max)) onChange(emptyValue);
+      return;
+    }
+    const parsed = parseGroupedInteger(next);
+    if (parsed !== null && parsed >= min && parsed <= max) onChange(parsed);
+  }} className="field mt-1 min-h-10 w-full" /></label>;
 }

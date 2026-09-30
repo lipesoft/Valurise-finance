@@ -1,3 +1,4 @@
+import { parseMoneyInputToCents } from "@/lib/numeric-input";
 import type { FinanceTransaction } from "@/lib/finance";
 import { getReceivableOccurrences, type PlannedReceivable } from "@/lib/receivables";
 import { isRecurringBillPaidInMonth, isRecurringBillScheduledInMonth, recurringBillDueDay } from "@/lib/recurring-bills";
@@ -438,13 +439,5 @@ export function calculateBusinessFinanceSnapshot(args: {
 }
 
 export function parseBusinessMoneyToCents(value: string): number | null {
-  const raw = value.trim().replace(/\s|R\$/gi, "");
-  if (!raw) return null;
-  let normalized = raw;
-  if (raw.includes(",")) normalized = raw.replace(/\./g, "").replace(",", ".");
-  else if ((raw.match(/\./g) || []).length > 1 || /\.\d{3}$/.test(raw)) normalized = raw.replace(/\./g, "");
-  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-  const [whole, fraction = ""] = normalized.split(".");
-  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
-  return Number.isSafeInteger(cents) ? cents : null;
+  return parseMoneyInputToCents(value);
 }

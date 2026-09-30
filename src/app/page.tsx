@@ -78,6 +78,7 @@ import {
 } from "@/components/motion";
 import { motionTokens } from "@/lib/motion";
 import { LoginAmbient } from "@/components/login-ambient";
+import { DecimalInput, MoneyInput } from "@/components/numeric-inputs";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { loadValuriseState, saveValuriseState } from "@/lib/state-sync";
 import { useSharedGoalInvites, type SharedGoalInvite, type SharedGoalSummary } from "@/hooks/use-shared-goal-invites";
@@ -86,6 +87,7 @@ import { createValuriseBackup, parseValuriseBackup } from "@/lib/backup";
 import { formatValResponse } from "@/lib/personal-ai/presentation";
 import { ValuriseSplash, type ValuriseSplashStatus } from "@/components/valurise-splash";
 import { isValidCnpj } from "@/lib/workspaces/cnpj";
+import { parseMoneyInputToCents } from "@/lib/numeric-input";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceDetail, BusinessFinanceSettings } from "@/components/business-finance";
 import { BusinessWorkspaceDangerZone } from "@/components/business-workspace-danger-zone";
@@ -3484,11 +3486,9 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
   const items = data.investments || [];
   const accounts = financialAccountOptions(data);
   const persist = () => {
-    const cents = Math.round(Number(contributed.replace(",", ".")) * 100);
-    const currentCents = current.trim()
-      ? Math.round(Number(current.replace(",", ".")) * 100)
-      : undefined;
-    if (!name.trim() || !Number.isSafeInteger(cents) || cents <= 0 || (currentCents !== undefined && (!Number.isSafeInteger(currentCents) || currentCents < 0))) {
+    const cents = parseMoneyInputToCents(contributed);
+    const currentCents = current.trim() ? parseMoneyInputToCents(current) : undefined;
+    if (!name.trim() || cents === null || cents <= 0 || (currentCents !== undefined && (currentCents === null || currentCents < 0))) {
       toast("Informe o nome e saldos válidos para o investimento.");
       return;
     }
@@ -3517,9 +3517,9 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
   };
   const startEdit = (item: any) => { setEditing(item); setName(item.name); setContributed(centsInput(item.contributedCents)); setCurrent(centsInput(item.currentCents)); setAssetClass(item.assetClass || "Renda fixa"); setRate(item.expectedAnnualRate?.toString().replace(".", ",") || ""); };
   const addAporte = () => {
-    const cents = Math.round(Number(aporte.replace(",", ".")) * 100);
+    const cents = parseMoneyInputToCents(aporte);
     const investment = items.find((item: any) => item.id === aporteFor);
-    if (!investment || !Number.isSafeInteger(cents) || cents <= 0 || !aporteAccount || !aporteDate) {
+    if (!investment || cents === null || cents <= 0 || !aporteAccount || !aporteDate) {
       toast("Informe um valor positivo, a conta de origem e a data do aporte.");
       return;
     }
@@ -3625,13 +3625,12 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
             <p className="muted text-sm">
               O aporte reduz o saldo da conta escolhida e fica no extrato ligado a este investimento.
             </p>
-            <input
+            <MoneyInput
               autoFocus
               aria-label="Valor do aporte"
               className="field"
               value={aporte}
-              onChange={(event) => setAporte(event.target.value)}
-              inputMode="decimal"
+              onValueChange={setAporte}
               placeholder="Valor do aporte"
             />
             <label className="block text-sm">
@@ -3662,23 +3661,11 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
               onChange={(e) => setName(e.target.value)}
               placeholder="Nome do investimento"
             />
-            <input
-              className="field"
-              value={contributed}
-              onChange={(e) => setContributed(e.target.value)}
-              inputMode="decimal"
-              placeholder="Saldo já investido"
-            />
+            <MoneyInput className="field" value={contributed} onValueChange={setContributed} placeholder="Saldo já investido" />
             <p className="muted -mt-1 text-xs leading-5">
               Este é o saldo inicial já aplicado; não movimenta uma conta. Novos depósitos devem ser registrados em “Registrar aporte”.
             </p>
-            <input
-              className="field"
-              value={current}
-              onChange={(e) => setCurrent(e.target.value)}
-              inputMode="decimal"
-              placeholder="Valor atual (opcional)"
-            />
+            <MoneyInput className="field" value={current} onValueChange={setCurrent} placeholder="Valor atual (opcional)" />
             <select
               className="field"
               value={assetClass}
@@ -3694,13 +3681,7 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
               <option>Cripto</option>
               <option>Outros</option>
             </select>
-            <input
-              className="field"
-              value={rate}
-              onChange={(e) => setRate(e.target.value)}
-              inputMode="decimal"
-              placeholder="Rentabilidade anual estimada % (opcional)"
-            />
+            <DecimalInput className="field" value={rate} onValueChange={setRate} placeholder="Rentabilidade anual estimada % (opcional)" />
             <button
               onClick={persist}
               className="primary h-11 w-full rounded-xl text-sm"
@@ -3728,9 +3709,9 @@ function Budgets({ data, tx, month, save, toast, go }: any) {
   const categoryOptions: string[] = Array.from(new Set<string>(configuredCategories.length ? configuredCategories : defaults))
     .sort((left, right) => left.localeCompare(right, "pt-BR"));
   const persist = () => {
-    const cents = Math.round(Number(limit.replace(",", ".")) * 100);
+    const cents = parseMoneyInputToCents(limit);
     const selectedCategory = category.trim();
-    if (!selectedCategory || !Number.isSafeInteger(cents) || cents <= 0) {
+    if (!selectedCategory || cents === null || cents <= 0) {
       toast("Escolha uma categoria e informe um limite mensal válido.");
       return;
     }
@@ -3839,14 +3820,7 @@ function Budgets({ data, tx, month, save, toast, go }: any) {
                 Nenhuma categoria cadastrada. Ir para Categorias.
               </button>
             )}
-            <input
-              aria-label="Limite mensal"
-              className="field"
-              value={limit}
-              onChange={(e) => setLimit(e.target.value)}
-              inputMode="decimal"
-              placeholder="Limite mensal"
-            />
+            <MoneyInput aria-label="Limite mensal" className="field" value={limit} onValueChange={setLimit} placeholder="Limite mensal" />
             <button
               onClick={persist}
               disabled={!categoryOptions.length && !editing}
@@ -3883,10 +3857,9 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
   const linkedSharedIds = new Set(items.map((item: any) => item.sharedGoalId).filter(Boolean));
   const receivedSharedGoals = (sharedGoals as SharedGoalSummary[]).filter((goal) => !linkedSharedIds.has(goal.id));
   const persist = () => {
-    const targetCents = Math.round(Number(target.replace(",", ".")) * 100);
-    const parsedCurrent = current.trim() ? Number(current.replace(",", ".")) : 0;
-    const currentCents = Math.round(parsedCurrent * 100);
-    if (!name.trim() || !Number.isSafeInteger(targetCents) || targetCents <= 0 || !Number.isFinite(parsedCurrent) || !Number.isSafeInteger(currentCents) || currentCents < 0) {
+    const targetCents = parseMoneyInputToCents(target);
+    const currentCents = current.trim() ? parseMoneyInputToCents(current) : 0;
+    if (!name.trim() || targetCents === null || targetCents <= 0 || currentCents === null || currentCents < 0) {
       toast("Informe um nome e valores válidos para a meta.");
       return;
     }
@@ -3913,7 +3886,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
   };
   const startEdit = (item: any) => { setEditing(item); setName(item.name); setTarget(centsInput(item.targetCents)); setCurrent(centsInput(item.currentCents)); setTargetDate(item.targetDate || ""); };
   const contribute = async () => {
-    const cents = Math.round(Number(contribution.replace(",", ".")) * 100);
+    const cents = parseMoneyInputToCents(contribution);
     const goal = items.find((item: any) => item.id === contributionFor);
     const sharedGoal = contributionFor.startsWith("shared:")
       ? (sharedGoals as SharedGoalSummary[]).find((item) => item.id === contributionFor.slice("shared:".length))
@@ -3925,7 +3898,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
       toast("Aguarde a sincronização desta meta compartilhada e tente novamente.");
       return;
     }
-    if ((!goal && !sharedGoal) || !Number.isSafeInteger(cents) || cents <= 0 || !contributionAccount || !contributionDate) {
+    if ((!goal && !sharedGoal) || cents === null || cents <= 0 || !contributionAccount || !contributionDate) {
       toast("Informe um valor positivo, a conta de origem e a data da contribuição.");
       return;
     }
@@ -4084,15 +4057,7 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
             <p className="muted text-sm">
               O valor será transferido da conta escolhida para a meta, sem ser tratado como gasto de consumo.
             </p>
-            <input
-              autoFocus
-              aria-label="Valor da contribuição"
-              value={contribution}
-              onChange={(event) => setContribution(event.target.value)}
-              inputMode="decimal"
-              className="field"
-              placeholder="Valor da contribuição"
-            />
+            <MoneyInput autoFocus aria-label="Valor da contribuição" value={contribution} onValueChange={setContribution} className="field" placeholder="Valor da contribuição" />
             <label className="block text-sm">
               Conta de origem
               <select className="field mt-1" value={contributionAccount} onChange={(event) => setContributionAccount(event.target.value)}>
@@ -4121,20 +4086,8 @@ function Goals({ data, transactions = [], save, saveTransactions, toast, invites
               onChange={(e) => setName(e.target.value)}
               placeholder="Nome da meta"
             />
-            <input
-              className="field"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              inputMode="decimal"
-              placeholder="Valor alvo"
-            />
-            <input
-              className="field"
-              value={current}
-              onChange={(e) => setCurrent(e.target.value)}
-              inputMode="decimal"
-              placeholder="Saldo já acumulado (opcional)"
-            />
+            <MoneyInput className="field" value={target} onValueChange={setTarget} placeholder="Valor alvo" />
+            <MoneyInput className="field" value={current} onValueChange={setCurrent} placeholder="Saldo já acumulado (opcional)" />
             <p className="muted -mt-1 text-xs leading-5">
               Informe apenas o saldo que já existia. Para guardar dinheiro agora e debitar uma conta, use “Adicionar dinheiro” depois de criar a meta.
             </p>
@@ -4213,13 +4166,8 @@ function isCommitmentLateInMonth(bill: any, monthKey: string, today: Date) {
 }
 
 function parseReceivableAmountCents(value: string) {
-  const normalized = value.includes(",")
-    ? value.replace(/\./g, "").replace(",", ".")
-    : value.trim();
-  const amount = Number(normalized);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  const cents = Math.round(amount * 100);
-  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+  const cents = parseMoneyInputToCents(value);
+  return cents !== null && cents > 0 ? cents : null;
 }
 
 function Receivables({ data, tx, month, setMonth, save, toast, onReceive, businessMode = false }: any) {
@@ -4314,7 +4262,7 @@ function Receivables({ data, tx, month, setMonth, save, toast, onReceive, busine
     {(adding || editing) && <Sheet close={closeEditor}><section className="space-y-3">
       <b className="text-lg">{editing ? "Editar receita planejada" : "Nova receita planejada"}</b>
       <label className="block space-y-1.5 text-sm"><span>Origem da receita</span><input autoFocus className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Salário, mensalidade, venda" maxLength={120} /></label>
-      <label className="block space-y-1.5 text-sm"><span>Valor previsto</span><input className="field" value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" placeholder="Ex.: 1.234,56" /></label>
+      <label className="block space-y-1.5 text-sm"><span>Valor previsto</span><MoneyInput className="field" value={amount} onValueChange={setAmount} placeholder="Ex.: 1.234,56" /></label>
       <label className="block space-y-1.5 text-sm"><span>Data prevista para receber</span><input aria-label="Data prevista para receber" className="field" type="date" value={dueDate} onChange={(event) => { setDueDate(event.target.value); setDueRule("day"); }} /></label>
       <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => { setDueDate(firstDayOfMonthValue(month)); setDueRule("day"); }} className="min-h-10 rounded-xl bg-[var(--panel2)] px-2 text-xs">1º dia do mês</button><button type="button" onClick={() => { setDueDate(lastBusinessDayOfMonthValue(month)); setDueRule("last_business_day"); }} className="min-h-10 rounded-xl bg-[var(--panel2)] px-2 text-xs">Último dia útil</button></div>
       <label className="block space-y-1.5 text-sm"><span>Repetição</span><select aria-label="Repetição da receita" className="field" value={frequency} onChange={(event) => setFrequency(event.target.value as PlannedReceivable["frequency"])}><option value="once">Uma vez</option><option value="monthly">Todo mês</option></select></label>
@@ -4383,9 +4331,9 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
     setDueDay(day ? String(day) : ""); setAdding(true); setEditing(null);
   };
   const persist = () => {
-    const amountCents = Math.round(Number(amount.replace(",", ".")) * 100);
+    const amountCents = parseMoneyInputToCents(amount);
     const due = Number(dueDay);
-    if (!name.trim() || !amountCents || due < 1 || due > 31 || (frequency === "once" && !startMonth)) return;
+    if (!name.trim() || amountCents === null || amountCents <= 0 || due < 1 || due > 31 || (frequency === "once" && !startMonth)) return;
     const schedule = { frequency, ...(startMonth ? { startMonth } : {}) };
     save({
       ...data,
@@ -4507,13 +4455,7 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
               onChange={(e) => setName(e.target.value)}
               placeholder="Ex.: Internet, aluguel, Netflix"
             />
-            <input
-              className="field"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              inputMode="decimal"
-              placeholder="Valor previsto"
-            />
+            <MoneyInput className="field" value={amount} onValueChange={setAmount} placeholder="Valor previsto" />
             <input
               className="field"
               value={dueDay}
@@ -5202,7 +5144,8 @@ function Launcher({ data, workspace, go, close, saved, createCategory, createInv
       if (options.find((option: { label: string }) => option.label === value)?.kind !== "card") setInstallmentCount("1");
     } else setDest(value);
   };
-  const amountCents = Math.round(Number(amount.replace(",", ".")) * 100);
+  const parsedAmountCents = parseMoneyInputToCents(amount);
+  const amountCents = parsedAmountCents ?? 0;
   const selectedInstallmentCount = Number(installmentCount);
   const valid = () => {
     if (step === 0) return Number.isSafeInteger(amountCents) && amountCents > 0;
@@ -5328,11 +5271,10 @@ function Launcher({ data, workspace, go, close, saved, createCategory, createInv
   if (step === 0)
     body = (
       <>
-        <input
+        <MoneyInput
           autoFocus
           value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          inputMode="decimal"
+          onValueChange={setAmount}
           className="field mt-6 text-2xl"
           placeholder="R$ 0,00"
         />
@@ -5671,12 +5613,12 @@ function Onboard({ user, finish }: any) {
           onChange={(e) => setAccount(e.target.value)}
           placeholder="Nome da primeira conta (opcional)"
         />
-        <input
+        <MoneyInput
           className="field mt-3"
           value={s}
-          onChange={(e) => setS(e.target.value)}
-          inputMode="decimal"
+          onValueChange={setS}
           placeholder="Saldo inicial (opcional)"
+          allowNegative
         />
         <button
           onClick={() =>
@@ -5694,9 +5636,7 @@ function Onboard({ user, finish }: any) {
                             {
                               id: crypto.randomUUID(),
                               name: account.trim(),
-                              balance:
-                                Math.round(Number(s.replace(",", ".")) * 100) ||
-                                0,
+                              balance: parseMoneyInputToCents(s, true) || 0,
                             },
                           ]
                         : [],
@@ -5893,7 +5833,8 @@ function Cards({ data, save, toast }: any) {
   const resetForm = () => { setNickname(""); setLimit(""); setClosingDay(""); setDueDay(""); setIconId(""); setInstitutionId(""); setAdding(false); setEditing(null); };
 
   const saveCard = () => {
-    if (!institutionId || !Number(limit.replace(",", "."))) return;
+    const limitCents = parseMoneyInputToCents(limit);
+    if (!institutionId || limitCents === null || limitCents <= 0) return;
     const institutions = data.institutions.map((institution: Institution) =>
       institution.id === institutionId
         ? {
@@ -5902,11 +5843,11 @@ function Cards({ data, save, toast }: any) {
                 ...card,
                 name: normalizeCardNickname(nickname),
                 iconId: iconId || undefined,
-                limit: Math.round(Number(limit.replace(",", ".")) * 100),
+                limit: limitCents,
                 closingDay: closingDay || undefined,
                 dueDay: dueDay || undefined,
                 bestPurchaseDay: bestPurchaseDay(closingDay)?.toString(),
-              } : card) : [...institution.cards, { id: crypto.randomUUID(), name: normalizeCardNickname(nickname), limit: Math.round(Number(limit.replace(",", ".")) * 100), iconId: iconId || undefined, closingDay: closingDay || undefined, dueDay: dueDay || undefined, bestPurchaseDay: bestPurchaseDay(closingDay)?.toString() }],
+              } : card) : [...institution.cards, { id: crypto.randomUUID(), name: normalizeCardNickname(nickname), limit: limitCents, iconId: iconId || undefined, closingDay: closingDay || undefined, dueDay: dueDay || undefined, bestPurchaseDay: bestPurchaseDay(closingDay)?.toString() }],
           }
         : institution,
     );
@@ -5977,10 +5918,9 @@ function Cards({ data, save, toast }: any) {
               className="field"
               placeholder="Apelido, ex.: Platinum (opcional)"
             />
-            <input
+            <MoneyInput
               value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-              inputMode="decimal"
+              onValueChange={setLimit}
               className="field"
               placeholder="Limite"
             />
@@ -6247,18 +6187,20 @@ function Statement({ tx, month, save, toast, categoryIcons, businessWorkspace = 
   const [editCategory, setEditCategory] = useState("");
   const [editAmount, setEditAmount] = useState("");
   const [scope, setScope] = useState<"month" | "all">("month");
+  const minimumCents = min.trim() ? parseMoneyInputToCents(min) : null;
+  const maximumCents = max.trim() ? parseMoneyInputToCents(max) : null;
   const visible = tx.filter((item: FinanceTransaction) => {
     const haystack =
       `${item.description || ""} ${item.category} ${item.account} ${(item.tags || []).join(" ")}`.toLocaleLowerCase(
         "pt-BR",
       );
-    const amount = item.amountCents / 100;
+    const amount = item.amountCents;
     return (
       (scope === "all" || isSameMonth(new Date(item.date), month)) &&
       haystack.includes(query.toLocaleLowerCase("pt-BR")) &&
       (type === "all" || item.type === type) &&
-      (!min || amount >= Number(min.replace(",", "."))) &&
-      (!max || amount <= Number(max.replace(",", ".")))
+      (!min.trim() || (minimumCents !== null && amount >= minimumCents)) &&
+      (!max.trim() || (maximumCents !== null && amount <= maximumCents))
     );
   });
   const grouped = visible.reduce(
@@ -6296,18 +6238,16 @@ function Statement({ tx, month, save, toast, categoryIcons, businessWorkspace = 
           <option value="investment">Aportes</option>
           <option value="transfer">Transferências</option>
         </select>
-        <input
+        <MoneyInput
           className="field"
           value={min}
-          onChange={(event) => setMin(event.target.value)}
-          inputMode="decimal"
+          onValueChange={setMin}
           placeholder="Valor mín."
         />
-        <input
+        <MoneyInput
           className="field"
           value={max}
-          onChange={(event) => setMax(event.target.value)}
-          inputMode="decimal"
+          onValueChange={setMax}
           placeholder="Valor máx."
         />
       </div>
@@ -6506,11 +6446,11 @@ function Statement({ tx, month, save, toast, categoryIcons, businessWorkspace = 
             {editing.installment && <p className="muted text-sm">Somente esta parcela será alterada; as demais parcelas permanecem iguais.</p>}
             <input className="field" value={editDescription} onChange={(event) => setEditDescription(event.target.value)} placeholder="Descrição" />
             <input className="field" value={editCategory} onChange={(event) => setEditCategory(event.target.value)} placeholder="Categoria" />
-            <input className="field" inputMode="decimal" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} placeholder="Valor" />
+            <MoneyInput className="field" value={editAmount} onValueChange={setEditAmount} placeholder="Valor" />
             <button
               onClick={() => {
-                const amountCents = Math.round(Number(editAmount.replace(",", ".")) * 100);
-                if (!Number.isSafeInteger(amountCents) || amountCents <= 0 || !editCategory.trim()) return;
+                const amountCents = parseMoneyInputToCents(editAmount);
+                if (amountCents === null || amountCents <= 0 || !editCategory.trim()) return;
                 let next = tx.map((item: FinanceTransaction) => item.id === editing.id
                   ? { ...item, description: editDescription.trim() || undefined, category: editCategory.trim(), amountCents }
                   : item);
@@ -6606,20 +6546,16 @@ function Settings({ theme, setTheme, data, tx, saveData, saveTx, restoreFinancia
     }
     const imported = rows.flatMap((row) => {
       const columns = row.split(";");
-      const raw = (columns[valueIndex] || "")
-        .replace(/[^0-9,-]/g, "")
-        .replace(".", "")
-        .replace(",", ".");
-      const value = Number(raw);
-      if (!value || !columns[dateIndex]) return [];
+      const amountCents = parseMoneyInputToCents(columns[valueIndex] || "", true);
+      if (!amountCents || !columns[dateIndex]) return [];
       const iso = /^\d{2}\/\d{2}\/\d{4}$/.test(columns[dateIndex])
         ? columns[dateIndex].split("/").reverse().join("-")
         : columns[dateIndex];
       return [
         {
           id: crypto.randomUUID(),
-          type: value > 0 ? "income" : "expense",
-          amountCents: Math.round(Math.abs(value) * 100),
+          type: amountCents > 0 ? "income" : "expense",
+          amountCents: Math.abs(amountCents),
           category: "Importado",
           account: "Importação",
           date: new Date(`${iso}T12:00:00`).toISOString(),

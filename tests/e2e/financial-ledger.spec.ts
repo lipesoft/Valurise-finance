@@ -442,6 +442,36 @@ test("apelido de cartão é opcional e não duplica o tipo Crédito", async ({ p
   expect(storedData.institutions[0].cards.at(-1).name).toBeUndefined();
 });
 
+test("valores em milhões são agrupados enquanto digito e salvam os centavos corretos", async ({ page }) => {
+  await loginWithFinancialSeed(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Abrir menu" }).click();
+  await page.getByRole("button", { name: "Cartões", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar cartão" }).click();
+  await page.getByLabel("Instituição do cartão").selectOption({ label: "Banco Teste" });
+
+  const limit = page.getByPlaceholder("Limite");
+  await limit.pressSequentially("1500000,25");
+  await expect(limit).toHaveValue("1.500.000,25");
+  await limit.press("Backspace");
+  await expect(limit).toHaveValue("1.500.000,2");
+  await limit.press("5");
+  await expect(limit).toHaveValue("1.500.000,25");
+  await limit.fill("25");
+  await limit.press(".");
+  await limit.press("5");
+  await expect(limit).toHaveValue("25,5");
+  await limit.fill("1500000,25");
+  await expect(limit).toHaveValue("1.500.000,25");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  await page.getByPlaceholder("Apelido, ex.: Platinum (opcional)").fill("Limite milhões");
+  await page.getByRole("button", { name: "Adicionar cartão", exact: true }).last().click();
+  const storedData = await page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "{}"),
+    `valurise:v2:${user.id}:workspace:${personalWorkspaceId}:data`);
+  expect(storedData.institutions[0].cards.at(-1).limit).toBe(150_000_025);
+});
+
 test("ícone escolhido para uma categoria aparece no extrato sem alterar os lançamentos", async ({ page }) => {
   const now = new Date().toISOString();
   await loginWithFinancialSeed(page, [], { transactions: [{
