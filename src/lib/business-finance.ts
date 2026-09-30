@@ -98,6 +98,63 @@ export function calculateAnnualRevenueOutlook(year: number, transactions: Financ
   };
 }
 
+const monthLabels = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+
+/**
+ * Builds the monthly points for the executive revenue chart. Actuals stop at
+ * the current month; future points are only added when the annual outlook has
+ * enough recorded history. The annual goal is translated into a monthly pace
+ * (goal / 12), never plotted as if it were a monthly amount.
+ */
+export function buildAnnualRevenueSeries(year: number, transactions: FinanceTransaction[], goalCents: number | null, asOf = new Date()) {
+  const outlook = calculateAnnualRevenueOutlook(year, transactions, goalCents, asOf);
+  const currentYear = asOf.getFullYear();
+  const lastActualMonth = year < currentYear ? 12 : year === currentYear ? asOf.getMonth() + 1 : 0;
+  const monthlyRevenue = new Map<number, number>();
+  for (const transaction of transactions) {
+    if (transaction.type !== "income" || !transaction.date.startsWith(`${year}-`) || transaction.date.slice(0, 10) > `${year}-${String(lastActualMonth).padStart(2, "0")}-${String(year === currentYear ? asOf.getDate() : 31).padStart(2, "0")}`) continue;
+    const month = Number(transaction.date.slice(5, 7));
+    if (month >= 1 && month <= lastActualMonth) monthlyRevenue.set(month, (monthlyRevenue.get(month) || 0) + transaction.amountCents);
+  }
+  const averageMonthlyCents = outlook.forecastCents === null ? null : Math.round(outlook.forecastCents / 12);
+  const points = monthLabels.map((label, index) => {
+    const month = index + 1;
+    const actualCents = month <= lastActualMonth ? monthlyRevenue.get(month) || 0 : null;
+    const projectionCents = outlook.forecastCents === null || month < lastActualMonth
+      ? null
+      : month === lastActualMonth
+        ? actualCents
+        : averageMonthlyCents;
+    return {
+      month,
+      label,
+      actualCents,
+      projectionCents,
+      goalPaceCents: goalCents !== null && goalCents >= 0 ? Math.round(goalCents / 12) : null,
+    };
+  });
+  return {
+    year,
+    points,
+    actualCents: outlook.actualCents,
+    forecastCents: outlook.forecastCents,
+    goalCents: outlook.goalCents,
+    progressPercent: outlook.progressPercent,
+    observedMonths: outlook.observedMonths,
+    hasActualData: monthlyRevenue.size > 0,
+    explanation: outlook.explanation,
+  };
+}
+
+/** Returns realized operating income and expenses for one calendar period. */
+export function calculateBusinessPeriodResult(period: string, transactions: FinanceTransaction[], throughDate?: string) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) throw new Error("O período empresarial precisa estar no formato AAAA-MM.");
+  const eligible = transactions.filter((item) => item.date.startsWith(`${period}-`) && (!throughDate || item.date.slice(0, 10) <= throughDate));
+  const incomeCents = eligible.filter((item) => item.type === "income").reduce((sum, item) => sum + item.amountCents, 0);
+  const expenseCents = eligible.filter((item) => item.type === "expense").reduce((sum, item) => sum + item.amountCents, 0);
+  return { incomeCents, expenseCents, resultCents: incomeCents - expenseCents };
+}
+
 export type BusinessCashEvent = { id: string; date: string; label: string; kind: "receivable" | "payable"; amountCents: number };
 export type BusinessCashSchedule = {
   id: string; name: string; amountCents: number; dueDay: number; frequency: "once" | "monthly" | "yearly";

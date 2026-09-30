@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Image from "next/image";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "framer-motion";
+import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   ArrowDownLeft,
   ArrowRight,
@@ -1660,7 +1661,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
         {view === "planning" && (
           workspace.type === "business" ? <div className="mx-auto max-w-5xl px-4 pb-10 lg:px-10"><BusinessFinanceSettings workspaceId={workspace.id} toast={setToast} section="planning"/><div className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Orçamento e metas</h2><p className="muted mt-1 text-xs">Planejamento financeiro do espaço empresarial.</p></div><button type="button" onClick={() => setView("budgets")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs text-[var(--accent)]">Orçamentos</button></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setView("goals")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Metas de caixa</button><button type="button" onClick={() => setView("categories")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Categorias auxiliares</button></div></div></div> : <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} />
         )}
-        {view === "reports" && <Reports tx={tx} data={data} month={month} />}
+        {view === "reports" && <Reports tx={tx} data={data} month={month} businessMode={workspace.type === "business"} />}
         {view === "settings" && (
           <Settings
             theme={theme}
@@ -2056,9 +2057,15 @@ function BusinessAccountsHub({ data, save, toast, saveTx, tx }: any) {
     ["cards", "Cartões empresariais"],
     ["investments", "Aplicações financeiras"],
   ] as const;
+  const accountBalances = (data.institutions || []).flatMap((institution: Institution) => institution.accounts.map((account) => ({
+    name: institution.name + " · " + account.name,
+    balanceCents: accountBalance(account.balance, institution.name + " • " + account.name, tx),
+  })));
+  const largestBalance = Math.max(1, ...accountBalances.map((item: { balanceCents: number }) => Math.abs(item.balanceCents)));
   return <section className="mx-auto max-w-5xl px-4 pt-8 lg:px-10">
     <header><p className="muted text-xs">Financeiro</p><h2 className="mt-1 text-2xl font-semibold tracking-tight">Bancos e Caixa</h2><p className="muted mt-2 text-sm">Contas, cartões e aplicações financeiras da empresa.</p></header>
     <div role="tablist" aria-label="Áreas de bancos e caixa" className="panel mt-4 flex flex-wrap gap-2 rounded-2xl p-2">{tabs.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={section === id} onClick={() => setSection(id)} className={`min-h-10 rounded-xl px-3 text-xs font-medium ${section === id ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "muted hover:bg-[var(--panel2)]"}`}>{label}</button>)}</div>
+    {section === "accounts" && accountBalances.length > 1 && <section className="panel mt-4 rounded-2xl p-5" aria-label="Saldo por conta e caixa"><h3 className="font-semibold">Saldo por conta e caixa</h3><p className="muted mt-1 text-xs">Comparação dos saldos consolidados registrados.</p><div className="mt-4 space-y-3">{accountBalances.map((item: { name: string; balanceCents: number }) => <div key={item.name}><div className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate">{item.name}</span><b className="shrink-0 tabular-nums">{formatBRL(item.balanceCents)}</b></div><div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[var(--panel2)]" role="img" aria-label={item.name + ": " + formatBRL(item.balanceCents)}><span className={"block h-full rounded-full " + (item.balanceCents < 0 ? "bg-[var(--danger)]" : "bg-[var(--accent)]")} style={{ width: Math.max(2, Math.abs(item.balanceCents) / largestBalance * 100) + "%" }}/></div></div>)}</div></section>}
     {section === "accounts" && <div role="tabpanel" className="mt-4"><Institutions data={data} save={save} toast={toast} businessMode /></div>}
     {section === "cards" && <div role="tabpanel" className="mt-4"><Cards data={data} save={save} toast={toast}/></div>}
     {section === "investments" && <div role="tabpanel" className="mt-4"><Investments data={data} transactions={tx} save={save} saveTransactions={saveTx} toast={toast}/></div>}
@@ -2313,16 +2320,13 @@ function Dashboard({
   const scheduledReceivablesCents = outstandingReceivablesCents(
     getReceivableOccurrences(data.plannedReceivables || [], format(month, "yyyy-MM"), allTx),
   );
-  const receivableOccurrences = getReceivableOccurrences(data.plannedReceivables || [], format(month, "yyyy-MM"), allTx);
-  const lateReceivables = receivableOccurrences.filter((item) => item.status === "overdue").length;
-  const latePayables = (data.recurringBills || []).filter((bill: any) => isRecurringBillScheduledInMonth(bill, format(month, "yyyy-MM")) && !isRecurringBillPaidInMonth(bill, format(month, "yyyy-MM")) && isCommitmentLateInMonth(bill, format(month, "yyyy-MM"), new Date())).length;
   return (
     <StaggerContainer className={`mx-auto w-full px-4 pt-5 ${dashboardWidth}`}>
-      <WorkspaceDashboardHeader workspace={workspace} userName={displayName || user.name} month={month} setMonth={setMonth} />
       {isBusinessWorkspace ? (
-        <BusinessFinanceDashboard workspaceId={workspaceId} month={month} data={data} allTransactions={allTx} summary={sum} total={total} availableBalanceCents={accountBalanceCents} committedCents={availability.committedCents} freeToSpendCents={availability.freeToSpendCents} scheduledReceivablesCents={scheduledReceivablesCents} latePayables={latePayables} lateReceivables={lateReceivables} onCriticalReady={onCriticalBusinessReady} go={go} />
+        <BusinessFinanceDashboard workspaceId={workspaceId} companyName={workspace.displayName} month={month} data={data} allTransactions={allTx} availableBalanceCents={accountBalanceCents} onCriticalReady={onCriticalBusinessReady} go={go} />
       ) : (
         <>
+      <WorkspaceDashboardHeader workspace={workspace} userName={displayName || user.name} month={month} setMonth={setMonth} />
       <StaggerItem>
       <AnimatedCard className="panel mt-5 rounded-3xl p-6">
         <p className="muted text-sm">Total</p>
@@ -4197,6 +4201,17 @@ function Receivables({ data, tx, month, setMonth, save, toast, onReceive, busine
   const pending = occurrences.filter((item) => item.status !== "received");
   const received = occurrences.filter((item) => item.status === "received");
   const accounts = financialAccountOptions(data);
+  const receivableHistory = Array.from({ length: 6 }, (_, index) => {
+    const historyMonth = startOfMonth(addMonths(month, index - 5));
+    const historyRows = getReceivableOccurrences(plans, format(historyMonth, "yyyy-MM"), tx);
+    return {
+      label: format(historyMonth, "MMM", { locale: ptBR }).replace(".", ""),
+      receivedCents: historyRows.filter((item) => item.status === "received").reduce((sum, item) => sum + item.amountCents, 0),
+      pendingCents: historyRows.filter((item) => item.status === "pending").reduce((sum, item) => sum + item.amountCents, 0),
+      overdueCents: historyRows.filter((item) => item.status === "overdue").reduce((sum, item) => sum + item.amountCents, 0),
+    };
+  });
+  const hasReceivableHistory = receivableHistory.some((item) => item.receivedCents || item.pendingCents || item.overdueCents);
 
   const openNew = () => {
     setEditing(null);
@@ -4247,6 +4262,7 @@ function Receivables({ data, tx, month, setMonth, save, toast, onReceive, busine
       <article className="panel rounded-2xl p-4"><p className="muted text-xs">A receber</p><b className="mt-1 block text-xl">{formatBRL(outstandingReceivablesCents(occurrences))}</b><small className="muted">{pending.length} prevista{pending.length === 1 ? "" : "s"}</small></article>
       <article className="panel rounded-2xl p-4"><p className="muted text-xs">Recebido</p><b className="mt-1 block text-xl text-[var(--accent)]">{formatBRL(received.reduce((sum, item) => sum + item.amountCents, 0))}</b><small className="muted">{received.length} confirmada{received.length === 1 ? "" : "s"}</small></article>
     </div>
+    {businessMode && <section className="panel mt-4 rounded-2xl p-5" aria-label="Evolução de recebimentos"><h3 className="font-semibold">Evolução de recebimentos</h3><p className="muted mt-1 text-xs">Valores por status nos últimos seis meses.</p>{hasReceivableHistory ? <div className="mt-3 h-56" role="img" aria-label="Gráfico de recebimentos recebidos, pendentes e vencidos"><ResponsiveContainer width="100%" height="100%"><BarChart data={receivableHistory}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis width={44} tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(value / 100)}/><Tooltip formatter={(value) => formatBRL(Number(value))} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }}/><Legend/><Bar name="Recebido" dataKey="receivedCents" stackId="status" fill="#4edea3"/><Bar name="Pendente" dataKey="pendingCents" stackId="status" fill="#60a5fa"/><Bar name="Vencido" dataKey="overdueCents" stackId="status" fill="#f87171" radius={[4, 4, 0, 0]}/></BarChart></ResponsiveContainer></div> : <p className="muted mt-4 rounded-xl border border-dashed border-[var(--border)] p-4 text-sm">Planeje recebimentos para comparar valores recebidos, pendentes e vencidos.</p>}</section>}
     <section className="panel mt-4 rounded-2xl p-5">
       <div className="flex items-center justify-between gap-3"><div><b>{businessMode ? "Contas a receber do período" : "Receitas do período"}</b><p className="muted mt-1 text-xs">{businessMode ? "Recebimentos previstos para este espaço empresarial." : "Receitas pessoais ou da empresa, conforme o espaço ativo."}</p></div><span className="muted text-xs">{format(month, "MM/yyyy")}</span></div>
       {occurrences.length ? <div className="mt-3 divide-y divide-[var(--border)]">
@@ -4311,6 +4327,16 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
   const paidCount = monthBills.filter((bill: any) => isRecurringBillPaidInMonth(bill, currentMonth)).length;
   const lateCount = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, currentMonth) && (currentMonth < format(today, "yyyy-MM") || (currentMonth === format(today, "yyyy-MM") && bill.occurrenceDay < today.getDate()))).length;
   const pendingCount = monthBills.filter((bill: any) => !isRecurringBillPaidInMonth(bill, currentMonth) && !isCommitmentLateInMonth(bill, currentMonth, today)).length;
+  const payableHistory = Array.from({ length: 6 }, (_, index) => {
+    const historyMonth = format(startOfMonth(addMonths(calendarMonth, index - 5)), "yyyy-MM");
+    const scheduled = bills.filter((bill: any) => isRecurringBillScheduledInMonth(bill, historyMonth));
+    return {
+      label: format(startOfMonth(addMonths(calendarMonth, index - 5)), "MMM", { locale: ptBR }).replace(".", ""),
+      paidCents: scheduled.filter((bill: any) => isRecurringBillPaidInMonth(bill, historyMonth)).reduce((sum: number, bill: any) => sum + bill.amountCents, 0),
+      pendingCents: scheduled.filter((bill: any) => !isRecurringBillPaidInMonth(bill, historyMonth)).reduce((sum: number, bill: any) => sum + bill.amountCents, 0),
+    };
+  });
+  const hasPayableHistory = payableHistory.some((item) => item.paidCents || item.pendingCents);
   const paymentAccounts = financialAccountOptions(data);
   const openPayment = (bill: any) => { setPaymentAccount(bill.account || paymentAccounts[0]?.value || ""); setPaying(bill); };
   const openNew = (monthKey = currentMonth, day?: number) => {
@@ -4387,6 +4413,7 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
           <span className="muted text-[11px]">Atrasadas</span>
         </div>
       </section>
+      {businessMode && <section className="panel mt-4 rounded-2xl p-5" aria-label="Evolução dos pagamentos"><h3 className="font-semibold">Evolução dos pagamentos</h3><p className="muted mt-1 text-xs">Compromissos previstos separados entre pagos e em aberto, nos últimos seis meses.</p>{hasPayableHistory ? <div className="mt-3 h-56" role="img" aria-label="Gráfico mensal de pagamentos e compromissos em aberto"><ResponsiveContainer width="100%" height="100%"><BarChart data={payableHistory}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis width={44} tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(value / 100)}/><Tooltip formatter={(value) => formatBRL(Number(value))} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }}/><Legend/><Bar name="Pago" dataKey="paidCents" stackId="payments" fill="#4edea3"/><Bar name="Em aberto" dataKey="pendingCents" stackId="payments" fill="#f59e0b" radius={[4, 4, 0, 0]}/></BarChart></ResponsiveContainer></div> : <p className="muted mt-4 rounded-xl border border-dashed border-[var(--border)] p-4 text-sm">Adicione contas a pagar para acompanhar compromissos e pagamentos por mês.</p>}</section>}
       {!businessMode && <FinancialCalendar
         month={calendarMonth}
         setMonth={setCalendarMonth}
@@ -4821,7 +4848,7 @@ function CardInvoicePreview({ data, tx }: any) {
     </section>
   );
 }
-function Reports({ tx, data, month }: any) {
+function Reports({ tx, data, month, businessMode = false }: any) {
   const current = tx.filter((item: FinanceTransaction) =>
     item.date.startsWith(format(month, "yyyy-MM")),
   );
@@ -4835,6 +4862,12 @@ function Reports({ tx, data, month }: any) {
     (n: number, item: any) => n + item.limitCents,
     0,
   );
+  const revenueByCategory = current.filter((item: FinanceTransaction) => item.type === "income").reduce((totals: Record<string, number>, item: FinanceTransaction) => {
+    const category = item.category?.trim() || "Outras receitas";
+    totals[category] = (totals[category] || 0) + item.amountCents;
+    return totals;
+  }, {});
+  const topRevenueCategories = (Object.entries(revenueByCategory) as [string, number][]).sort((left, right) => right[1] - left[1]).slice(0, 6);
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
@@ -4892,6 +4925,7 @@ function Reports({ tx, data, month }: any) {
           <Empty text="Registre movimentações para gerar seu relatório." />
         )}
       </section>
+      {businessMode && <section className="panel mt-4 rounded-2xl p-5" aria-label="Faturamento por categoria"><b>Faturamento por categoria</b><p className="muted mt-1 text-xs">Receitas operacionais registradas no período selecionado.</p>{topRevenueCategories.length ? <div className="mt-4 space-y-4">{topRevenueCategories.map(([category, amount]) => { const share = summary.incomeCents ? Math.round(amount / summary.incomeCents * 100) : 0; return <div key={category}><div className="flex justify-between gap-3 text-sm"><span className="truncate">{category}</span><span className="shrink-0">{formatBRL(amount)} · {share}%</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--panel2)]"><span className="block h-full rounded-full bg-[var(--accent)]" style={{ width: share + "%" }}/></div></div>; })}</div> : <Empty text="Registre faturamento por categoria para analisar a composição das receitas."/>}</section>}
       <section className="panel mt-4 rounded-2xl p-5">
         <b>Planejado x realizado</b>
         <div className="mt-3 flex justify-between text-sm">

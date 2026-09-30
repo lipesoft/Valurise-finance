@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FinanceTransaction } from "@/lib/finance";
-import { calculateBusinessFinanceSnapshot, formatBusinessMoney, parseBusinessMoneyToCents, type BusinessAssumption } from "./business-finance";
+import { buildAnnualRevenueSeries, calculateBusinessFinanceSnapshot, calculateBusinessPeriodResult, formatBusinessMoney, parseBusinessMoneyToCents, type BusinessAssumption } from "./business-finance";
 
 const period = "2025-04";
 const row = (metricKey: BusinessAssumption["metricKey"], amountCents: number, nature: BusinessAssumption["nature"] = "estimated", referenceMonth = "2025-04-01"): BusinessAssumption => ({ metricKey, amountCents, nature, source: "manual", referenceMonth });
@@ -14,6 +14,43 @@ const completeAssumptions = (): BusinessAssumption[] => [
 ];
 
 describe("indicadores gerenciais empresariais", () => {
+  it("monta série anual com realizado, projeção confiável e ritmo mensal da meta", () => {
+    const transactions = [
+      transaction("jan", "income", 100_000, "2025-01-15T12:00:00.000Z"),
+      transaction("feb", "income", 200_000, "2025-02-15T12:00:00.000Z"),
+      transaction("mar", "income", 300_000, "2025-03-15T12:00:00.000Z"),
+      transaction("transfer", "transfer", 9_000_000, "2025-03-20T12:00:00.000Z"),
+      transaction("investment", "investment", 8_000_000, "2025-03-20T12:00:00.000Z"),
+    ];
+    const series = buildAnnualRevenueSeries(2025, transactions, 24_000_000, new Date("2025-04-20T12:00:00.000Z"));
+    expect(series.actualCents).toBe(600_000);
+    expect(series.forecastCents).toBe(1_800_000);
+    expect(series.points[0]).toMatchObject({ label: "Jan", actualCents: 100_000, goalPaceCents: 2_000_000 });
+    expect(series.points[3]).toMatchObject({ label: "Abr", actualCents: 0, projectionCents: 0 });
+    expect(series.points[4]).toMatchObject({ label: "Mai", actualCents: null, projectionCents: 150_000 });
+    expect(series.points[11]).toMatchObject({ label: "Dez", actualCents: null, projectionCents: 150_000 });
+    expect(series.hasActualData).toBe(true);
+  });
+
+  it("não inventa projeção sem três meses realizados e não confunde meta anual com valor mensal", () => {
+    const series = buildAnnualRevenueSeries(2025, [transaction("jan", "income", 100_000, "2025-01-15T12:00:00.000Z")], 12_000_000, new Date("2025-04-20T12:00:00.000Z"));
+    expect(series.forecastCents).toBeNull();
+    expect(series.points[0]?.goalPaceCents).toBe(1_000_000);
+    expect(series.points[4]?.projectionCents).toBeNull();
+    expect(series.explanation).toContain("três meses");
+  });
+
+  it("calcula resultado do período sem incluir transferências ou aplicações", () => {
+    const result = calculateBusinessPeriodResult("2025-04", [
+      transaction("in", "income", 500_000),
+      transaction("out", "expense", 120_000),
+      transaction("transfer", "transfer", 700_000),
+      transaction("investment", "investment", 900_000),
+      transaction("other-month", "income", 2_000_000, "2025-05-02T12:00:00.000Z"),
+    ]);
+    expect(result).toEqual({ incomeCents: 500_000, expenseCents: 120_000, resultCents: 380_000 });
+  });
+
   it("abrevia milhões sem arredondar valores menores e mantém os centavos fora da faixa compacta", () => {
     expect(formatBusinessMoney(450_000_000)).toBe("R$\u00a04,5M");
     expect(formatBusinessMoney(123_456_789_000, "USD")).toContain("1.234,6M");

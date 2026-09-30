@@ -1,22 +1,26 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowDownLeft, ArrowUpRight, Building2, Info, Save } from "lucide-react";
+import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Building2, Info, Save } from "lucide-react";
 import { accountBalance, formatBRL, type FinanceTransaction } from "@/lib/finance";
 import { HelpHint } from "@/components/help-hint";
 import { AnimatedCard } from "@/components/motion";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isRecurringBillPaidInMonth, isRecurringBillScheduledInMonth, recurringBillDueDay } from "@/lib/recurring-bills";
 import styles from "@/components/business-finance.module.css";
 import {
   BUSINESS_ASSUMPTION_KEYS,
   BUSINESS_PLAN_GOAL_KEYS,
+  buildAnnualRevenueSeries,
   buildBusinessCashEvents,
   calculateAnnualRevenueOutlook,
   calculateBusinessFinanceSnapshot,
+  calculateBusinessPeriodResult,
   formatBusinessMoney,
   parseBusinessMoneyToCents,
   type BusinessAssumption,
   type BusinessAssumptionKey,
+  type BusinessCashEvent,
   type BusinessCashSchedule,
   type BusinessPlanGoal,
   type BusinessPlanGoalKey,
@@ -24,7 +28,8 @@ import {
   type FinancialDataNature,
   projectedBusinessCash,
 } from "@/lib/business-finance";
-import type { PlannedReceivable } from "@/lib/receivables";
+import { getReceivableOccurrences, type PlannedReceivable } from "@/lib/receivables";
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type Profile = {
   legal_name: string; trade_name: string; cnpj: string; email: string | null; phone: string | null;
@@ -181,7 +186,7 @@ function currentCash(data: BusinessInstitutionData, transactions: FinanceTransac
   return accounts.reduce((total, account) => total + accountBalance(account.balance, account.name, transactions), 0);
 }
 
-export function BusinessFinanceDashboard({
+export function LegacyBusinessFinanceDashboard({
   workspaceId, month, data, allTransactions, summary, total, availableBalanceCents, committedCents,
   freeToSpendCents, scheduledReceivablesCents = 0, latePayables = 0, lateReceivables = 0, onCriticalReady, go,
 }: {
@@ -262,6 +267,177 @@ export function BusinessFinanceDashboard({
   </section></>;
 }
 
+export function BusinessFinanceDashboard({ workspaceId, companyName, month, data, allTransactions, availableBalanceCents, onCriticalReady, go }: {
+  workspaceId: string; companyName: string; month: Date; data: BusinessInstitutionData; allTransactions: FinanceTransaction[];
+  availableBalanceCents: number; onCriticalReady?: () => void;
+  go: (view: "planning" | "result" | "cashflow" | "receivables" | "payables" | "statement") => void;
+}) {
+  const period = monthKey(month);
+  const currentYear = new Date().getFullYear();
+  const [selectedYear, setSelectedYear] = useState(currentYear);
+  const [planGoals, setPlanGoals] = useState<Partial<Record<BusinessPlanGoalKey, BusinessPlanGoal | null>>>({});
+  const [profile, setProfile] = useState<Profile>(blankProfile);
+  const [loading, setLoading] = useState(true);
+  const [loadedScope, setLoadedScope] = useState("");
+  const [error, setError] = useState("");
+  const [requestRevision, setRequestRevision] = useState(0);
+  const profileMonth = selectedYear + "-12";
+  const years = useMemo(() => {
+    const available = new Set(allTransactions.filter((item) => item.type === "income").map((item) => Number(item.date.slice(0, 4))).filter((year) => year >= 2000 && year <= currentYear));
+    available.add(currentYear);
+    return [...available].sort((left, right) => right - left);
+  }, [allTransactions, currentYear]);
+  const dataScope = workspaceId + ":" + profileMonth;
+
+  useEffect(() => { setSelectedYear(currentYear); }, [workspaceId, currentYear]);
+
+  useEffect(() => {
+    let stale = false;
+    setLoading(true);
+    setError("");
+    setPlanGoals({});
+    setProfile(blankProfile);
+    void authorizedRequest(workspaceId, "/api/workspaces/business/profile?month=" + encodeURIComponent(profileMonth))
+      .then((result) => {
+        if (stale) return;
+        setPlanGoals(result.planGoals || {});
+        setProfile({ ...blankProfile, ...result.profile });
+        setLoading(false);
+        setLoadedScope(dataScope);
+        onCriticalReady?.();
+      })
+      .catch((cause) => {
+        if (stale) return;
+        setError(cause instanceof Error ? cause.message : "Não foi possível carregar as metas empresariais.");
+        setLoading(false);
+        setLoadedScope(dataScope);
+        onCriticalReady?.();
+      });
+    return () => { stale = true; };
+  }, [workspaceId, profileMonth, requestRevision, onCriticalReady, dataScope]);
+
+  const currency = profile.default_currency;
+  const annualGoal = planGoals.annual_revenue_goal?.amountCents ?? null;
+  const annualResultGoal = planGoals.annual_result_goal?.amountCents ?? null;
+  const minimumCash = planGoals.minimum_cash?.amountCents ?? null;
+  const expenseLimit = planGoals.expense_limit?.amountCents ?? null;
+  const annual = useMemo(() => buildAnnualRevenueSeries(selectedYear, allTransactions, annualGoal), [allTransactions, annualGoal, selectedYear]);
+  const periodResult = useMemo(() => calculateBusinessPeriodResult(period, allTransactions), [allTransactions, period]);
+  const yearCutoff = selectedYear === currentYear
+    ? String(selectedYear) + "-" + String(new Date().getMonth() + 1).padStart(2, "0") + "-" + String(new Date().getDate()).padStart(2, "0")
+    : String(selectedYear) + "-12-31";
+  const yearTransactions = allTransactions.filter((item) => item.date.startsWith(String(selectedYear) + "-") && item.date.slice(0, 10) <= yearCutoff);
+  const yearExpenses = yearTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + item.amountCents, 0);
+  const yearResult = yearTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + item.amountCents, 0) - yearExpenses;
+  const currentReceivables = useMemo(() => getReceivableOccurrences(data.plannedReceivables || [], period, allTransactions), [allTransactions, data.plannedReceivables, period]);
+  const currentPayables = (data.recurringBills || []).filter((bill) => isRecurringBillScheduledInMonth(bill, period) && !isRecurringBillPaidInMonth(bill, period));
+  const payableAmount = currentPayables.reduce((sum, bill) => sum + bill.amountCents, 0);
+  const events = useMemo(() => buildBusinessCashEvents({
+    receivables: data.plannedReceivables || [],
+    payables: data.recurringBills || [],
+    transactions: allTransactions,
+    days: 90,
+  }), [allTransactions, data.plannedReceivables, data.recurringBills]);
+  const upcomingDate = new Date();
+  upcomingDate.setDate(upcomingDate.getDate() + 7);
+  const upcomingKey = upcomingDate.getFullYear() + "-" + String(upcomingDate.getMonth() + 1).padStart(2, "0") + "-" + String(upcomingDate.getDate()).padStart(2, "0");
+  const upcomingEvents = events.filter((event) => event.date <= upcomingKey);
+  const overdueReceivables = currentReceivables.filter((item) => item.status === "overdue");
+  const today = new Date();
+  const todayKey = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+  const overduePayables = currentPayables.filter((bill) => period + "-" + String(recurringBillDueDay(bill, period)).padStart(2, "0") < todayKey);
+  let projectedBalance = availableBalanceCents;
+  let cashMinimumBreach: { date: string; balance: number } | null = minimumCash !== null && availableBalanceCents < minimumCash
+    ? { date: todayKey, balance: availableBalanceCents }
+    : null;
+  const cashDeltasByDate = new Map<string, number>();
+  for (const event of events) cashDeltasByDate.set(event.date, (cashDeltasByDate.get(event.date) || 0) + (event.kind === "receivable" ? event.amountCents : -event.amountCents));
+  for (const [date, delta] of [...cashDeltasByDate.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    projectedBalance += delta;
+    if (!cashMinimumBreach && minimumCash !== null && projectedBalance < minimumCash) cashMinimumBreach = { date, balance: projectedBalance };
+  }
+  const kpis = [
+    { label: "Caixa disponível", amount: availableBalanceCents, detail: "Saldo consolidado nas contas", target: "cashflow" as const },
+    { label: "A receber", amount: currentReceivables.filter((item) => item.status !== "received").reduce((sum, item) => sum + item.amountCents, 0), detail: "Em aberto neste mês", target: "receivables" as const },
+    { label: "A pagar", amount: payableAmount, detail: "Compromissos não pagos no mês", target: "payables" as const },
+    { label: "Resultado", amount: periodResult.resultCents, detail: "Receitas − despesas · " + period, target: "result" as const },
+  ];
+  const alerts: { title: string; detail?: string; target: "receivables" | "payables" | "cashflow" | "planning" }[] = [];
+  if (overdueReceivables.length) alerts.push({ title: overdueReceivables.length + " recebimento(s) atrasado(s)", detail: formatBusinessMoney(overdueReceivables.reduce((sum, item) => sum + item.amountCents, 0), currency), target: "receivables" });
+  if (overduePayables.length) alerts.push({ title: overduePayables.length + " conta(s) vencida(s)", detail: formatBusinessMoney(overduePayables.reduce((sum, item) => sum + item.amountCents, 0), currency), target: "payables" });
+  for (const kind of ["receivable", "payable"] as const) {
+    const rows = upcomingEvents.filter((event) => event.kind === kind);
+    if (rows.length) alerts.push({ title: rows.length + (kind === "receivable" ? " recebimento(s)" : " conta(s)") + " nos próximos 7 dias", detail: formatBusinessMoney(rows.reduce((sum, item) => sum + item.amountCents, 0), currency), target: kind === "receivable" ? "receivables" : "payables" });
+  }
+  if (cashMinimumBreach) alerts.push({ title: "Caixa projetado abaixo do mínimo em " + new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(new Date(cashMinimumBreach.date + "T12:00:00")), detail: "Saldo estimado: " + formatBusinessMoney(cashMinimumBreach.balance, currency), target: "cashflow" });
+  if (annual.forecastCents !== null && annualGoal !== null && annualGoal > 0 && annual.forecastCents < annualGoal) {
+    const gap = Math.round(((annualGoal - annual.forecastCents) / annualGoal) * 100);
+    alerts.push({ title: "Projeção anual estimada " + gap + "% abaixo da meta", target: "planning" });
+  }
+  const expenseRatio = expenseLimit !== null && expenseLimit > 0 ? yearExpenses / expenseLimit : null;
+  if (expenseRatio !== null && expenseRatio >= 0.8) alerts.push({ title: expenseRatio >= 1 ? "Despesas ultrapassaram o limite anual" : "Despesas próximas do limite anual", detail: Math.round(expenseRatio * 100) + "% do limite", target: "planning" });
+  const recentMovements = [...allTransactions].sort((left, right) => right.date.localeCompare(left.date) || right.createdAt.localeCompare(left.createdAt)).slice(0, 5);
+
+  if (loading || loadedScope !== dataScope) return <section aria-label="Visão geral empresarial" className="mt-5 space-y-4">
+    <div className="flex items-end justify-between gap-3"><div><p className="muted text-xs">Visão geral</p><h1 className="text-2xl font-semibold tracking-tight">{companyName}</h1></div><span className="muted text-sm">Carregando…</span></div>
+    <div className="panel rounded-2xl p-5"><p className="muted text-sm">Carregando indicadores empresariais…</p></div>
+  </section>;
+
+  return <section aria-label="Visão geral empresarial" className="mt-5 space-y-4">
+    <header className="flex flex-wrap items-end justify-between gap-3">
+      <div><p className="muted text-xs">Visão geral</p><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{companyName}</h1></div>
+      <label className="muted inline-flex min-h-10 items-center gap-2 rounded-xl bg-[var(--panel2)] px-3 text-xs">Faturamento
+        <select aria-label="Ano do faturamento" value={selectedYear} onChange={(event) => setSelectedYear(Number(event.target.value))} className="bg-transparent font-semibold text-[var(--fg)] outline-none">
+          {years.map((year) => <option key={year} value={year}>{year}</option>)}
+        </select>
+      </label>
+    </header>
+    {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100"><span>Não foi possível atualizar as metas empresariais. Os valores registrados continuam disponíveis.</span><button type="button" onClick={() => setRequestRevision((value) => value + 1)} className="min-h-9 rounded-lg bg-[var(--panel2)] px-3 font-medium">Tentar novamente</button></div>}
+    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+      {kpis.map((card) => <button type="button" key={card.label} onClick={() => go(card.target)} className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-3 text-left transition-colors hover:border-[var(--accent)]/50 sm:p-4">
+        <span className="muted block text-xs">{card.label}</span>
+        <b className={"mt-2 block truncate text-[clamp(1rem,2.2vw,1.35rem)] tracking-tight tabular-nums " + (card.label === "Resultado" ? card.amount < 0 ? "text-[var(--danger)]" : card.amount > 0 ? "text-[var(--accent)]" : "" : "")} title={exactMonthlyMoney(card.amount, currency)}>{formatBusinessMoney(card.amount, currency)}</b>
+        <small className="muted mt-1 block truncate text-[10px] sm:text-[11px]">{card.detail}</small>
+      </button>)}
+    </div>
+    <section className="panel rounded-2xl p-4 sm:p-5" aria-label={"Faturamento anual " + selectedYear}>
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="muted text-[11px] font-semibold uppercase tracking-[.12em]">Faturamento anual · {selectedYear}</p><h2 className="mt-1 text-lg font-semibold">Realizado e projeção anual estimada</h2><div className="muted mt-1 inline-flex items-center gap-1 text-xs">Projeção linear baseada no histórico <HelpHint label="Como calculamos a projeção anual?"><p>{annual.explanation} A meta aparece como ritmo mensal (meta anual dividida por 12). Transferências, aportes, empréstimos e aplicações não são faturamento operacional.</p></HelpHint></div></div><button type="button" onClick={() => go("planning")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Planejamento</button></div>
+      <div className="mt-4 grid gap-3 rounded-xl bg-[var(--panel2)]/60 p-3 sm:grid-cols-3 sm:p-4">
+        <div><p className="muted text-xs">Realizado</p><b className="mt-1 block text-base font-semibold tabular-nums">{formatBusinessMoney(annual.actualCents, currency)}</b></div>
+        <div><p className="muted text-xs">Projeção anual estimada</p><b className="mt-1 block text-base font-semibold tabular-nums">{annual.forecastCents === null ? "Indisponível" : formatBusinessMoney(annual.forecastCents, currency)}</b>{annual.forecastCents === null && <small className="muted mt-1 block text-[10px]">Dados insuficientes para gerar uma projeção anual confiável.</small>}</div>
+        <div><p className="muted text-xs">Meta anual</p><b className="mt-1 block text-base font-semibold tabular-nums">{annual.goalCents === null ? "Não definida" : formatBusinessMoney(annual.goalCents, currency)}</b></div>
+      </div>
+      {annual.hasActualData ? <div className="mt-4 h-[230px] w-full sm:h-[280px]" role="img" aria-label={"Gráfico de faturamento anual " + selectedYear}>
+        <ResponsiveContainer width="100%" height="100%"><LineChart data={annual.points} margin={{ top: 10, right: 12, bottom: 0, left: 0 }}>
+          <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false}/>
+          <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 11 }} tickLine={false} axisLine={false} interval={0}/>
+          <YAxis width={42} tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(value / 100)}/>
+          <Tooltip labelFormatter={(label) => String(label) + " " + selectedYear} formatter={(value) => formatBusinessMoney(Number(value), currency)} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }}/>
+          {annual.goalCents !== null && <ReferenceLine y={Math.round(annual.goalCents / 12)} stroke="#eab308" strokeDasharray="5 5" label={{ value: "Ritmo da meta", fill: "#eab308", fontSize: 10, position: "insideTopRight" }}/>}
+          <Line name="Realizado" type="monotone" dataKey="actualCents" stroke="#4edea3" strokeWidth={2.5} dot={{ r: 2.5 }} activeDot={{ r: 5 }} connectNulls={false}/>
+          {annual.forecastCents !== null && <Line name="Projeção" type="monotone" dataKey="projectionCents" stroke="#60a5fa" strokeWidth={2.5} strokeDasharray="7 5" dot={false} activeDot={{ r: 5 }} connectNulls={false}/>}
+        </LineChart></ResponsiveContainer>
+      </div> : <div className="mt-4 grid min-h-36 place-items-center rounded-xl border border-dashed border-[var(--border)] px-4 text-center"><p className="muted max-w-md text-sm">{annual.goalCents === null ? "Registre movimentações para acompanhar a evolução do faturamento." : "A meta anual está definida. Registre receitas operacionais para acompanhar o progresso."}</p></div>}
+      {annual.goalCents !== null && annual.goalCents > 0 && <div className="mt-3 rounded-xl border border-[var(--border)] p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs"><b>Progresso da meta</b><span>{formatBusinessMoney(annual.actualCents, currency)} de {formatBusinessMoney(annual.goalCents, currency)} · {(annual.progressPercent || 0).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</span></div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--panel2)]" role="progressbar" aria-label="Progresso da meta anual de faturamento" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.max(0, annual.progressPercent || 0))}><span className="block h-full rounded-full bg-[var(--accent)] transition-[width]" style={{ width: Math.min(100, Math.max(0, annual.progressPercent || 0)) + "%" }}/></div>
+      </div>}
+      <div className="muted mt-3 flex flex-wrap gap-4 text-[10px]"><span className="inline-flex items-center gap-1"><i className="h-0.5 w-4 rounded bg-emerald-400"/> Realizado</span>{annual.forecastCents !== null && <span className="inline-flex items-center gap-1"><i className="h-0.5 w-4 rounded border-t-2 border-dashed border-blue-400"/> Projeção</span>}{annual.goalCents !== null && <span className="inline-flex items-center gap-1"><i className="h-0.5 w-4 rounded border-t-2 border-dashed border-yellow-400"/> Ritmo mensal da meta anual</span>}</div>
+    </section>
+    <section className="panel rounded-2xl p-4 sm:p-5"><div className="mb-4 flex items-center justify-between gap-3"><div><h2 className="font-semibold">Indicadores de planejamento</h2><p className="muted mt-1 text-xs">Acompanhamento do ano selecionado, com limites definidos no Planejamento.</p></div><button type="button" onClick={() => go("planning")} className="min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)]">Editar metas</button></div><div className="grid gap-4 lg:grid-cols-3"><BusinessProgress label="Caixa mínimo" valueCents={availableBalanceCents} targetCents={minimumCash} currency={currency} kind="cash"/><BusinessProgress label="Despesas no ano" valueCents={yearExpenses} targetCents={expenseLimit} currency={currency} kind="limit"/><BusinessProgress label="Resultado no ano" valueCents={yearResult} targetCents={annualResultGoal} currency={currency} kind="goal"/></div></section>
+    <section className={"rounded-2xl border p-4 sm:p-5 " + (alerts.length ? "border-amber-400/30 bg-amber-400/5" : "border-[var(--border)] bg-[var(--panel)]")}><div className="flex items-center gap-2"><AlertTriangle size={17} className={alerts.length ? "text-amber-300" : "text-[var(--accent)]"}/><h2 className="font-semibold">Atenção</h2></div>{alerts.length ? <ul className="mt-3 divide-y divide-[var(--border)]">{alerts.slice(0, 6).map((alert, index) => <li key={alert.title + index}><button type="button" onClick={() => go(alert.target)} className="flex min-h-12 w-full items-center justify-between gap-3 py-2 text-left hover:text-[var(--accent)]"><span className="min-w-0"><b className="block text-sm">{alert.title}</b>{alert.detail && <small className="muted mt-0.5 block text-xs">{alert.detail}</small>}</span><ArrowRight size={16} className="shrink-0"/></button></li>)}</ul> : <p className="muted mt-2 text-sm">Nenhum alerta financeiro identificado com as informações disponíveis.</p>}</section>
+    <section className="panel rounded-2xl p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><div><h2 className="font-semibold">Movimentações recentes</h2><p className="muted mt-1 text-xs">Últimos registros financeiros da empresa.</p></div><button type="button" onClick={() => go("statement")} className="min-h-10 shrink-0 rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium text-[var(--accent)]">Ver todas</button></div>{recentMovements.length ? <div className="mt-2 divide-y divide-[var(--border)]">{recentMovements.map((item) => <div key={item.id} className="flex items-center justify-between gap-3 py-3"><span className="min-w-0"><b className="block truncate text-sm">{item.description?.trim() || item.category || (item.type === "income" ? "Receita" : item.type === "expense" ? "Despesa" : item.type === "investment" ? "Aplicação" : "Transferência")}</b><small className="muted block truncate">{new Intl.DateTimeFormat("pt-BR").format(new Date(item.date))} · {item.category}</small></span><b className={"shrink-0 text-sm tabular-nums " + (item.type === "income" ? "text-[var(--accent)]" : item.type === "expense" ? "text-[var(--danger)]" : "")}>{item.type === "income" ? "+" : item.type === "expense" ? "−" : ""}{formatBusinessMoney(item.amountCents, currency)}</b></div>)}</div> : <div className="grid min-h-28 place-items-center text-center"><p className="muted text-sm">Nenhuma movimentação registrada ainda.</p></div>}</section>
+  </section>;
+}
+
+function BusinessProgress({ label, valueCents, targetCents, currency, kind }: { label: string; valueCents: number; targetCents: number | null; currency: string; kind: "cash" | "limit" | "goal" }) {
+  const ratio = targetCents !== null && targetCents > 0 ? valueCents / targetCents : null;
+  const status = ratio === null ? "Meta não definida" : kind === "cash" ? ratio < 1 ? "Abaixo do mínimo" : "Acima do mínimo" : kind === "limit" ? ratio >= 1 ? "Acima do limite" : ratio >= 0.8 ? "Próximo do limite" : "Dentro do esperado" : ratio >= 1 ? "Meta atingida" : "Em andamento";
+  const tone = status.includes("Abaixo") || status.includes("Acima do limite") ? "text-[var(--danger)] bg-[var(--danger)]" : status.includes("limite") ? "text-amber-300 bg-amber-400" : "text-[var(--accent)] bg-[var(--accent)]";
+  const width = ratio === null ? 0 : Math.min(100, Math.max(0, ratio * 100));
+  return <article className="min-w-0 rounded-xl bg-[var(--panel2)]/50 p-3"><div className="flex items-center justify-between gap-2"><h3 className="text-sm font-medium">{label}</h3><span className={"shrink-0 rounded-full bg-[var(--panel2)] px-2 py-1 text-[10px] " + tone.split(" ")[0]}>{status}</span></div><p className="mt-2 truncate text-sm font-semibold tabular-nums" title={exactMonthlyMoney(valueCents, currency) + " de " + (targetCents === null ? "meta não definida" : exactMonthlyMoney(targetCents, currency))}>{formatBusinessMoney(valueCents, currency)} <span className="muted font-normal">/ {targetCents === null ? "—" : formatBusinessMoney(targetCents, currency)}</span></p><div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--panel2)]" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={width}><span className={"block h-full rounded-full " + tone.split(" ")[1]} style={{ width: width + "%" }}/></div>{ratio !== null && <p className="muted mt-1 text-[10px]">{Math.round(ratio * 100)}% da referência</p>}</article>;
+}
+
 export function BusinessFinanceDetail({ workspaceId, month, data, allTransactions, cashBalanceCents, mode }: {
   workspaceId: string; month: Date; data: BusinessInstitutionData; allTransactions: FinanceTransaction[];
   cashBalanceCents: number; mode: "result" | "cashflow";
@@ -303,6 +479,8 @@ export function BusinessFinanceDetail({ workspaceId, month, data, allTransaction
   return <section className="mx-auto max-w-5xl px-4 pt-8 lg:px-10">
     <header><p className="muted text-xs">Gestão financeira · {period}</p><h2 className="mt-1 text-2xl font-semibold tracking-tight">{mode === "result" ? "Resultado gerencial" : "Fluxo de caixa"}</h2><p className="muted mt-2 text-sm">{mode === "result" ? "Visão gerencial do período; não é uma demonstração contábil ou fiscal." : "Caixa realizado separado dos recebimentos e compromissos futuros."}</p></header>
     {error && <p role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">{error}</p>}
+    {mode === "result" && <BusinessResultCharts month={month} transactions={allTransactions} currency={profile.default_currency}/>}
+    {mode === "cashflow" && <BusinessCashflowCharts month={month} transactions={allTransactions} events={events} openingCents={cashBalanceCents} currency={profile.default_currency}/>}
     {mode === "result" ? <>
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Faturamento realizado" item={snapshot.grossRevenue} currency={profile.default_currency}/><Metric label="Despesas registradas" item={snapshot.registeredExpenses} currency={profile.default_currency}/><Metric label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency}/><PercentageMetric label="Margem bruta" percent={snapshot.grossMarginPercent} nature={snapshot.grossResultDre.nature} explanation="Resultado bruto gerencial dividido pela receita líquida. Só aparece quando as linhas necessárias estão preenchidas."/></div>
       <section className="panel mt-4 rounded-2xl p-5"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">DRE gerencial simplificada</h3><span className="muted text-[11px]">Valores informados e cálculos gerenciais</span></div><div className="mt-4 space-y-3 text-sm"><DreRow label="Receita bruta" item={snapshot.grossDre} currency={profile.default_currency}/><DreRow label="(−) Impostos provisionados" item={snapshot.taxesDre} currency={profile.default_currency}/><DreRow label="Receita líquida" item={snapshot.netRevenueDre} currency={profile.default_currency} strong/><DreRow label="(−) Custos diretos" item={snapshot.directCostsDre} currency={profile.default_currency}/><DreRow label="Resultado bruto" item={snapshot.grossResultDre} currency={profile.default_currency} strong/><DreRow label="(−) Despesas operacionais" item={snapshot.operatingExpensesDre} currency={profile.default_currency}/><DreRow label="Resultado operacional" item={snapshot.operatingResultDre} currency={profile.default_currency} strong/><DreRow label="Resultado gerencial" item={snapshot.managerialResult} currency={profile.default_currency} strong/></div><p className="muted mt-4 text-xs leading-5">Entradas, despesas e premissas são identificadas pela origem. Transferências, aportes e aplicações não representam faturamento operacional.</p></section>
@@ -311,6 +489,44 @@ export function BusinessFinanceDetail({ workspaceId, month, data, allTransaction
       <section className="panel mt-4 rounded-2xl p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">Próximos compromissos</h3><p className="muted mt-1 text-xs">Projeção simples em regime de caixa, com recebíveis e contas programadas.</p></div><span className="rounded-full bg-[var(--panel2)] px-2.5 py-1 text-[11px]">{events.length} eventos</span></div>{events.length ? <div className="mt-3 divide-y divide-[var(--border)]">{events.slice(0, 30).map((event) => <div key={event.id} className="flex items-center justify-between gap-3 py-3"><span className="min-w-0"><b className="block truncate text-sm">{event.label}</b><small className="muted">{new Intl.DateTimeFormat("pt-BR").format(new Date(`${event.date}T12:00:00`))} · {event.kind === "receivable" ? "A receber" : "A pagar"}</small></span><b className={`shrink-0 text-sm ${event.kind === "receivable" ? "text-[var(--accent)]" : "text-amber-300"}`}>{event.kind === "receivable" ? "+" : "−"}{formatBusinessMoney(event.amountCents, profile.default_currency)}</b></div>)}</div> : <p className="muted mt-4 text-sm">Sem recebimentos ou compromissos programados para os próximos 90 dias.</p>}<p className="muted mt-4 border-t border-[var(--border)] pt-3 text-xs leading-5">A projeção considera somente eventos programados e não conta transferências como entrada ou saída consolidada. Valores futuros podem mudar.</p></section>
     </>}
   </section>;
+}
+
+function BusinessResultCharts({ month, transactions, currency }: { month: Date; transactions: FinanceTransaction[]; currency: string }) {
+  const points = Array.from({ length: 12 }, (_, index) => {
+    const date = new Date(month.getFullYear(), month.getMonth() - 11 + index, 1);
+    const period = monthKey(date);
+    const totals = calculateBusinessPeriodResult(period, transactions);
+    return { label: new Intl.DateTimeFormat("pt-BR", { month: "short" }).format(date).replace(".", ""), resultCents: totals.resultCents, marginPercent: totals.incomeCents > 0 ? totals.resultCents / totals.incomeCents * 100 : null };
+  });
+  const hasData = transactions.some((item) => (item.type === "income" || item.type === "expense") && item.date.slice(0, 7) >= monthKey(new Date(month.getFullYear(), month.getMonth() - 11, 1)) && item.date.slice(0, 7) <= monthKey(month));
+  if (!hasData) return <div className="panel mt-4 rounded-2xl p-5"><h3 className="font-semibold">Evolução mensal</h3><p className="muted mt-2 text-sm">Registre receitas e despesas para acompanhar resultado e margem ao longo do tempo.</p></div>;
+  return <div className="mt-4 grid gap-4 xl:grid-cols-2">
+    <section className="panel min-w-0 rounded-2xl p-4 sm:p-5" aria-label="Resultado mensal"><h3 className="font-semibold">Resultado mensal</h3><p className="muted mt-1 text-xs">Receitas registradas menos despesas registradas.</p><div className="mt-3 h-56" role="img" aria-label="Gráfico de resultado mensal nos últimos 12 meses"><ResponsiveContainer width="100%" height="100%"><LineChart data={points}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis width={44} tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(value / 100)}/><Tooltip formatter={(value) => formatBusinessMoney(Number(value), currency)} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }}/><ReferenceLine y={0} stroke="var(--border)"/><Line name="Resultado" type="monotone" dataKey="resultCents" stroke="#4edea3" strokeWidth={2.5} dot={{ r: 2 }} connectNulls={false}/></LineChart></ResponsiveContainer></div></section>
+    <section className="panel min-w-0 rounded-2xl p-4 sm:p-5" aria-label="Evolução da margem"><h3 className="font-semibold">Evolução da margem</h3><p className="muted mt-1 text-xs">Resultado registrado ÷ faturamento registrado; não é margem contábil.</p><div className="mt-3 h-56" role="img" aria-label="Gráfico de margem operacional mensal"><ResponsiveContainer width="100%" height="100%"><LineChart data={points}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis width={44} tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => value + "%"}/><Tooltip formatter={(value) => Number(value).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%"} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }}/><ReferenceLine y={0} stroke="var(--border)"/><Line name="Margem registrada" type="monotone" dataKey="marginPercent" stroke="#60a5fa" strokeWidth={2.5} dot={{ r: 2 }} connectNulls={false}/></LineChart></ResponsiveContainer></div></section>
+  </div>;
+}
+
+function BusinessCashflowCharts({ month, transactions, events, openingCents, currency }: { month: Date; transactions: FinanceTransaction[]; events: BusinessCashEvent[]; openingCents: number; currency: string }) {
+  const [monthsShown, setMonthsShown] = useState(6);
+  const cashPoints = useMemo(() => {
+    const grouped = new Map<string, number>();
+    for (const event of events) grouped.set(event.date, (grouped.get(event.date) || 0) + (event.kind === "receivable" ? event.amountCents : -event.amountCents));
+    return [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right)).reduce((points, [date, delta]) => {
+      const projectedCents = (points[points.length - 1]?.balanceCents || 0) + delta;
+      return [...points, { label: new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit" }).format(new Date(date + "T12:00:00")), balanceCents: projectedCents }];
+    }, [{ label: "Hoje", balanceCents: openingCents }]);
+  }, [events, openingCents]);
+  const periodPoints = Array.from({ length: monthsShown }, (_, index) => {
+    const date = new Date(month.getFullYear(), month.getMonth() - monthsShown + index + 1, 1);
+    const period = monthKey(date);
+    const rows = transactions.filter((item) => item.date.startsWith(period + "-") && (item.type === "income" || item.type === "expense"));
+    return { label: new Intl.DateTimeFormat("pt-BR", { month: "short" }).format(date).replace(".", ""), inflowsCents: rows.filter((item) => item.type === "income").reduce((sum, item) => sum + item.amountCents, 0), outflowsCents: rows.filter((item) => item.type === "expense").reduce((sum, item) => sum + item.amountCents, 0) };
+  });
+  const hasFlow = periodPoints.some((item) => item.inflowsCents || item.outflowsCents);
+  return <div className="mt-4 grid gap-4 xl:grid-cols-2">
+    <section className="panel min-w-0 rounded-2xl p-4 sm:p-5" aria-label="Saldo projetado"><h3 className="font-semibold">Saldo projetado · próximos 90 dias</h3><p className="muted mt-1 text-xs">Saldo atual ajustado por recebimentos e pagamentos programados.</p>{events.length ? <div className="mt-3 h-56" role="img" aria-label="Linha do saldo projetado para os próximos 90 dias"><ResponsiveContainer width="100%" height="100%"><LineChart data={cashPoints}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis width={44} tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(value / 100)}/><Tooltip formatter={(value) => formatBusinessMoney(Number(value), currency)} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }}/><Line name="Saldo estimado" type="stepAfter" dataKey="balanceCents" stroke="#4edea3" strokeWidth={2.5} dot={false}/></LineChart></ResponsiveContainer></div> : <p className="muted mt-4 rounded-xl border border-dashed border-[var(--border)] p-4 text-sm">Cadastre recebimentos ou compromissos futuros para visualizar a projeção.</p>}</section>
+    <section className="panel min-w-0 rounded-2xl p-4 sm:p-5" aria-label="Entradas e saídas"><div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="font-semibold">Entradas × saídas</h3><p className="muted mt-1 text-xs">Movimentações realizadas; transferências e aplicações são excluídas.</p></div><div className="flex gap-1" aria-label="Período do gráfico">{[3, 6, 12].map((count) => <button key={count} type="button" aria-pressed={monthsShown === count} onClick={() => setMonthsShown(count)} className={"min-h-8 rounded-lg px-2 text-[10px] " + (monthsShown === count ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "muted hover:bg-[var(--panel2)]")}>{count} meses</button>)}</div></div>{hasFlow ? <div className="mt-3 h-56" role="img" aria-label={"Gráfico de entradas e saídas em " + monthsShown + " meses"}><ResponsiveContainer width="100%" height="100%"><BarChart data={periodPoints}><CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false}/><XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis width={44} tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(value / 100)}/><Tooltip formatter={(value) => formatBusinessMoney(Number(value), currency)} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }}/><Legend/><Bar name="Entradas" dataKey="inflowsCents" fill="#4edea3" radius={[4, 4, 0, 0]}/><Bar name="Saídas" dataKey="outflowsCents" fill="#f59e0b" radius={[4, 4, 0, 0]}/></BarChart></ResponsiveContainer></div> : <p className="muted mt-4 rounded-xl border border-dashed border-[var(--border)] p-4 text-sm">Registre movimentações para comparar entradas e saídas.</p>}</section>
+  </div>;
 }
 
 function DreRow({ label, item, currency, strong = false }: { label: string; item: { amountCents: number | null; nature: FinancialDataNature | null }; currency: string; strong?: boolean }) {
