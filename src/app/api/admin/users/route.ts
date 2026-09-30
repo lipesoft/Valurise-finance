@@ -36,6 +36,75 @@ const json = (body: unknown, status = 200) => NextResponse.json(body, {
   headers: { "Cache-Control": "no-store, max-age=0" },
 });
 
+const requestStatuses = ["pending", "pending_email", "verification_required"] as const;
+const requestPageSize = 25;
+const legacyRequestPageLimit = 1_000;
+
+type MasterAccountPage = {
+  items?: Array<Record<string, unknown>>;
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  stats?: Record<string, number>;
+};
+
+async function listRequestsWithLegacyFilter(
+  admin: ReturnType<typeof getSupabaseAdminClient>,
+  search: string,
+  page: number,
+): Promise<MasterAccountPage | null> {
+  const neededItems = page * requestPageSize;
+  // Older deployed RPCs cap each query at 100 rows and do not accept the
+  // combined `requests` filter. Bound compatibility work while the additive
+  // database migration is rolling out.
+  if (neededItems > legacyRequestPageLimit) return null;
+
+  const batchCount = Math.ceil(neededItems / 100);
+  const groups = await Promise.all(requestStatuses.map(async (status) => {
+    const batches = await Promise.all(Array.from({ length: batchCount }, (_, index) =>
+      admin.rpc("master_list_accounts", {
+        p_search: search || null,
+        p_status: status,
+        p_page: index + 1,
+        p_page_size: 100,
+      })
+    ));
+    const failed = batches.find((batch) => batch.error || !batch.data);
+    if (failed) return { error: true as const };
+
+    return {
+      error: false as const,
+      items: batches.flatMap((batch) => ((batch.data as MasterAccountPage).items ?? [])),
+      total: Number((batches[0].data as MasterAccountPage).total ?? 0),
+      stats: (batches[0].data as MasterAccountPage).stats ?? {},
+    };
+  }));
+
+  if (groups.some((group) => group.error)) return null;
+
+  const accounts = groups.flatMap((group) => group.error ? [] : group.items);
+  accounts.sort((left, right) => {
+    const leftCreatedAt = Date.parse(String(left.created_at ?? ""));
+    const rightCreatedAt = Date.parse(String(right.created_at ?? ""));
+    if (leftCreatedAt !== rightCreatedAt && Number.isFinite(leftCreatedAt) && Number.isFinite(rightCreatedAt)) {
+      return rightCreatedAt - leftCreatedAt;
+    }
+    return String(left.id ?? "").localeCompare(String(right.id ?? ""));
+  });
+
+  return {
+    items: accounts.slice((page - 1) * requestPageSize, page * requestPageSize),
+    total: groups.reduce((sum, group) => sum + (group.error ? 0 : group.total), 0),
+    page,
+    pageSize: requestPageSize,
+    stats: groups.find((group) => !group.error)?.stats ?? {},
+  };
+}
+
+function isUnsupportedCombinedRequestFilter(error: { message?: string } | null) {
+  return error?.message?.toLowerCase().includes("invalid account filter") ?? false;
+}
+
 async function authorize(request: NextRequest) {
   return getVerifiedMaster(request.headers.get("authorization"));
 }
@@ -63,6 +132,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     p_page: parsed.data.page,
     p_page_size: 25,
   });
+  if (parsed.data.status === "requests" && isUnsupportedCombinedRequestFilter(error)) {
+    const compatiblePage = await listRequestsWithLegacyFilter(admin, parsed.data.search, parsed.data.page);
+    if (!compatiblePage) return json({ error: "Não foi possível carregar as solicitações agora." }, 503);
+    return json(compatiblePage);
+  }
   if (error || !data) return json({ error: "Não foi possível carregar as contas agora." }, 503);
   return json(data);
 }

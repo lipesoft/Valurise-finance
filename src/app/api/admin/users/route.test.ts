@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { readFileSync } from "node:fs";
 
 const { admin, getVerifiedMaster, verifyMasterPassword } = vi.hoisted(() => {
   const rpc = vi.fn();
@@ -63,6 +64,57 @@ describe("GET /api/admin/users", () => {
       p_page: 9,
       p_page_size: 25,
     });
+  });
+
+  it("carrega a fila Master com solicitações verificadas e aguardando e-mail", async () => {
+    admin.rpc.mockResolvedValueOnce({ data: { items: [], total: 0, page: 1, pageSize: 25 }, error: null });
+    const request = new NextRequest("http://localhost/api/admin/users?status=requests&page=1", {
+      headers: { Authorization: "Bearer fake-token" },
+    });
+
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    expect(admin.rpc).toHaveBeenCalledWith("master_list_accounts", {
+      p_search: null,
+      p_status: "requests",
+      p_page: 1,
+      p_page_size: 25,
+    });
+  });
+
+  it("mantém a fila visível enquanto o RPC legado ainda não conhece o filtro combinado", async () => {
+    const createdAt = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+    const statuses = ["pending", "pending_email", "verification_required"];
+    const account = (id: string, status: string, minutesAgo: number) => ({
+      id,
+      created_at: createdAt(minutesAgo),
+      status,
+    });
+    admin.rpc
+      .mockResolvedValueOnce({ data: null, error: { message: "invalid account filter" } })
+      .mockResolvedValueOnce({ data: { items: [account("confirmed", "pending", 2)], total: 1, stats: { pending: 1, email_pending: 2 } }, error: null })
+      .mockResolvedValueOnce({ data: { items: [account("unconfirmed", "pending_email", 1)], total: 1, stats: { pending: 1, email_pending: 2 } }, error: null })
+      .mockResolvedValueOnce({ data: { items: [account("verification", "verification_required", 3)], total: 1, stats: { pending: 1, email_pending: 2 } }, error: null });
+    const request = new NextRequest("http://localhost/api/admin/users?status=requests&page=1", {
+      headers: { Authorization: "Bearer fake-token" },
+    });
+
+    const response = await GET(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.items.map((item: { id: string }) => item.id)).toEqual(["unconfirmed", "confirmed", "verification"]);
+    expect(body.total).toBe(3);
+    expect(body.stats).toMatchObject({ pending: 1, email_pending: 2 });
+    expect(admin.rpc.mock.calls.map(([name, args]) => args?.p_status)).toEqual(["requests", ...statuses]);
+  });
+
+  it("mantém o filtro combinado da fila no banco e sem liberar a aprovação sem confirmação", () => {
+    const migration = readFileSync(new URL("../../../../../supabase/migrations/20260930175330_fix_master_request_queue_filter.sql", import.meta.url), "utf8");
+
+    expect(migration).toContain("'all', 'requests', 'pending', 'pending_email', 'verification_required'");
+    expect(migration).toContain("safe_status = 'requests' and status in ('pending', 'pending_email', 'verification_required')");
   });
 
   it("rejeita filtros ou páginas inválidas sem consultar o banco", async () => {
