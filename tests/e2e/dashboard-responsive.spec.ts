@@ -202,7 +202,7 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await expect(businessSummary.getByRole("heading", { name: "Indicadores de planejamento" })).toBeVisible();
   await expect(businessSummary.getByRole("heading", { name: "Atenção" })).toBeVisible();
   await expect(businessSummary.getByRole("heading", { name: "Movimentações recentes" })).toBeVisible();
-  await expect(businessSummary.getByRole("combobox", { name: "Ano do faturamento" })).toBeVisible();
+  await expect(businessSummary.getByRole("button", { name: "Ano do faturamento" })).toBeVisible();
   const desktopNavigation = page.locator("aside").getByRole("navigation");
   for (const item of ["Movimentações", "A Receber", "A Pagar", "Bancos e Caixa", "Fluxo de Caixa", "Resultado", "Planejamento", "Relatórios", "Configurações"]) {
     await expect(desktopNavigation.getByRole("button", { name: item, exact: true })).toBeVisible();
@@ -341,6 +341,15 @@ test("Dashboard empresarial sem dados mostra estado vazio e continua responsivo"
   await expect(revenue).toContainText("Registre movimentações para acompanhar a evolução do faturamento.");
   await expect(revenue.getByRole("img")).toHaveCount(0);
   await expect(dashboard.getByText("Nenhuma movimentação registrada ainda.")).toBeVisible();
+  const revenueYearPicker = dashboard.getByRole("button", { name: "Ano do faturamento" });
+  await revenueYearPicker.click();
+  const availableRevenueYears = dashboard.getByRole("group", { name: "Anos disponíveis" });
+  await expect(availableRevenueYears.getByRole("button", { name: String(new Date().getFullYear()), pressed: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(availableRevenueYears).toBeHidden();
+  await revenueYearPicker.click();
+  await revenue.getByText("Registre movimentações para acompanhar a evolução do faturamento.").click();
+  await expect(availableRevenueYears).toBeHidden();
   for (const width of [375, 390, 430, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

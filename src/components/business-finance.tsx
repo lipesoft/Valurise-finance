@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Building2, Info, Save } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Building2, CalendarDays, Check, ChevronDown, Info, Save } from "lucide-react";
 import { MoneyInput } from "@/components/numeric-inputs";
 import { accountBalance, formatBRL, type FinanceTransaction } from "@/lib/finance";
 import { HelpHint } from "@/components/help-hint";
@@ -276,6 +276,9 @@ export function BusinessFinanceDashboard({ workspaceId, companyName, month, data
   const period = monthKey(month);
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
+  const [yearMenuOpen, setYearMenuOpen] = useState(false);
+  const yearPickerRef = useRef<HTMLButtonElement>(null);
+  const yearPickerContainerRef = useRef<HTMLDivElement>(null);
   const [planGoals, setPlanGoals] = useState<Partial<Record<BusinessPlanGoalKey, BusinessPlanGoal | null>>>({});
   const [profile, setProfile] = useState<Profile>(blankProfile);
   const [loading, setLoading] = useState(true);
@@ -291,6 +294,15 @@ export function BusinessFinanceDashboard({ workspaceId, companyName, month, data
   const dataScope = workspaceId + ":" + profileMonth;
 
   useEffect(() => { setSelectedYear(currentYear); }, [workspaceId, currentYear]);
+
+  useEffect(() => {
+    if (!yearMenuOpen) return;
+    const dismissOnOutsideClick = (event: MouseEvent) => {
+      if (event.target instanceof Node && !yearPickerContainerRef.current?.contains(event.target)) setYearMenuOpen(false);
+    };
+    document.addEventListener("mousedown", dismissOnOutsideClick);
+    return () => document.removeEventListener("mousedown", dismissOnOutsideClick);
+  }, [yearMenuOpen]);
 
   useEffect(() => {
     let stale = false;
@@ -387,11 +399,22 @@ export function BusinessFinanceDashboard({ workspaceId, companyName, month, data
   return <section aria-label="Visão geral empresarial" className="mt-5 space-y-4">
     <header className="flex flex-wrap items-end justify-between gap-3">
       <div><p className="muted text-xs">Visão geral</p><h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{companyName}</h1></div>
-      <label className="muted inline-flex min-h-10 items-center gap-2 rounded-xl bg-[var(--panel2)] px-3 text-xs">Faturamento
-        <select aria-label="Ano do faturamento" value={selectedYear} onChange={(event) => setSelectedYear(Number(event.target.value))} className="bg-transparent font-semibold text-[var(--fg)] outline-none">
-          {years.map((year) => <option key={year} value={year}>{year}</option>)}
-        </select>
-      </label>
+      <div className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--panel)] px-3 py-2 shadow-sm">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/10 text-[var(--accent)]"><CalendarDays size={17} aria-hidden="true"/></span>
+        <div className="min-w-0">
+          <p className="muted text-[10px] font-semibold uppercase tracking-[.12em]">Faturamento</p>
+          <div ref={yearPickerContainerRef} className="relative mt-1" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setYearMenuOpen(false); }} onKeyDown={(event) => { if (event.key === "Escape") { setYearMenuOpen(false); yearPickerRef.current?.focus(); } }}>
+            <button ref={yearPickerRef} type="button" aria-label="Ano do faturamento" aria-expanded={yearMenuOpen} aria-controls={yearMenuOpen ? "business-revenue-year-options" : undefined} onClick={() => setYearMenuOpen((open) => !open)} className="inline-flex min-h-9 min-w-[92px] items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--panel2)] px-3 text-sm font-semibold tabular-nums text-[var(--fg)] transition-colors hover:border-[var(--accent)]/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60">
+              {selectedYear}<ChevronDown size={15} aria-hidden="true" className={`transition-transform ${yearMenuOpen ? "rotate-180" : ""}`}/>
+            </button>
+            {yearMenuOpen && <div id="business-revenue-year-options" role="group" aria-label="Anos disponíveis" className="absolute right-0 z-30 mt-1 max-h-56 min-w-full overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl">
+              {years.map((year) => <button type="button" key={year} aria-pressed={selectedYear === year} onClick={() => { setSelectedYear(year); setYearMenuOpen(false); yearPickerRef.current?.focus(); }} className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-lg px-3 text-left text-sm tabular-nums transition-colors hover:bg-[var(--panel2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/60 ${selectedYear === year ? "font-semibold text-[var(--accent)]" : "text-[var(--fg)]"}`}>
+                {year}{selectedYear === year && <Check size={15} aria-hidden="true"/>}
+              </button>)}
+            </div>}
+          </div>
+        </div>
+      </div>
     </header>
     {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-5 text-amber-100"><span>Não foi possível atualizar as metas empresariais. Os valores registrados continuam disponíveis.</span><button type="button" onClick={() => setRequestRevision((value) => value + 1)} className="min-h-9 rounded-lg bg-[var(--panel2)] px-3 font-medium">Tentar novamente</button></div>}
     <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
