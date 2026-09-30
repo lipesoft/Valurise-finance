@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { createHash } from "node:crypto";
 
 const { admin, signUp, getUserById, deleteUser, updateUserById, tables } = vi.hoisted(() => {
   const makeTable = () => {
@@ -50,6 +51,7 @@ vi.mock("@/lib/supabase/admin", () => ({ getSupabaseAdminClient: () => admin }))
 import { POST } from "./route";
 
 const userId = "00000000-0000-4000-8000-000000000002";
+const rateLimitKey = (scope: string, value: string) => createHash("sha256").update(`${scope}\0${value}`).digest("hex");
 
 function request() {
   return new NextRequest("http://localhost/api/auth/request-access", {
@@ -135,6 +137,7 @@ describe("POST /api/auth/request-access", () => {
 
     expect(response.status).toBe(202);
     expect(admin.rpc).toHaveBeenNthCalledWith(1, "consume_public_rate_limit", expect.objectContaining({
+      p_key: rateLimitKey("access-request:v2:ip", "unknown"),
       p_max_attempts: 20,
       p_window_seconds: 3600,
     }));
@@ -164,6 +167,7 @@ describe("POST /api/auth/request-access", () => {
     expect(response.status).toBe(429);
     expect(signUp).not.toHaveBeenCalled();
     expect(admin.rpc).toHaveBeenNthCalledWith(2, "consume_public_rate_limit", expect.objectContaining({
+      p_key: rateLimitKey("access-request:v2:email", "pessoa@example.invalid"),
       p_max_attempts: 8,
       p_window_seconds: 3600,
     }));

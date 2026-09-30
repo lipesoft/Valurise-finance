@@ -18,6 +18,8 @@ const requestSchema = z.object({
 
 const genericAccepted = () => NextResponse.json({ ok: true }, { status: 202 });
 const bucket = (scope: string, value: string) => createHash("sha256").update(`${scope}\0${value}`).digest("hex");
+// Version the buckets when the policy changes so applicants blocked under the
+// older 10/IP + 4/email limits are not kept blocked by stale counters.
 const RATE_LIMITS = { ip: 20, email: 8, windowSeconds: 3600 } as const;
 
 async function consumeLimit(admin: ReturnType<typeof getSupabaseAdminClient>, key: string, attempts: number) {
@@ -68,7 +70,7 @@ export async function POST(request: NextRequest) {
   const admin = getSupabaseAdminClient();
   const forwardedFor = request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim();
   const clientAddress = forwardedFor || request.headers.get("x-real-ip") || "unknown";
-  const addressLimit = await consumeLimit(admin, bucket("access-request:ip", clientAddress), RATE_LIMITS.ip);
+  const addressLimit = await consumeLimit(admin, bucket("access-request:v2:ip", clientAddress), RATE_LIMITS.ip);
   if (addressLimit.error) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
   if (addressLimit.data !== true) return rateLimited("ip");
 
@@ -81,7 +83,7 @@ export async function POST(request: NextRequest) {
   if (usernameError) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
   if (existingUsername) return genericAccepted();
 
-  const emailLimit = await consumeLimit(admin, bucket("access-request:email", email), RATE_LIMITS.email);
+  const emailLimit = await consumeLimit(admin, bucket("access-request:v2:email", email), RATE_LIMITS.email);
   if (emailLimit.error) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
   if (emailLimit.data !== true) return rateLimited("email");
 
