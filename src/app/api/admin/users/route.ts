@@ -144,9 +144,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 function publicActionError(message: string, action: string) {
   if (message.includes("master authorization required")) return json({ error: "Sua sessão Master expirou. Entre novamente." }, 403);
   if (message.includes("account not found")) return json({ error: "Conta não encontrada." }, 404);
-  if (message.includes("verified pending request required for archive")) return json({ error: "Só é possível arquivar uma solicitação com e-mail confirmado e aguardando análise." }, 409);
-  if (message.includes("archived access request required")) return json({ error: "Só é possível reabrir uma solicitação confirmada que esteja arquivada." }, 409);
-  if (message.includes("verified pending request required")) return json({ error: "A solicitação só pode ser decidida depois da confirmação de e-mail." }, 409);
+  if (message.includes("verified pending request required for archive")) return json({ error: "Só é possível arquivar uma solicitação que esteja aguardando análise." }, 409);
+  if (message.includes("archived access request required")) return json({ error: "Só é possível reabrir uma solicitação arquivada." }, 409);
+  if (message.includes("verified pending request required")) return json({ error: "A solicitação não está mais pendente. Atualize a fila e tente novamente." }, 409);
   if (message.includes("pending access request must be reopened")) return json({ error: "Esta solicitação ainda aguarda aprovação. Reabra o pedido na lixeira; não é possível ativar a conta diretamente." }, 409);
   if (message.includes("account must be in trash")) return json({ error: "Mova a conta para a lixeira antes de excluí-la definitivamente." }, 409);
   if (message.includes("linked invite unavailable")) return json({ error: "O convite vinculado expirou ou foi revogado. Revise a solicitação antes de aprovar." }, 409);
@@ -233,7 +233,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ? "master_reopen_access_request"
       : "master_transition_account";
   const actionAuditNotes: Partial<Record<typeof action, string>> = {
-    approve: "Cadastro aprovado após confirmação de e-mail e análise do Master.",
+    approve: "Cadastro aprovado após análise manual do Master.",
+    reject: "Solicitação recusada após análise manual do Master.",
     restore: "Conta reativada após revisão administrativa.",
     archive_request: `Solicitação confirmada arquivada: ${(reasonNote || "retirada da fila sem recusa.").slice(0, 220)}`,
     reopen_request: `Solicitação arquivada reaberta: ${(reasonNote || "devolvida à fila para nova análise.").slice(0, 220)}`,
@@ -241,6 +242,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const auditedReasonNote = action === "archive_request" || action === "reopen_request"
     ? actionAuditNotes[action]
     : reasonNote || actionAuditNotes[action] || null;
+
   const { data: transition, error: transitionError } = await admin.rpc(transitionFunction, {
     p_actor_id: master.id,
     p_target_user_id: userId,
@@ -271,7 +273,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
     } else {
       const banDuration = transition.authAction === "unban" ? "none" : "876000h";
-      const updated = await admin.auth.admin.updateUserById(userId, { ban_duration: banDuration });
+      const authPatch = action === "approve" && transition.authAction === "unban"
+        ? { email_confirm: true, ban_duration: banDuration }
+        : { ban_duration: banDuration };
+      const updated = await admin.auth.admin.updateUserById(userId, authPatch);
       authError = updated.error;
     }
   } catch {

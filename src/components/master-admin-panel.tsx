@@ -58,8 +58,8 @@ const sections: { id: Section; label: string; icon: typeof Bell }[] = [
 ];
 const statusLabels: Record<string, string> = {
   pending: "Aguardando análise",
-  pending_email: "Aguardando confirmação do e-mail",
-  verification_required: "Precisa validar o acesso",
+  pending_email: "Aguardando análise",
+  verification_required: "Aguardando análise do Master",
   active: "Ativa",
   disabled: "Desativada",
   trashed: "Na lixeira",
@@ -417,8 +417,10 @@ export function MasterAdminPanel({
     };
   }, [closeActionDialog, pendingAction]);
 
-  const actionableRequests = useMemo(() => accounts.filter((account) => account.status === "pending"), [accounts]);
-  const waitingForEmail = useMemo(() => accounts.filter((account) => account.status === "pending_email" || account.status === "verification_required"), [accounts]);
+  const actionableRequests = useMemo(() => accounts.filter((account) =>
+    account.status === "pending" || account.status === "pending_email" || account.status === "verification_required",
+  ), [accounts]);
+  const requestsToReview = Number(stats.pending ?? 0) + Number(stats.email_pending ?? 0);
   const totalPages = section === "requests" ? requestTotalPages : Math.max(1, Math.ceil(total / pageSize));
 
   const chooseAction = (user: Account, action: PendingAction["action"], trigger?: HTMLElement) => {
@@ -522,6 +524,10 @@ export function MasterAdminPanel({
   const accountCard = (account: Account, request = false) => {
     const statusColor = account.status === "pending" ? "text-[var(--accent)]" : account.status === "trashed" || account.status === "rejected" ? "text-[var(--danger)]" : "muted";
     const rowBusy = busy?.startsWith(account.id + ":") ?? false;
+    const pendingRequest = request && ["pending", "pending_email", "verification_required"].includes(account.status);
+    const requestStatus = request && (account.status === "pending_email" || account.status === "verification_required")
+      ? "Aguardando análise"
+      : statusLabels[account.status] || account.status;
     const actions: AccountActionOption[] = [];
     if (account.role !== "master") {
       if (account.status === "active") actions.push({ action: "disable", label: "Desativar conta" }, { action: "trash", label: "Mover para a lixeira", danger: true });
@@ -540,17 +546,17 @@ export function MasterAdminPanel({
           <small className="muted mt-1 block truncate">{account.email || "E-mail indisponível"}</small>
           {account.username && <small className="muted mt-1 block truncate">@{account.username}</small>}
           <span className={"mt-2 inline-flex items-center gap-1.5 text-xs " + statusColor}>
-            {account.status === "pending_email" ? <MailCheck size={14}/> : account.status === "verification_required" ? <Clock3 size={14}/> : <ShieldCheck size={14}/>}
-            {statusLabels[account.status] || account.status}
+            {account.status === "pending" ? <ShieldCheck size={14}/> : <Clock3 size={14}/>}
+            {requestStatus}
           </span>
-          {request && <small className="muted mt-1 block text-[11px]">E-mail confirmado{account.email_confirmed_at ? ` em ${dateLabel(account.email_confirmed_at)}` : ""}{account.invite_id ? " · Cadastro por convite" : " · Cadastro aberto"}</small>}
+          {request && <small className="muted mt-1 block text-[11px]">Solicitação recebida para análise manual{account.invite_id ? " · Cadastro por convite" : " · Cadastro aberto"}</small>}
           <small className="muted mt-1 block text-[11px]">Criada em {dateLabel(account.created_at)}{account.last_sign_in_at ? " · Acesso recente: " + dateLabel(account.last_sign_in_at) : ""}</small>
         </div>
         <div className="flex flex-wrap gap-2 sm:justify-end">
-          {request && account.status === "pending" && <>
+          {pendingRequest && <>
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "approve", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--accent)] px-3.5 text-xs font-semibold text-[var(--accentfg)] disabled:opacity-50"><Check className="mr-1 inline" size={14}/>Aprovar</button>
             <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "reject", event.currentTarget)} className="min-h-10 rounded-xl border border-[var(--danger)]/30 px-3.5 text-xs font-medium text-[var(--danger)] disabled:opacity-50">Recusar</button>
-            <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "archive_request", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3.5 text-xs font-medium disabled:opacity-50">Arquivar solicitação</button>
+            {account.status === "pending" && account.email_confirmed_at && <button type="button" disabled={rowBusy} onClick={(event) => chooseAction(account, "archive_request", event.currentTarget)} className="min-h-10 rounded-xl bg-[var(--panel)] px-3.5 text-xs font-medium disabled:opacity-50">Arquivar solicitação</button>}
           </>}
           {!request && actions.length > 0 && <AccountActionsMenu account={account} actions={actions} rowBusy={rowBusy} onChoose={chooseAction} />}
           {!request && account.status === "trashed" && account.request_status === "pending_review" && <small className="muted block w-full text-xs">Pedido arquivado — ainda não aprovado nem recusado.</small>}
@@ -566,7 +572,7 @@ export function MasterAdminPanel({
 
   return <section>
     <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-      <div><div className="flex items-center gap-2"><b className="text-lg">Acesso e contas</b>{Number(stats.pending) > 0 && <span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-[10px] font-bold text-[var(--accentfg)]">{stats.pending} para analisar</span>}</div><p className="muted mt-1 max-w-2xl text-xs leading-5">Gerencie cadastro e acesso. O painel não consulta nem exibe dados financeiros dos usuários.</p></div>
+      <div><div className="flex items-center gap-2"><b className="text-lg">Acesso e contas</b>{requestsToReview > 0 && <span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-[10px] font-bold text-[var(--accentfg)]">{requestsToReview} para analisar</span>}</div><p className="muted mt-1 max-w-2xl text-xs leading-5">Gerencie cadastro e acesso. O painel não consulta nem exibe dados financeiros dos usuários.</p></div>
       <button type="button" disabled={loading} onClick={() => void load()} className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-xl bg-[var(--panel2)] px-3 text-xs text-[var(--accent)] disabled:opacity-50"><RefreshCw className={loading ? "animate-spin" : ""} size={14}/>Atualizar</button>
     </div>
 
@@ -576,16 +582,12 @@ export function MasterAdminPanel({
 
     {section === "requests" && <div className="mt-5 space-y-6">
       <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {[["Para analisar", stats.pending], ["Confirmar e-mail", stats.email_pending], ["Contas ativas", stats.active], ["Na lixeira", stats.trashed]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-[var(--panel2)]/70 px-3 py-3"><dt className="muted text-[11px]">{label}</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{Number(value ?? 0).toLocaleString("pt-BR")}</dd></div>)}
+        {[["Para analisar", requestsToReview], ["Cadastros legados", stats.email_pending], ["Contas ativas", stats.active], ["Na lixeira", stats.trashed]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-[var(--panel2)]/70 px-3 py-3"><dt className="muted text-[11px]">{label}</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{Number(value ?? 0).toLocaleString("pt-BR")}</dd></div>)}
       </dl>
       <label className="relative block"><span className="sr-only">Buscar solicitações por nome, usuário ou e-mail</span><Search aria-hidden="true" size={16} className="muted absolute left-3 top-1/2 -translate-y-1/2"/><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="field min-h-11 w-full pl-10" placeholder="Buscar solicitações por nome, usuário ou e-mail" /></label>
       <section className="rounded-2xl border border-[var(--accent)]/25 bg-[var(--accent)]/5 p-4 sm:p-5">
-        <div className="flex items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Bell size={16} className="text-[var(--accent)]"/>Prontas para análise</h2><p className="muted mt-1 text-xs">Só entram aqui cadastros que confirmaram o e-mail.</p></div><span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-xs font-bold text-[var(--accentfg)]">{stats.pending ?? 0}</span></div>
-        <div className="mt-4 space-y-2">{actionableRequests.map((account) => accountCard(account, true))}{!loading && actionableRequests.length === 0 && <p className="muted rounded-xl bg-[var(--panel)]/60 p-4 text-xs">{Number(stats.pending) > 0 ? "Há outros pedidos em páginas diferentes da fila." : "Nenhuma solicitação confirmada aguardando decisão."}</p>}</div>
-      </section>
-      <section className="rounded-2xl border border-[var(--border)] p-4 sm:p-5">
-        <div className="flex items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Clock3 size={16} className="muted"/>Ainda não podem ser decididas</h2><p className="muted mt-1 text-xs">A pessoa precisa confirmar o e-mail ou validar novamente um cadastro antigo.</p></div><span className="rounded-full bg-[var(--panel2)] px-2.5 py-1 text-xs">{stats.email_pending ?? 0}</span></div>
-        <div className="mt-4 space-y-2">{waitingForEmail.map((account) => accountCard(account, true))}{!loading && waitingForEmail.length === 0 && <p className="muted rounded-xl bg-[var(--panel2)]/50 p-4 text-xs">{Number(stats.email_pending) > 0 ? "Há cadastros aguardando confirmação em outras páginas." : "Não há cadastros aguardando confirmação de e-mail."}</p>}</div>
+        <div className="flex items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Bell size={16} className="text-[var(--accent)]"/>Solicitações para análise</h2><p className="muted mt-1 text-xs">Não é necessário confirmar o e-mail. A aprovação manual do Master continua obrigatória.</p></div><span className="rounded-full bg-[var(--accent)] px-2.5 py-1 text-xs font-bold text-[var(--accentfg)]">{requestsToReview}</span></div>
+        <div className="mt-4 space-y-2">{actionableRequests.map((account) => accountCard(account, true))}{!loading && actionableRequests.length === 0 && <p className="muted rounded-xl bg-[var(--panel)]/60 p-4 text-xs">{requestsToReview > 0 ? "Há outros pedidos em páginas diferentes da fila." : "Nenhuma solicitação aguardando decisão."}</p>}</div>
       </section>
       {pageControls}
     </div>}
@@ -595,14 +597,14 @@ export function MasterAdminPanel({
     {section === "users" && <div className="mt-5 space-y-4">
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_200px]">
         <label className="relative block"><span className="sr-only">Buscar por nome, usuário ou e-mail</span><Search aria-hidden="true" size={16} className="muted absolute left-3 top-1/2 -translate-y-1/2"/><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="field min-h-11 w-full pl-10" placeholder="Buscar nome, usuário ou e-mail" /></label>
-        <label className="sr-only" htmlFor="master-account-status">Filtrar contas</label><select id="master-account-status" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} className="field min-h-11"><option value="all">Todos os estados</option><option value="active">Ativas</option><option value="disabled">Desativadas</option><option value="trashed">Na lixeira</option><option value="rejected">Recusadas</option><option value="pending">Aguardando análise</option><option value="pending_email">Confirmação pendente</option><option value="verification_required">Validação necessária</option></select>
+        <label className="sr-only" htmlFor="master-account-status">Filtrar contas</label><select id="master-account-status" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }} className="field min-h-11"><option value="all">Todos os estados</option><option value="active">Ativas</option><option value="disabled">Desativadas</option><option value="trashed">Na lixeira</option><option value="rejected">Recusadas</option><option value="pending">Aguardando análise</option><option value="pending_email">Cadastros legados pendentes</option><option value="verification_required">Validação necessária</option></select>
       </div>
       <div className="space-y-2">{accounts.map((account) => accountCard(account))}{!loading && accounts.length === 0 && <div className="rounded-2xl bg-[var(--panel2)]/50 p-8 text-center"><Users className="muted mx-auto" size={22}/><p className="mt-3 text-sm">Nenhuma conta encontrada</p><p className="muted mt-1 text-xs">Tente outro nome, e-mail ou filtro.</p></div>}</div>
       {pageControls}
     </div>}
 
     {section === "invites" && <div className="mt-5 space-y-4">
-      <div className="flex flex-col justify-between gap-3 rounded-2xl bg-[var(--panel2)] p-4 sm:flex-row sm:items-center sm:p-5"><div><h2 className="text-sm font-semibold">Convites de cadastro</h2><p className="muted mt-1 text-xs">O link expira em 7 dias; o convite não substitui confirmação de e-mail nem aprovação.</p></div><button type="button" disabled={busy === "invite:create"} onClick={() => void createInvite()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 text-xs font-semibold text-[var(--accentfg)] disabled:opacity-50"><Plus size={15}/>{busy === "invite:create" ? "Gerando…" : "Gerar convite"}</button></div>
+      <div className="flex flex-col justify-between gap-3 rounded-2xl bg-[var(--panel2)] p-4 sm:flex-row sm:items-center sm:p-5"><div><h2 className="text-sm font-semibold">Convites de cadastro</h2><p className="muted mt-1 text-xs">O link expira em 7 dias; o convite não substitui a aprovação manual do Master.</p></div><button type="button" disabled={busy === "invite:create"} onClick={() => void createInvite()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 text-xs font-semibold text-[var(--accentfg)] disabled:opacity-50"><Plus size={15}/>{busy === "invite:create" ? "Gerando…" : "Gerar convite"}</button></div>
       {newInviteLink && <div className="rounded-2xl border border-[var(--accent)]/25 bg-[var(--accent)]/5 p-4"><label className="text-xs font-medium" htmlFor="new-master-invite">Link criado</label><div className="mt-2 flex flex-col gap-2 sm:flex-row"><input id="new-master-invite" readOnly value={newInviteLink} className="field min-h-11 min-w-0 flex-1 text-xs"/><button type="button" onClick={() => void copyLink(newInviteLink)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[var(--panel2)] px-3 text-xs"><Copy size={14}/>Copiar</button></div></div>}
       <div className="space-y-2">{invites.map((invite) => <article key={invite.id} className="rounded-2xl border border-[var(--border)] p-4"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><b className="text-sm">{invite.status === "active" ? "Convite ativo" : invite.status === "used" ? "Utilizado" : invite.status === "revoked" ? "Cancelado" : "Expirado"}</b><small className="muted mt-1 block">Criado {dateLabel(invite.createdAt)} · Expira {dateLabel(invite.expiresAt)}</small>{invite.usedByName && <small className="muted mt-1 block">Usado por {invite.usedByName}</small>}</div><div className="flex flex-wrap gap-2">{invite.status === "active" && <><button type="button" onClick={() => void copyLink(invite.link)} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs"><Copy className="mr-1 inline" size={14}/>Copiar link</button><button type="button" disabled={busy === "invite:" + invite.id} onClick={() => void revokeInvite(invite.id)} className="min-h-10 rounded-xl border border-[var(--danger)]/30 px-3 text-xs text-[var(--danger)] disabled:opacity-50">Cancelar</button></>}</div></div></article>)}{!loading && invites.length === 0 && <p className="muted rounded-2xl bg-[var(--panel2)]/50 p-8 text-center text-sm">Nenhum convite criado ainda.</p>}</div>
       {pageControls}
@@ -657,7 +659,7 @@ export function MasterAdminPanel({
     {pendingAction && <div className="fixed inset-0 z-[100] grid place-items-end bg-black/55 p-0 backdrop-blur-sm sm:place-items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) closeActionDialog(); }}>
       <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="master-action-title" aria-describedby={pendingAction.action === "delete_permanently" ? "master-delete-warning" : pendingAction.action === "archive_request" ? "master-archive-warning" : pendingAction.action === "reopen_request" ? "master-reopen-warning" : undefined} className="panel w-full max-w-md rounded-t-3xl p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl sm:p-6">
         <div className="flex items-start justify-between gap-4"><div><h2 id="master-action-title" className="text-lg font-semibold">{pendingAction.action === "approve" ? "Aprovar acesso" : pendingAction.action === "reject" ? "Recusar solicitação" : pendingAction.action === "disable" ? "Desativar conta" : pendingAction.action === "trash" ? "Mover para a lixeira" : pendingAction.action === "archive_request" ? "Arquivar solicitação" : pendingAction.action === "reopen_request" ? "Reabrir solicitação" : pendingAction.action === "restore" ? "Restaurar conta" : "Excluir definitivamente?"}</h2><p className="muted mt-2 text-sm">{accountName(pendingAction.user)} · {pendingAction.user.email}</p></div><button type="button" aria-label="Fechar" disabled={Boolean(busy)} onClick={closeActionDialog} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] disabled:opacity-50"><X size={18}/></button></div>
-        {pendingAction.action === "approve" && <p className="muted mt-4 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">O e-mail foi confirmado. Ao aprovar, o acesso financeiro desta conta será liberado. A decisão ficará registrada na auditoria.</p>}
+        {pendingAction.action === "approve" && <p className="muted mt-4 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">Ao aprovar, o acesso financeiro desta conta será liberado. A decisão ficará registrada na auditoria.</p>}
         {pendingAction.action === "archive_request" && <p id="master-archive-warning" className="muted mt-4 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">O pedido sairá da fila e irá para a lixeira, sem ser aprovado nem recusado. Você poderá reabri-lo depois.</p>}
         {pendingAction.action === "reopen_request" && <p id="master-reopen-warning" className="muted mt-4 rounded-xl bg-[var(--panel2)] p-3 text-xs leading-5">O pedido voltará à fila como aguardando análise. Reabrir não aprova nem libera a conta.</p>}
         {pendingAction.action === "delete_permanently" && <><p id="master-delete-warning" className="mt-4 rounded-xl border border-[var(--danger)]/25 bg-[var(--danger)]/5 p-3 text-xs leading-5 text-[var(--danger)]">A conta já está na lixeira. Esta ação remove a conta de autenticação e seus dados vinculados; não pode ser desfeita.</p><label className="mt-4 block text-xs font-medium" htmlFor="master-delete-password">Confirme sua senha Master</label><input id="master-delete-password" type="password" autoComplete="current-password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} className="field mt-2 min-h-11 w-full" />{deletePassword && <small className="muted mt-1 block text-xs">A senha é verificada pelo servidor e não fica salva no navegador.</small>}<label className="mt-4 block text-xs font-medium" htmlFor="master-delete-confirmation">Digite EXCLUIR para confirmar</label><input id="master-delete-confirmation" autoComplete="off" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} className="field mt-2 min-h-11 w-full" />{deleteConfirmation && deleteConfirmation !== "EXCLUIR" && <small className="mt-1 block text-xs text-[var(--danger)]">Digite exatamente EXCLUIR.</small>}</>}

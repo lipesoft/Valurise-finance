@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { createHash } from "node:crypto";
 
-const { admin, signUp, getUserById, deleteUser, updateUserById, tables } = vi.hoisted(() => {
+const { admin, createUser, deleteUser, tables } = vi.hoisted(() => {
   const makeTable = () => {
     const table = {
       error: null as null,
@@ -31,21 +31,16 @@ const { admin, signUp, getUserById, deleteUser, updateUserById, tables } = vi.ho
     user_consents: makeTable(),
     access_invites: makeTable(),
   };
-  const signUp = vi.fn();
-  const getUserById = vi.fn();
+  const createUser = vi.fn();
   const deleteUser = vi.fn();
-  const updateUserById = vi.fn();
   const admin = {
     rpc: vi.fn(async () => ({ data: true, error: null })),
     from: vi.fn((name: keyof typeof tables) => tables[name]),
-    auth: { admin: { getUserById, deleteUser, updateUserById } },
+    auth: { admin: { createUser, deleteUser } },
   };
-  return { admin, signUp, getUserById, deleteUser, updateUserById, tables };
+  return { admin, createUser, deleteUser, tables };
 });
 
-vi.mock("@supabase/supabase-js", () => ({
-  createClient: vi.fn(() => ({ auth: { signUp } })),
-}));
 vi.mock("@/lib/supabase/admin", () => ({ getSupabaseAdminClient: () => admin }));
 
 import { POST } from "./route";
@@ -72,8 +67,6 @@ function request(overrides: Record<string, unknown> = {}) {
 describe("POST /api/auth/request-access", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://example.supabase.co");
-    vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "fake-publishable-key");
     admin.rpc.mockResolvedValue({ data: true, error: null });
     tables.profiles.maybeSingle.mockResolvedValue({ data: null, error: null });
     tables.access_request_details.insert.mockResolvedValue({ error: null });
@@ -81,28 +74,28 @@ describe("POST /api/auth/request-access", () => {
     tables.access_request_details.eq.mockReturnValue(tables.access_request_details);
     tables.user_consents.upsert.mockResolvedValue({ error: null });
     deleteUser.mockResolvedValue({ error: null });
-    updateUserById.mockResolvedValue({ error: null });
-    signUp.mockResolvedValue({
-      data: { user: { id: userId, identities: [{ id: "identity" }], email_confirmed_at: null }, session: null },
+    createUser.mockResolvedValue({
+      data: { user: { id: userId, email_confirmed_at: null } },
       error: null,
     });
-    getUserById.mockResolvedValue({ data: { user: { id: userId, email_confirmed_at: null } }, error: null });
   });
 
   afterEach(() => vi.unstubAllEnvs());
 
-  it("cria o pedido como aguardando e-mail e não o libera para a fila do Master", async () => {
+  it("cria a conta bloqueada e envia o pedido direto para a fila do Master, sem e-mail de confirmação", async () => {
     const response = await POST(request());
 
     expect(response.status).toBe(202);
-    expect(signUp).toHaveBeenCalledWith(expect.objectContaining({
+    expect(createUser).toHaveBeenCalledWith(expect.objectContaining({
       email: "pessoa@example.invalid",
-      options: expect.objectContaining({ data: { full_name: "Pessoa de Teste", username: "pessoa.teste" } }),
+      email_confirm: false,
+      ban_duration: "876000h",
+      user_metadata: { full_name: "Pessoa de Teste", username: "pessoa.teste" },
     }));
     expect(tables.access_request_details.insert).toHaveBeenCalledWith({
       user_id: userId,
       invite_id: null,
-      request_status: "pending_email",
+      request_status: "pending_review",
     });
     expect(tables.access_request_details.update).not.toHaveBeenCalled();
     expect(deleteUser).not.toHaveBeenCalled();
@@ -112,11 +105,13 @@ describe("POST /api/auth/request-access", () => {
     const response = await POST(request({ username: "pessoa.teste2", email: "outra@example.invalid" }));
 
     expect(response.status).toBe(202);
-    expect(signUp).toHaveBeenCalledWith(expect.objectContaining({
+    expect(createUser).toHaveBeenCalledWith(expect.objectContaining({
       email: "outra@example.invalid",
-      options: expect.objectContaining({ data: expect.objectContaining({ full_name: "Pessoa de Teste", username: "pessoa.teste2" }) }),
+      email_confirm: false,
+      ban_duration: "876000h",
+      user_metadata: { full_name: "Pessoa de Teste", username: "pessoa.teste2" },
     }));
-    expect(tables.access_request_details.insert).toHaveBeenCalledWith(expect.objectContaining({ request_status: "pending_email" }));
+    expect(tables.access_request_details.insert).toHaveBeenCalledWith(expect.objectContaining({ request_status: "pending_review" }));
   });
 
   it("explica que o usuário precisa ser trocado sem criar conta nem solicitação para o Master", async () => {
@@ -127,13 +122,13 @@ describe("POST /api/auth/request-access", () => {
 
     expect(response.status).toBe(409);
     expect(payload.error).toMatch(/Confira o usuário escolhido/i);
-    expect(signUp).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
     expect(tables.access_request_details.insert).not.toHaveBeenCalled();
     expect(JSON.stringify(payload)).not.toContain("Pessoa@Example.invalid");
   });
 
   it("impede e-mail já cadastrado antes de criar uma solicitação para o Master", async () => {
-    signUp.mockResolvedValueOnce({ data: { user: null, session: null }, error: { code: "user_already_exists", message: "User already registered" } });
+    createUser.mockResolvedValueOnce({ data: { user: null }, error: { code: "email_exists", message: "User already registered" } });
 
     const response = await POST(request());
 
@@ -142,29 +137,27 @@ describe("POST /api/auth/request-access", () => {
     expect(tables.user_consents.upsert).not.toHaveBeenCalled();
   });
 
-  it("não cria uma solicitação quando o projeto aceita cadastro sem confirmação de e-mail", async () => {
-    signUp.mockResolvedValueOnce({
-      data: { user: { id: userId, identities: [{ id: "identity" }], email_confirmed_at: new Date().toISOString() }, session: { access_token: "fake-session" } },
-      error: null,
-    });
+  it("não expõe erro técnico do provedor quando não consegue criar a conta", async () => {
+    createUser.mockResolvedValueOnce({ data: { user: null }, error: { code: "provider_error", message: "secret provider detail" } });
 
     const response = await POST(request());
+    const payload = await response.json();
 
     expect(response.status).toBe(503);
-    expect((await response.json()).error).toMatch(/confirmação de e-mail não está ativa/i);
+    expect(payload.error).toMatch(/registrar sua solicitação/i);
+    expect(JSON.stringify(payload)).not.toContain("secret provider detail");
     expect(tables.access_request_details.insert).not.toHaveBeenCalled();
-    expect(deleteUser).toHaveBeenCalledWith(userId);
+    expect(deleteUser).not.toHaveBeenCalled();
   });
 
-  it("fecha a corrida em que o e-mail é confirmado enquanto o registro é criado", async () => {
-    getUserById.mockResolvedValueOnce({ data: { user: { id: userId, email_confirmed_at: new Date().toISOString() } }, error: null });
+  it("remove a conta bloqueada se não conseguir registrar o pedido para o Master", async () => {
+    tables.access_request_details.insert.mockResolvedValueOnce({ error: { message: "insert failed" } });
 
     const response = await POST(request());
 
-    expect(response.status).toBe(202);
-    expect(tables.access_request_details.update).toHaveBeenCalledWith({ request_status: "pending_review" });
-    expect(tables.access_request_details.eq).toHaveBeenNthCalledWith(1, "user_id", userId);
-    expect(tables.access_request_details.eq).toHaveBeenNthCalledWith(2, "request_status", "pending_email");
+    expect(response.status).toBe(500);
+    expect(deleteUser).toHaveBeenCalledWith(userId);
+    expect(tables.user_consents.upsert).not.toHaveBeenCalled();
   });
 
   it("aplica um limite por IP que permite a rodada normal de testes sem liberar tentativas ilimitadas", async () => {
@@ -186,7 +179,7 @@ describe("POST /api/auth/request-access", () => {
 
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBe("3600");
-    expect(signUp).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith("[auth.request-access.rate-limited]", { scope: "ip" });
     expect(JSON.stringify(warn.mock.calls)).not.toContain("Pessoa@Example.invalid");
     warn.mockRestore();
@@ -200,7 +193,7 @@ describe("POST /api/auth/request-access", () => {
     const response = await POST(request());
 
     expect(response.status).toBe(429);
-    expect(signUp).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
     expect(admin.rpc).toHaveBeenNthCalledWith(2, "consume_public_rate_limit", expect.objectContaining({
       p_key: rateLimitKey("access-request:v2:email", "pessoa@example.invalid"),
       p_max_attempts: 8,

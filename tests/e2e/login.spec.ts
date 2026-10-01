@@ -70,7 +70,7 @@ test("valida campos no próprio formulário e anuncia erros acessivelmente", asy
   await expect.poll(() => loginRequestSeen).toBe(true);
 });
 
-test("orienta o próximo passo sem afirmar que toda tentativa virou pedido pendente", async ({ page }) => {
+test("confirma o recebimento do cadastro sem sugerir etapa por e-mail", async ({ page }) => {
   await page.route("**/api/auth/request-access", (route) => route.fulfill({
     status: 202,
     contentType: "application/json",
@@ -89,22 +89,18 @@ test("orienta o próximo passo sem afirmar que toda tentativa virou pedido pende
   await page.getByLabel(/Termos de Uso/).check();
   await page.getByRole("button", { name: "Solicitar acesso", exact: true }).click();
 
-  await expect(page.getByRole("heading", { name: "Próximo passo do seu acesso" })).toBeVisible();
-  await expect(page.getByText(/Depois da confirmação, o pedido seguirá para análise do Master/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Solicitação recebida" })).toBeVisible();
+  await expect(page.getByText(/sua solicitação seguirá para análise do Master/)).toBeVisible();
+  await expect(page.getByText(/confirmação de e-mail/i)).toHaveCount(0);
   await expect(page.getByText(/Por segurança, não informamos qual situação se aplica/)).toBeVisible();
 });
 
-test("permite solicitar novamente a confirmação do e-mail sem revelar o estado da conta", async ({ page }) => {
-  let resentEmail = "";
+test("encaminha o pedido diretamente para análise e não oferece confirmação por e-mail", async ({ page }) => {
   await page.route("**/api/auth/request-access", (route) => route.fulfill({
     status: 202,
     contentType: "application/json",
     body: JSON.stringify({ ok: true }),
   }));
-  await page.route("**/api/auth/resend-confirmation", async (route) => {
-    resentEmail = (route.request().postDataJSON() as { email: string }).email;
-    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ok: true }) });
-  });
   await page.goto("/");
   await dismissCookieNotice(page);
   await waitForApplicationReady(page);
@@ -116,10 +112,10 @@ test("permite solicitar novamente a confirmação do e-mail sem revelar o estado
   await page.getByLabel(/Política de Privacidade/).check();
   await page.getByLabel(/Termos de Uso/).check();
   await page.getByRole("button", { name: "Solicitar acesso", exact: true }).click();
-  await page.getByRole("button", { name: "Reenviar confirmação de e-mail" }).click();
-
-  await expect.poll(() => resentEmail).toBe("teste@exemplo.invalid");
-  await expect(page.getByRole("status").filter({ hasText: "Se este endereço puder receber uma confirmação" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Solicitação recebida" })).toBeVisible();
+  await expect(page.getByText(/sua solicitação seguirá para análise do Master/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reenviar confirmação de e-mail" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Ir para o login" })).toBeVisible();
 });
 
 test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }) => {

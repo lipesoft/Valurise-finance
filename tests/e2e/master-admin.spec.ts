@@ -234,19 +234,19 @@ async function signInAsMaster(page: import("@playwright/test").Page, options: { 
   await expect(page.getByRole("heading", { name: "Central do Master" })).toBeVisible();
 }
 
-test("painel Master mostra pedidos confirmados, mantém os outros em espera e oferece seções funcionais no mobile", async ({ page }) => {
+test("painel Master permite analisar pedidos sem confirmação de e-mail no mobile", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signInAsMaster(page);
 
   await expect(page.getByText("Pedido Confirmado")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Aprovar" })).toBeVisible();
-  await expect(page.getByText("Aguardando E-mail")).toBeVisible();
-  await expect(page.getByText("Aguardando confirmação do e-mail")).toBeVisible();
+  await expect(page.locator("#master-request-" + pendingId).getByRole("button", { name: "Aprovar" })).toBeVisible();
+  await expect(page.locator("#master-request-" + emailPendingId).getByText("Aguardando análise", { exact: true })).toBeVisible();
+  await expect(page.locator("#master-request-" + pendingId).getByText("Solicitação recebida para análise manual · Cadastro aberto")).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-  await page.getByRole("button", { name: "Aprovar" }).click();
+  await page.locator("#master-request-" + pendingId).getByRole("button", { name: "Aprovar" }).click();
   const approvalDialog = page.getByRole("dialog", { name: "Aprovar acesso" });
-  await expect(approvalDialog.getByText(/O e-mail foi confirmado/)).toBeVisible();
+  await expect(approvalDialog.getByText(/Ao aprovar, o acesso financeiro desta conta será liberado/)).toBeVisible();
   const approveAction = approvalDialog.getByRole("button", { name: "Aprovar acesso" });
   await expect(approveAction).toBeDisabled();
   await approvalDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
@@ -279,7 +279,8 @@ test("arquiva um pedido sem recusá-lo e permite reabri-lo pela lixeira", async 
   await archiveDialog.getByLabel("Motivo para auditoria (obrigatório)").selectOption("user_requested");
   await archiveDialog.getByRole("button", { name: "Arquivar solicitação" }).click();
   await expect(page.getByText("Solicitação arquivada na lixeira sem ser recusada.")).toBeVisible();
-  await expect(page.getByText("Nenhuma solicitação confirmada aguardando decisão.")).toBeVisible();
+  await expect(page.getByText("Aguardando análise", { exact: true }).first()).toBeVisible();
+  await expect(page.locator("#master-request-" + emailPendingId).getByRole("button", { name: "Aprovar" })).toBeVisible();
 
   await page.getByRole("button", { name: "Usuários" }).click();
   await page.locator("#master-account-status").selectOption("trashed");
@@ -294,18 +295,18 @@ test("arquiva um pedido sem recusá-lo e permite reabri-lo pela lixeira", async 
 
   await page.getByRole("navigation", { name: "Seções do painel Master" }).getByRole("button", { name: /Solicitações/ }).click();
   await expect(page.getByText("Pedido Confirmado")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Aprovar" })).toBeVisible();
+  await expect(page.locator("#master-request-" + pendingId).getByRole("button", { name: "Aprovar" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("notificação do Master abre a fila e leva ao pedido correto", async ({ page }) => {
+test("notificação do Master inclui todos os pedidos na fila e leva ao pedido correto", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signInAsMaster(page);
-  const notifications = page.getByRole("button", { name: /Solicitações de acesso: 1 aguardando análise; 1 aguardando confirmação do e-mail/ });
+  const notifications = page.getByRole("button", { name: /Solicitações de acesso: 2 aguardando análise/ });
   await notifications.click();
   const dialog = page.getByRole("dialog", { name: "Notificações de acesso do Master" });
-  await expect(dialog.getByText("1 com e-mail confirmado para análise · 1 aguardando confirmação")).toBeVisible();
-  await expect(dialog.getByText("Aguardando confirmação do e-mail", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("2 aguardando decisão do Master")).toBeVisible();
+  await expect(dialog.getByText("Aguardando análise do Master", { exact: true }).first()).toBeVisible();
   const sheet = await dialog.boundingBox();
   expect(sheet).not.toBeNull();
   expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(844);
@@ -318,18 +319,19 @@ test("notificação do Master abre a fila e leva ao pedido correto", async ({ pa
   await expect(page.locator(`#master-request-${pendingId}`)).toBeFocused();
 });
 
-test("pedido aguardando confirmação aparece no sino do Master sem liberar aprovação", async ({ page }) => {
+test("pedido sem confirmação de e-mail aparece no sino e pode ser analisado pelo Master", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await signInAsMaster(page, { emailOnly: true });
 
-  const notifications = page.getByRole("button", { name: /Solicitações de acesso: 0 aguardando análise; 1 aguardando confirmação do e-mail/ });
+  const notifications = page.getByRole("button", { name: /Solicitações de acesso: 1 aguardando análise/ });
   await notifications.click();
   const dialog = page.getByRole("dialog", { name: "Notificações de acesso do Master" });
-  const waitingRequest = dialog.getByRole("button", { name: /Aguardando E-mail/ });
+  const waitingRequest = dialog.getByRole("button", { name: /Aguardando análise do Master/ });
   await expect(waitingRequest).toBeVisible();
   await waitingRequest.click();
   await expect(page.getByLabel("Buscar solicitações por nome, usuário ou e-mail")).toHaveValue("confirmar@valurise.invalid");
-  await expect(page.getByRole("button", { name: "Aprovar" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Aprovar" })).toBeVisible();
+  await expect(page.getByText("Solicitação recebida para análise manual · Cadastro aberto")).toBeVisible();
 });
 
 test("fila de solicitações pagina sem saltar resultados", async ({ page }) => {
@@ -426,7 +428,7 @@ test("filtra auditoria por ação, resultado e período", async ({ page }) => {
 
 test("recusa exige motivo e exclusão definitiva exige reautenticação e confirmação digitada", async ({ page }) => {
   await signInAsMaster(page);
-  await page.getByRole("button", { name: "Recusar", exact: true }).click();
+  await page.locator("#master-request-" + pendingId).getByRole("button", { name: "Recusar", exact: true }).click();
   const rejectionDialog = page.getByRole("dialog", { name: "Recusar solicitação" });
   const rejectAction = rejectionDialog.getByRole("button", { name: "Recusar solicitação" });
   await expect(rejectAction).toBeDisabled();

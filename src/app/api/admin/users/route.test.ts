@@ -110,7 +110,7 @@ describe("GET /api/admin/users", () => {
     expect(admin.rpc.mock.calls.map(([name, args]) => args?.p_status)).toEqual(["requests", ...statuses]);
   });
 
-  it("mantém o filtro combinado da fila no banco e sem liberar a aprovação sem confirmação", () => {
+  it("mantém o filtro combinado para incluir também cadastros antigos sem confirmação", () => {
     const migration = readFileSync(new URL("../../../../../supabase/migrations/20260930175330_fix_master_request_queue_filter.sql", import.meta.url), "utf8");
 
     expect(migration).toContain("'all', 'requests', 'pending', 'pending_email', 'verification_required'");
@@ -139,6 +139,10 @@ describe("POST /api/admin/users", () => {
       }),
     });
     getVerifiedMaster.mockResolvedValue({ id: actorId, email: "master@example.invalid" });
+    admin.auth.admin.getUserById.mockResolvedValue({
+      data: { user: { id: accountId, email_confirmed_at: null } },
+      error: null,
+    });
     verifyMasterPassword.mockResolvedValue({ valid: true, unavailable: false });
   });
 
@@ -162,12 +166,78 @@ describe("POST /api/admin/users", () => {
     expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
   });
 
+  it("a regra do banco exige pedido pendente, mas não confirmação de e-mail", () => {
+    const migration = readFileSync(new URL("../../../../../supabase/migrations/20260930234512_allow_master_approval_without_email_confirmation.sql", import.meta.url), "utf8");
+
+    expect(migration).toContain("request_status not in ('pending_review', 'pending_email', 'verification_required')");
+    expect(migration).toContain("request_status is null");
+    expect(migration).not.toMatch(/email_confirmed_at|target_confirmed_at/);
+  });
+
   it("exige detalhe quando o motivo é Outro", async () => {
     const response = await POST(post({ userId: accountId, action: "approve", reasonCode: "other" }));
 
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(/descreva o motivo/i);
     expect(admin.rpc).not.toHaveBeenCalled();
+  });
+
+  it("só confirma e libera a conta depois da transição de aprovação auditada", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-approve", authAction: "unban", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: true, error: null });
+    admin.auth.admin.updateUserById.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
+
+    const response = await POST(post({ userId: accountId, action: "approve", reasonCode: "user_requested" }));
+
+    expect(response.status).toBe(200);
+    expect(admin.rpc).toHaveBeenNthCalledWith(1, "master_transition_account", expect.objectContaining({
+      p_target_user_id: accountId,
+      p_action: "approve",
+      p_reason_note: "Cadastro aprovado após análise manual do Master.",
+    }));
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith(accountId, {
+      email_confirm: true,
+      ban_duration: "none",
+    });
+    expect(admin.rpc.mock.invocationCallOrder[0]).toBeLessThan(admin.auth.admin.updateUserById.mock.invocationCallOrder[0]);
+  });
+
+  it("mantém a conta bloqueada e registra reconciliação se liberar após aprovação falhar", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-approve", authAction: "unban", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: true, error: null });
+    admin.auth.admin.updateUserById.mockResolvedValueOnce({
+      data: { user: null },
+      error: { message: "internal Auth detail" },
+    }).mockResolvedValueOnce({ data: true, error: null });
+
+    const response = await POST(post({ userId: accountId, action: "approve", reasonCode: "user_requested" }));
+
+    expect(response.status).toBe(503);
+    expect((await response.json()).error).not.toContain("internal Auth detail");
+    expect(admin.rpc).toHaveBeenNthCalledWith(1, "master_transition_account", expect.objectContaining({ p_action: "approve" }));
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith(accountId, {
+      email_confirm: true,
+      ban_duration: "none",
+    });
+    expect(admin.rpc).toHaveBeenNthCalledWith(2, "master_finish_admin_audit", expect.objectContaining({
+      p_outcome: "failed",
+      p_detail_code: "auth_unban_failed",
+    }));
+  });
+
+  it("não confirma o e-mail ao recusar uma solicitação", async () => {
+    admin.rpc
+      .mockResolvedValueOnce({ data: { auditId: "audit-reject", authAction: "ban", retry: false }, error: null })
+      .mockResolvedValueOnce({ data: true, error: null });
+    admin.auth.admin.updateUserById.mockResolvedValue({ data: { user: { id: accountId } }, error: null });
+
+    const response = await POST(post({ userId: accountId, action: "reject", reasonCode: "duplicate_request" }));
+
+    expect(response.status).toBe(200);
+    expect(admin.auth.admin.updateUserById).toHaveBeenCalledWith(accountId, { ban_duration: "876000h" });
+    expect(admin.auth.admin.getUserById).not.toHaveBeenCalled();
   });
 
   it("arquiva pedido confirmado sem recusá-lo, exige auditoria e bloqueia a conta", async () => {

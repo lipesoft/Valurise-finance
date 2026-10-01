@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Bell, ChevronRight, Clock3, RefreshCw, X } from "lucide-react";
+import { Bell, ChevronRight, RefreshCw, X } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type RequestNotification = {
@@ -27,10 +27,8 @@ function dateLabel(value: string) {
     : new Intl.DateTimeFormat("pt-BR", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-function requestStatusLabel(status: string) {
-  if (status === "pending_email") return "Aguardando confirmação do e-mail";
-  if (status === "verification_required") return "Precisa validar o acesso";
-  return "E-mail confirmado · aguardando análise";
+function requestStatusLabel() {
+  return "Aguardando análise do Master";
 }
 
 export function MasterNotifications({
@@ -43,7 +41,6 @@ export function MasterNotifications({
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<RequestNotification[]>([]);
   const [count, setCount] = useState(0);
-  const [waitingForEmail, setWaitingForEmail] = useState(0);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [error, setError] = useState("");
   const [initialLoading, setInitialLoading] = useState(true);
@@ -52,7 +49,6 @@ export function MasterNotifications({
   const refreshTimer = useRef<number | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
-  const totalRequests = count + waitingForEmail;
 
   const refresh = useCallback(async () => {
     const currentRequest = ++requestSequence.current;
@@ -71,20 +67,18 @@ export function MasterNotifications({
       if (currentRequest !== requestSequence.current) return;
 
       const nextItems = payload.items ?? [];
-      const nextCount = Number(payload.stats?.pending
-        ?? nextItems.filter((item) => item.status === "pending").length);
-      const nextWaiting = Number(payload.stats?.email_pending
-        ?? nextItems.filter((item) => item.status === "pending_email" || item.status === "verification_required").length);
+      const nextCount = Number(payload.total ?? (
+        Number(payload.stats?.pending ?? nextItems.filter((item) => item.status === "pending").length)
+        + Number(payload.stats?.email_pending ?? nextItems.filter((item) => item.status === "pending_email" || item.status === "verification_required").length)
+      ));
       const signature = JSON.stringify({
         count: nextCount,
-        waiting: nextWaiting,
         items: nextItems.map((item) => [item.id, item.email, item.full_name, item.status, item.created_at]),
       });
       if (!lastSnapshot.current || lastSnapshot.current !== signature) onRequestsChanged();
       lastSnapshot.current = signature;
       setItems(nextItems);
       setCount(nextCount);
-      setWaitingForEmail(nextWaiting);
       setError("");
     } catch (cause) {
       if (currentRequest === requestSequence.current) {
@@ -175,7 +169,7 @@ export function MasterNotifications({
       <button
         ref={triggerRef}
         type="button"
-        aria-label={`Solicitações de acesso: ${count} aguardando análise; ${waitingForEmail} aguardando confirmação do e-mail`}
+        aria-label={`Solicitações de acesso: ${count} aguardando análise`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls="master-notifications-panel"
@@ -186,9 +180,9 @@ export function MasterNotifications({
         className="relative grid h-11 w-11 place-items-center rounded-xl bg-[var(--panel2)] text-[var(--fg)] transition-colors hover:text-[var(--accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
       >
         <Bell size={18} aria-hidden="true" />
-        {totalRequests > 0 && <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-[var(--accent)] px-1 text-center text-[10px] font-bold leading-5 text-[var(--accentfg)]">{totalRequests > 99 ? "99+" : totalRequests}</span>}
+        {count > 0 && <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-[var(--accent)] px-1 text-center text-[10px] font-bold leading-5 text-[var(--accentfg)]">{count > 99 ? "99+" : count}</span>}
       </button>
-      <span className="sr-only" role="status" aria-live="polite">{count > 0 ? `${count} solicitações aguardam análise.` : "Nenhuma solicitação aguarda análise."}{waitingForEmail > 0 ? ` ${waitingForEmail} aguardam confirmação de e-mail.` : ""}</span>
+      <span className="sr-only" role="status" aria-live="polite">{count > 0 ? `${count} solicitações aguardam análise.` : "Nenhuma solicitação aguarda análise."}</span>
 
       {open && createPortal(<div className="fixed inset-0 z-50 bg-black/55 sm:bg-transparent" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
         <section
@@ -206,10 +200,10 @@ export function MasterNotifications({
             <h2 className="text-sm font-semibold">Solicitações de acesso</h2>
             <p className="muted mt-1 text-[11px]">{realtimeConnected ? "Atualizações ao vivo" : "Atualização automática periódica"}</p>
           </div>
-          <div className="flex items-center gap-1"><span className="rounded-full bg-[var(--accent)] px-2 py-1 text-xs font-bold text-[var(--accentfg)]">{totalRequests}</span><button type="button" onClick={() => setOpen(false)} aria-label="Fechar notificações" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] sm:h-9 sm:w-9"><X size={17} aria-hidden="true" /></button></div>
+          <div className="flex items-center gap-1"><span className="rounded-full bg-[var(--accent)] px-2 py-1 text-xs font-bold text-[var(--accentfg)]">{count}</span><button type="button" onClick={() => setOpen(false)} aria-label="Fechar notificações" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[var(--panel2)] sm:h-9 sm:w-9"><X size={17} aria-hidden="true" /></button></div>
         </div>
 
-        <p className="muted px-2 text-[11px]">{count} com e-mail confirmado para análise · {waitingForEmail} aguardando confirmação</p>
+        <p className="muted px-2 text-[11px]">{count} aguardando decisão do Master</p>
 
         {error && <p role="status" className="mx-2 mt-3 rounded-xl bg-[var(--danger)]/10 p-3 text-xs text-[var(--danger)]">{error}</p>}
         {error && <button type="button" onClick={() => void refresh()} className="mx-2 mt-2 inline-flex min-h-11 items-center justify-center gap-2 self-start rounded-xl bg-[var(--panel2)] px-3 text-xs font-medium"><RefreshCw size={14} aria-hidden="true"/>Tentar novamente</button>}
@@ -230,7 +224,7 @@ export function MasterNotifications({
             <span className="min-w-0 flex-1">
               <b className="block truncate text-xs">{item.full_name || item.email || "Novo cadastro"}</b>
               <small className="muted mt-0.5 block truncate">{item.email || "E-mail indisponível"} · {dateLabel(item.created_at)}</small>
-              <small className={`mt-1 block truncate text-[10px] ${item.status === "pending" ? "text-[var(--accent)]" : "text-[var(--muted)]"}`}>{requestStatusLabel(item.status)}</small>
+              <small className="mt-1 block truncate text-[10px] text-[var(--accent)]">{requestStatusLabel()}</small>
             </span>
             <ChevronRight size={15} className="muted shrink-0" aria-hidden="true" />
           </button>)}
@@ -247,7 +241,6 @@ export function MasterNotifications({
           >
             Ver fila completa <ChevronRight size={15} aria-hidden="true" />
           </button>
-          {waitingForEmail > 0 && <p className="muted flex items-center gap-1.5 px-2.5 pb-1 text-[10px]"><Clock3 size={12} aria-hidden="true" />{waitingForEmail} aguardando confirmação do e-mail</p>}
         </div>
         </section>
       </div>, document.body)}

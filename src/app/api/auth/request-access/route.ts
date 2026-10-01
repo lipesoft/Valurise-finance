@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -40,11 +39,7 @@ function rateLimited(scope: "ip" | "email") {
   );
 }
 
-/**
- * Starts a Supabase Auth email-confirmation flow. The Master queue is populated
- * only after Supabase changes email_confirmed_at; no password or API secret is
- * persisted by Valurise.
- */
+/** Creates a blocked account and sends the request straight to Master review. */
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
   if (origin) {
@@ -110,64 +105,40 @@ export async function POST(request: NextRequest) {
     inviteId = invite.id;
   }
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-  if (!url || !publishableKey) return responseError("Cadastro temporariamente indisponível.", 503);
-  const auth = createClient(url, publishableKey, {
-    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
-  });
-  const { data: signup, error: signupError } = await auth.auth.signUp({
-    email,
-    password,
-    options: {
-      emailRedirectTo: request.nextUrl.origin,
-      data: { full_name: fullName, username },
-    },
-  });
+  // Admin creation does not send a verification email. Explicitly keep the
+  // account unconfirmed and banned at creation so project-level Auth settings
+  // cannot create a sign-in window before the Master reviews the request.
+  let created: Awaited<ReturnType<typeof admin.auth.admin.createUser>>["data"];
+  let signupError: Awaited<ReturnType<typeof admin.auth.admin.createUser>>["error"];
+  try {
+    const result = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: false,
+      ban_duration: "876000h",
+      user_metadata: { full_name: fullName, username },
+    });
+    created = result.data;
+    signupError = result.error;
+  } catch {
+    return responseError("Não foi possível registrar sua solicitação agora. Tente novamente mais tarde.", 503);
+  }
 
   if (signupError) {
-    if (signupError.code === "user_already_exists" || signupError.message.toLowerCase().includes("already registered")) return genericAccepted();
-    return responseError("Não foi possível iniciar a confirmação por e-mail. Tente novamente mais tarde.", 503);
+    if (["user_already_exists", "email_exists"].includes(signupError.code ?? "") || signupError.message.toLowerCase().includes("already registered")) return genericAccepted();
+    return responseError("Não foi possível registrar sua solicitação agora. Tente novamente mais tarde.", 503);
   }
-  const newUser = signup.user;
-  if (!newUser?.id || (Array.isArray(newUser.identities) && newUser.identities.length === 0)) return genericAccepted();
-
-  // A session or an already-confirmed address means Auth confirmations are not
-  // enforced. Roll back this just-created account rather than queueing an
-  // address that was never proven to belong to the applicant.
-  if (signup.session || newUser.email_confirmed_at) {
-    const deleted = await admin.auth.admin.deleteUser(newUser.id);
-    if (deleted.error) await admin.auth.admin.updateUserById(newUser.id, { ban_duration: "876000h" });
-    return responseError("A confirmação de e-mail não está ativa para este projeto. O pedido não foi enviado ao Master.", 503);
-  }
+  const newUser = created.user;
+  if (!newUser?.id) return responseError("Não foi possível registrar sua solicitação agora. Tente novamente mais tarde.", 503);
 
   const { error: detailsError } = await admin.from("access_request_details").insert({
     user_id: newUser.id,
     invite_id: inviteId,
-    request_status: "pending_email",
+    request_status: "pending_review",
   });
   if (detailsError) {
     await admin.auth.admin.deleteUser(newUser.id);
     return responseError("Não foi possível registrar a solicitação. Tente novamente.", 500);
-  }
-
-  // The email can be confirmed between signUp() returning and the request row
-  // being written. Re-read only this newly-created Auth user to close that race;
-  // never promote historical, administratively-confirmed accounts here.
-  const { data: createdAuthUser, error: authReadError } = await admin.auth.admin.getUserById(newUser.id);
-  if (authReadError || !createdAuthUser.user) {
-    await admin.auth.admin.deleteUser(newUser.id);
-    return responseError("Não foi possível verificar a solicitação. Tente novamente.", 503);
-  }
-  if (createdAuthUser.user.email_confirmed_at) {
-    const { error: confirmationError } = await admin.from("access_request_details")
-      .update({ request_status: "pending_review" })
-      .eq("user_id", newUser.id)
-      .eq("request_status", "pending_email");
-    if (confirmationError) {
-      await admin.auth.admin.deleteUser(newUser.id);
-      return responseError("Não foi possível atualizar a confirmação do pedido. Tente novamente.", 503);
-    }
   }
 
   const acceptedAt = new Date().toISOString();
