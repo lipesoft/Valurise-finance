@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Redefinição de senha — Valurise</title>
+  </head>
+  <body style="margin:0;background:#111217;color:#f5f6fa;font-family:Arial,Helvetica,sans-serif">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#111217;padding:32px 16px">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#1d1e25;border:1px solid #34353e;border-radius:20px;overflow:hidden">
+            <tr>
+              <td style="padding:32px 32px 8px;text-align:center">
+                <div style="color:#4be0aa;font-size:26px;font-weight:700;letter-spacing:5px">VALURISE</div>
+                <p style="margin:12px 0 0;color:#a8a9b4;font-size:15px">Clareza para cuidar do seu patrimônio.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 32px 32px">
+                <h1 style="margin:0 0 16px;color:#f5f6fa;font-size:24px;line-height:1.3">Redefina sua senha</h1>
+                <p style="margin:0 0 14px;color:#d1d2dc;font-size:16px;line-height:1.65">Olá,</p>
+                <p style="margin:0 0 24px;color:#d1d2dc;font-size:16px;line-height:1.65">Recebemos uma solicitação para criar uma nova senha para sua conta Valurise. Para continuar com segurança, use o botão abaixo.</p>
+                <table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 auto 24px">
+                  <tr>
+                    <td align="center" style="border-radius:12px;background:#4be0aa">
+                      <a href="{{ .ConfirmationURL }}" style="display:inline-block;padding:15px 26px;border-radius:12px;color:#10231d;font-size:16px;font-weight:700;text-decoration:none">Criar nova senha</a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:0 0 12px;color:#a8a9b4;font-size:14px;line-height:1.6">Se o botão não funcionar, copie e cole este endereço no navegador:</p>
+                <p style="margin:0 0 24px;overflow-wrap:anywhere;font-size:13px;line-height:1.6"><a href="{{ .ConfirmationURL }}" style="color:#4be0aa">{{ .ConfirmationURL }}</a></p>
+                <p style="margin:0;color:#a8a9b4;font-size:14px;line-height:1.6">Se você não solicitou a redefinição, ignore este e-mail. Sua senha continuará a mesma. Não compartilhe este link com ninguém.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:18px 32px;border-top:1px solid #34353e;color:#858691;text-align:center;font-size:12px;line-height:1.6">Mensagem automática da Valurise.<br />Por segurança, não responda a este e-mail.</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

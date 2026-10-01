@@ -1,4 +1,3 @@
-import { createClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -33,10 +32,8 @@ export async function POST(request: NextRequest) {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
     if (!url || !publishableKey) return NextResponse.json({ error: "Recuperação temporariamente indisponível." }, { status: 503 });
-    const auth = createClient(url, publishableKey, { auth: { autoRefreshToken: false, persistSession: false } });
-    const { error } = await auth.auth.resetPasswordForEmail(parsed.data.email, { redirectTo: `${request.nextUrl.origin}/?reset-password=1` });
-    if (error) return NextResponse.json({ error: "Recuperação temporariamente indisponível." }, { status: 503 });
-    // Keep the response identical whether or not the address exists.
+    // This endpoint only applies Valurise's abuse limits. The browser's PKCE client
+    // sends the recovery email so its verifier stays with the same browser session.
     return neutralResponse();
   } catch {
     return NextResponse.json({ error: "Recuperação temporariamente indisponível." }, { status: 503 });

@@ -8,6 +8,7 @@ const { admin, createUser, deleteUser, tables } = vi.hoisted(() => {
       error: null as null,
       select: vi.fn(),
       eq: vi.fn(),
+      ilike: vi.fn(),
       is: vi.fn(),
       gt: vi.fn(),
       maybeSingle: vi.fn(),
@@ -17,6 +18,7 @@ const { admin, createUser, deleteUser, tables } = vi.hoisted(() => {
     };
     table.select.mockReturnValue(table);
     table.eq.mockReturnValue(table);
+    table.ilike.mockReturnValue(table);
     table.is.mockReturnValue(table);
     table.gt.mockReturnValue(table);
     table.maybeSingle.mockResolvedValue({ data: null, error: null });
@@ -117,11 +119,12 @@ describe("POST /api/auth/request-access", () => {
   it("explica que o usuário precisa ser trocado sem criar conta nem solicitação para o Master", async () => {
     tables.profiles.maybeSingle.mockResolvedValueOnce({ data: { id: userId }, error: null });
 
-    const response = await POST(request());
+    const response = await POST(request({ username: "Pessoa.Teste" }));
     const payload = await response.json();
 
     expect(response.status).toBe(409);
     expect(payload.error).toMatch(/Confira o usuário escolhido/i);
+    expect(tables.profiles.ilike).toHaveBeenCalledWith("username", "pessoa.teste");
     expect(createUser).not.toHaveBeenCalled();
     expect(tables.access_request_details.insert).not.toHaveBeenCalled();
     expect(JSON.stringify(payload)).not.toContain("Pessoa@Example.invalid");

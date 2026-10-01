@@ -119,11 +119,16 @@ test("encaminha o pedido diretamente para análise e não oferece confirmação 
 });
 
 test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }) => {
+  let recoveryRequest: { url: string; body: Record<string, unknown> } | null = null;
   await page.route("**/api/auth/password-reset", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ ok: true }),
   }));
+  await page.route("**/auth/v1/recover**", async (route) => {
+    recoveryRequest = { url: route.request().url(), body: route.request().postDataJSON() as Record<string, unknown> };
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+  });
   await page.goto("/");
   await dismissCookieNotice(page);
   await waitForApplicationReady(page);
@@ -132,6 +137,25 @@ test("mostra a resposta segura ao pedir recuperação de senha", async ({ page }
   await page.getByRole("button", { name: "Enviar link seguro" }).click();
 
   await expect(page.getByText("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.")).toBeVisible();
+  expect(recoveryRequest).not.toBeNull();
+  expect(new URL(recoveryRequest!.url).searchParams.get("redirect_to")).toContain("reset-password=1");
+  expect(recoveryRequest!.body.code_challenge_method).toBe("s256");
+  expect(recoveryRequest!.body.code_challenge).toEqual(expect.any(String));
+});
+
+test("não permite redefinir a senha só com o parâmetro da URL", async ({ page }) => {
+  await page.goto("/?reset-password=1");
+  await dismissCookieNotice(page);
+  await waitForApplicationReady(page);
+
+  await expect(page.getByRole("heading", { name: "Nova senha" })).toBeVisible();
+  await expect(page.getByText("Este link de redefinição expirou, já foi usado ou não é válido. Solicite um novo link para continuar.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Nova senha")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Salvar nova senha" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Solicitar novo link" }).click();
+  await expect(page.getByRole("heading", { name: "Recuperar senha" })).toBeVisible();
+  await expect(page.getByLabel("E-mail")).toBeVisible();
 });
 
 test("limpa usuário e senha ao trocar do login para recuperação ou solicitação de acesso", async ({ page }) => {
@@ -240,6 +264,7 @@ test("impede envio duplicado enquanto o login está em andamento", async ({ page
 test("bloqueia envios repetidos durante solicitação de acesso e recuperação de senha", async ({ page }) => {
   let accessRequests = 0;
   let resetRequests = 0;
+  let recoveryRequests = 0;
   await page.route("**/api/auth/request-access", async (route) => {
     accessRequests += 1;
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -249,6 +274,10 @@ test("bloqueia envios repetidos durante solicitação de acesso e recuperação 
     resetRequests += 1;
     await new Promise((resolve) => setTimeout(resolve, 400));
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.route("**/auth/v1/recover**", async (route) => {
+    recoveryRequests += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
   });
   await page.goto("/");
   await dismissCookieNotice(page);
@@ -283,5 +312,6 @@ test("bloqueia envios repetidos durante solicitação de acesso e recuperação 
   await expect.poll(() => resetRequests).toBe(1);
   await page.waitForTimeout(500);
   expect(resetRequests).toBe(1);
+  expect(recoveryRequests).toBe(1);
   await expect(page.getByText("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.")).toBeVisible();
 });

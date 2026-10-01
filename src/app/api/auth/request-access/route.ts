@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
   const { data: existingUsername, error: usernameError } = await admin
     .from("profiles")
     .select("id")
-    .eq("username", username)
+    .ilike("username", username)
     .maybeSingle();
   if (usernameError) return responseError("Cadastro temporariamente indisponível. Tente novamente mais tarde.", 503);
   if (existingUsername) {
