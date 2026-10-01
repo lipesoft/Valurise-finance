@@ -10,7 +10,7 @@ describe("contexto empresarial da Val", () => {
   it("preserva natureza e origem e não transforma estimativa em faturamento realizado", async () => {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const date = new Date(now.getFullYear(), now.getMonth(), 5, 12).toISOString();
+    const date = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0).toISOString();
     const tools = createBusinessFinanceTools({
       data: { institutions: [{ name: "Banco QA", accounts: [{ name: "Conta", balance: 150_000 }] }] },
       transactions: [{ id: "income", type: "income", amountCents: 80_000, category: "Vendas", account: "Banco QA • Conta", date, createdAt: date }],

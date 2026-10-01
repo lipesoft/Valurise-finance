@@ -374,6 +374,104 @@ input[type="radio"] {
   background-size: 200% 100%;
   animation: valurise-shimmer 1.6s ease-in-out infinite;
 }
+@page {
+  size: A4;
+  margin: 14mm;
+}
+.finance-print-root {
+  display: none;
+}
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    color: #151515 !important;
+    font-family: Arial, sans-serif !important;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .finance-print-root,
+  .finance-print-root * {
+    visibility: visible !important;
+  }
+  .finance-print-root {
+    display: block !important;
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    color: #151515 !important;
+    background: #fff !important;
+    font: 10pt/1.45 Arial, sans-serif !important;
+  }
+  .finance-print-header {
+    margin-bottom: 20px;
+    border-bottom: 2px solid #138b66;
+    padding-bottom: 12px;
+  }
+  .finance-print-brand {
+    color: #138b66;
+    font-size: 12pt;
+    font-weight: 700;
+    letter-spacing: .16em;
+  }
+  .finance-print-header h1 {
+    margin: 12px 0 2px;
+    font-size: 20pt;
+  }
+  .finance-print-header p,
+  .finance-print-header small {
+    margin: 3px 0;
+    color: #555;
+  }
+  .finance-print-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0 0 20px;
+  }
+  .finance-print-metrics div {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .finance-print-section {
+    margin-top: 18px;
+    break-inside: avoid;
+  }
+  .finance-print-section h2 {
+    margin: 0 0 8px;
+    font-size: 13pt;
+  }
+  .finance-print-root table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.5pt;
+  }
+  .finance-print-root th,
+  .finance-print-root td {
+    border-bottom: 1px solid #ddd;
+    padding: 6px 5px;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+  .finance-print-root th:last-child,
+  .finance-print-root td:last-child {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .finance-print-footer {
+    margin-top: 24px;
+    border-top: 1px solid #ddd;
+    padding-top: 8px;
+    color: #666;
+    font-size: 8pt;
+  }
+}
 @keyframes valurise-shimmer {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }

@@ -395,6 +395,100 @@ test("parcelamento no cartão divide centavos, cria parcelas futuras e reserva l
   await expect(page.getByText(/disponível:/)).toContainText(/1\.900,00/);
 });
 
+test("Dashboard mantém categorias no histórico todo, mostra evolução e Contas reflete saldo atual", async ({ page }) => {
+  const now = new Date();
+  const currentDate = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const previousDate = new Date(now.getTime() - 35 * 24 * 60 * 60 * 1000).toISOString();
+  await loginWithFinancialSeed(page, [], { transactions: [
+    { id: "expense-current", type: "expense", amountCents: 10_000, category: "Alimentação", account: "Banco Teste • Conta", date: currentDate, createdAt: currentDate },
+    { id: "expense-previous", type: "expense", amountCents: 5_000, category: "Alimentação", account: "Banco Teste • Conta", date: previousDate, createdAt: previousDate },
+  ] });
+
+  await expect(page.getByText("Distribuição de gastos em todo o histórico")).toBeVisible();
+  await expect(page.getByRole("img", { name: /Gráfico de linhas da evolução/ })).toBeVisible();
+  await page.getByRole("button", { name: "Contas", exact: true }).click();
+  await expect(page.getByTestId("institution-account-row").first()).toContainText("Saldo atual: R$ 850,00");
+});
+
+test("aporte só permite selecionar uma conta com saldo suficiente", async ({ page }) => {
+  await loginWithFinancialSeed(page);
+  await page.getByRole("button", { name: "Investimentos", exact: true }).click();
+  const investment = page.locator("article").filter({ hasText: "CDB Reserva" });
+  await investment.getByRole("button", { name: /Registrar aporte/ }).click();
+  await page.getByLabel("Valor do aporte").fill("1.100,00");
+
+  const source = page.getByLabel("Conta de origem");
+  await expect(source.getByRole("option", { name: /Banco Teste • Conta/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Confirmar aporte" })).toBeDisabled();
+
+  await page.getByLabel("Valor do aporte").fill("500,00");
+  await expect(source.getByRole("option", { name: /Saldo disponível: R\$ 1.000,00/ })).toHaveCount(1);
+  await source.selectOption("Banco Teste • Conta");
+  await page.getByRole("button", { name: "Confirmar aporte" }).click();
+  await expect(page.getByText("Aporte registrado com sucesso.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Contas", exact: true }).click();
+  await expect(page.getByTestId("institution-account-row").first()).toContainText("Saldo atual: R$ 500,00");
+});
+
+test("Pix no crédito consome o disponível do cartão e não reduz o limite total cadastrado", async ({ page }) => {
+  await loginWithFinancialSeed(page);
+  await page.getByRole("button", { name: "Registrar movimentação" }).click();
+  await page.getByRole("button", { name: "Gastei", exact: true }).click();
+  await page.getByPlaceholder("R$ 0,00").fill("1100,00");
+  await page.getByRole("button", { name: "Continuar" }).click();
+  await page.getByRole("button", { name: "Alimentação", exact: true }).click();
+  await page.getByRole("button", { name: "Continuar" }).click();
+
+  const source = page.getByRole("dialog");
+  await expect(source.getByRole("button", { name: "Banco Teste • Conta" })).toHaveCount(0);
+  await expect(source.getByRole("button", { name: "Banco Teste • Cartão" })).toContainText("Limite disponível: R$ 2.000,00");
+  await source.getByRole("button", { name: /Pix no crédito/ }).click();
+  await page.getByRole("button", { name: "Continuar" }).click();
+  await page.getByRole("button", { name: "Continuar" }).click();
+  await expect(page.getByRole("dialog")).toContainText("Pix no crédito · o valor será lançado na fatura do cartão.");
+  await page.getByRole("button", { name: "Confirmar lançamento" }).click();
+
+  const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "[]"), `valurise:v2:${user.id}:workspace:${personalWorkspaceId}:tx`);
+  expect(stored[0]).toMatchObject({ type: "expense", subtype: "pix_credit", amountCents: 110_000, account: "Banco Teste • Cartão" });
+  await page.getByRole("button", { name: "Cartões", exact: true }).click();
+  await expect(page.getByText("Disponível: R$ 900,00")).toBeVisible();
+  await expect(page.getByText("Cartão · crédito · limite R$ 2.000,00")).toBeVisible();
+
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  await page.getByRole("button", { name: "Registrar movimentação" }).click();
+  await page.getByRole("button", { name: "Gastei", exact: true }).click();
+  await page.getByPlaceholder("R$ 0,00").fill("950,00");
+  await page.getByRole("button", { name: "Continuar" }).click();
+  await page.getByRole("button", { name: "Alimentação", exact: true }).click();
+  await page.getByRole("button", { name: "Continuar" }).click();
+  const secondSource = page.getByRole("dialog");
+  await expect(secondSource.getByRole("button", { name: "Banco Teste • Cartão" })).toHaveCount(0);
+  await expect(secondSource.getByRole("button", { name: "Banco Teste • Pix no crédito · Cartão" })).toHaveCount(0);
+  await expect(secondSource.getByRole("button", { name: "Banco Teste • Conta" })).toBeVisible();
+});
+
+test("a exportação de relatório e extrato prepara um documento Valurise para PDF", async ({ page }) => {
+  await loginWithFinancialSeed(page, [], { transactions: [{
+    id: "pdf-expense", type: "expense", amountCents: 1234, category: "Alimentação", account: "Banco Teste • Conta", description: "Mercado para PDF", date: new Date().toISOString(), createdAt: new Date().toISOString(),
+  }] });
+  await page.evaluate(() => { window.print = () => { document.documentElement.dataset.pdfExportRequested = "true"; }; });
+
+  await page.getByRole("button", { name: "Relatórios", exact: true }).click();
+  await page.getByRole("button", { name: "Exportar PDF", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.pdfExportRequested)).toBe("true");
+  await expect(page.locator(".finance-print-root")).toContainText("Relatório financeiro");
+  await expect(page.locator(".finance-print-root")).toContainText("Mercado para PDF");
+  await page.emulateMedia({ media: "print" });
+  await expect(page.locator(".finance-print-root")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Exportar PDF", exact: true })).toBeHidden();
+  await page.emulateMedia({ media: "screen" });
+
+  await page.getByRole("button", { name: "Extrato", exact: true }).click();
+  await page.getByRole("button", { name: "Exportar PDF", exact: true }).click();
+  await expect(page.locator(".finance-print-root")).toContainText("Mercado para PDF");
+});
+
 test("banco selecionado aplica sua marca SVG no cartão e permite personalizar ícones", async ({ page }) => {
   await loginWithFinancialSeed(page);
   await page.getByRole("button", { name: "Contas", exact: true }).click();

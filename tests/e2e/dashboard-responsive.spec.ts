@@ -4,6 +4,7 @@ const testUserId = "00000000-0000-4000-8000-000000000123";
 const personalWorkspaceId = "00000000-0000-4000-8000-000000000234";
 const businessWorkspaceId = "00000000-0000-4000-8000-000000000345";
 const currentMonth = new Date().toISOString().slice(0, 7);
+const currentMonthDate = `${currentMonth}-${String(new Date().getUTCDate()).padStart(2, "0")}T00:00:00.000Z`;
 const mockState = {
   data: {
     categories: ["Moradia", "Alimentação", "Transporte"],
@@ -37,8 +38,8 @@ const mockBusinessState = {
     onboarded: false,
   },
   transactions: [
-    { id: "business-income-qa", type: "income", amountCents: 450000, category: "Vendas", account: "Banco Empresa QA • Conta da empresa", date: `${currentMonth}-05T12:00:00.000Z`, createdAt: `${currentMonth}-05T12:00:00.000Z` },
-    { id: "business-expense-qa", type: "expense", amountCents: 120000, category: "Custos", account: "Banco Empresa QA • Conta da empresa", date: `${currentMonth}-10T12:00:00.000Z`, createdAt: `${currentMonth}-10T12:00:00.000Z` },
+    { id: "business-income-qa", type: "income", amountCents: 450000, category: "Vendas", account: "Banco Empresa QA • Conta da empresa", date: currentMonthDate, createdAt: currentMonthDate },
+    { id: "business-expense-qa", type: "expense", amountCents: 120000, category: "Custos", account: "Banco Empresa QA • Conta da empresa", date: currentMonthDate, createdAt: currentMonthDate },
   ],
   profile: { publicId: "VAL-QA-BUSINESS" },
 };
@@ -241,6 +242,15 @@ test("cria empresa isolada e troca contexto sem mostrar os dados pessoais", asyn
   await page.getByRole("button", { name: "Confirmar pagamento" }).click();
   await expect(page.getByText("Pagamento de “Aluguel Empresa QA” registrado no extrato.")).toBeVisible();
   await expect(page.locator("small").filter({ hasText: "Pago" }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Adicionar conta a pagar", exact: true }).click();
+  await page.getByPlaceholder("Ex.: Internet, aluguel, Netflix").fill("Fornecedor acima do saldo");
+  await page.getByPlaceholder("Valor previsto").fill("5000000,00");
+  await page.getByPlaceholder("Dia de vencimento").fill("28");
+  await page.getByRole("button", { name: "Adicionar ao planejamento" }).click();
+  await expect(page.getByText("Sem saldo ou limite suficiente")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Registrar pagamento", exact: true })).toBeDisabled();
+
   await page.getByRole("button", { name: "Bancos e Caixa", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Bancos e Caixa" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Cartões empresariais" })).toBeVisible();
@@ -706,7 +716,7 @@ test("dashboard mantém conteúdo, sem overflow horizontal, em 375, 390 e 430 px
   for (const width of [375, 390, 430]) {
     await page.setViewportSize({ width, height: 844 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await expect(page.getByText("Evolução financeira")).toBeVisible();
+    await expect(page.getByText("Evolução financeira", { exact: true })).toBeVisible();
     await expect(page.getByText("Gestão por categoria")).toBeVisible();
   }
 

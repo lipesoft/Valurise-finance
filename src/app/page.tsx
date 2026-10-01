@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Image from "next/image";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "framer-motion";
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   ArrowDownLeft,
   ArrowRight,
@@ -92,6 +92,7 @@ import { withTimeout } from "@/lib/async";
 import type { WorkspaceSummary } from "@/lib/workspaces/types";
 import { BusinessFinanceDashboard, BusinessFinanceDetail, BusinessFinanceSettings } from "@/components/business-finance";
 import { BusinessWorkspaceDangerZone } from "@/components/business-workspace-danger-zone";
+import { FinancePrintDocument } from "@/components/finance-print-document";
 import {
   firstDayOfMonthValue,
   getReceivableOccurrences,
@@ -109,6 +110,8 @@ import { MasterNotifications } from "@/components/master-notifications";
 import { ValAISettings } from "@/components/val-ai-settings";
 import { FinanceIconBadge, FinanceIconPicker } from "@/components/finance-icons";
 import { inferBankIconId, inferCategoryIconId, resolveCategoryIconId, resolveInstitutionIconId, type FinanceIconId } from "@/lib/finance-icons";
+import { buildFundingSourceOptions, filterFundingOptions, getCardAvailableCents } from "@/lib/transaction-funding";
+import { printFinancePdf } from "@/lib/print-export";
 type Kind = "expense" | "income" | "salary" | "investment" | "transfer";
 type View =
   | "dashboard"
@@ -257,6 +260,7 @@ export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [authProfileIssue, setAuthProfileIssue] = useState(false);
+  const [passwordRecoveryCallback, setPasswordRecoveryCallback] = useState<{ hasCode: boolean; hasImplicitSession: boolean; hasError: boolean } | null>(null);
   const [authRetryRevision, setAuthRetryRevision] = useState(0);
   const [splashStatus, setSplashStatus] = useState<ValuriseSplashStatus>("opening");
   const [splashVisible, setSplashVisible] = useState(true);
@@ -273,6 +277,22 @@ export default function Page() {
   const completeSplash = useCallback(() => setSplashVisible(false), []);
   useEffect(() => {
     let cancelled = false;
+    const search = new URLSearchParams(window.location.search);
+    const isPasswordRecovery = search.has("reset-password");
+    if (isPasswordRecovery) {
+      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      setPasswordRecoveryCallback({
+        hasCode: Boolean(search.get("code")),
+        hasImplicitSession: Boolean(hash.get("access_token") && hash.get("refresh_token")),
+        hasError: Boolean(search.get("error") || hash.get("error")),
+      });
+      setUser(null);
+      setAuthProfileIssue(false);
+      setSplashStatus("ready");
+      setSplashVisible(false);
+      setCheckingAuth(false);
+      return () => { cancelled = true; };
+    }
     setCheckingAuth(true);
     const supabase = getSupabaseBrowserClient();
     if (!supabase) {
@@ -373,7 +393,7 @@ export default function Page() {
     else if (user?.role === "master") content = <MasterConsole user={user} logout={logout} />;
     else if (user && user.status && user.status !== "active") content = <AccountWaiting user={user} logout={logout} />;
     else if (user) content = <WorkspaceGate user={user} logout={logout} onLoadingStatusChange={updateSplashStatus} />;
-    else content = <Login done={completeLogin} />;
+    else content = <Login done={completeLogin} recoveryCallback={passwordRecoveryCallback} />;
   }
   return (
     <>
@@ -597,8 +617,9 @@ function BusinessWorkspaceWelcome({ displayName, openAccounts, openFinancialProf
   return <main className="grid min-h-dvh place-items-center bg-[var(--bg)] px-4 py-8"><section className="panel w-full max-w-2xl rounded-3xl p-6 sm:p-9"><span className="grid h-12 w-12 place-items-center rounded-2xl bg-[var(--accent)]/12 text-[var(--accent)]"><Building2 size={22}/></span><p className="muted mt-6 text-xs font-semibold uppercase tracking-[0.16em]">Novo espaço empresarial</p><h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">{displayName}</h1><p className="muted mt-3 max-w-xl text-sm leading-6">Este espaço começa separado e vazio. Cadastre as contas da empresa para acompanhar o caixa sem misturar com suas finanças pessoais.</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><div className="rounded-2xl bg-[var(--panel2)] p-4"><Landmark className="text-[var(--accent)]" size={18}/><b className="mt-3 block text-sm">Caixa e contas</b><p className="muted mt-1 text-xs leading-5">Contas bancárias da empresa.</p></div><div className="rounded-2xl bg-[var(--panel2)] p-4"><ReceiptText className="text-[var(--accent)]" size={18}/><b className="mt-3 block text-sm">Entradas e saídas</b><p className="muted mt-1 text-xs leading-5">Movimente somente neste espaço.</p></div><div className="rounded-2xl bg-[var(--panel2)] p-4"><WalletCards className="text-[var(--accent)]" size={18}/><b className="mt-3 block text-sm">Visão empresarial</b><p className="muted mt-1 text-xs leading-5">Preparado para crescer com seu negócio.</p></div></div><p className="muted mt-5 text-xs leading-5">Se quiser, complete agora o perfil financeiro com valores exatos ou aproximados. Essa etapa é opcional; você pode pular e preencher depois.</p><div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end"><button type="button" onClick={continueToDashboard} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm">Pular por enquanto</button><button type="button" onClick={openFinancialProfile} className="min-h-11 rounded-xl bg-[var(--panel2)] px-4 text-sm font-medium text-[var(--accent)]">Completar perfil financeiro</button><button type="button" onClick={openAccounts} className="primary min-h-11 rounded-xl px-4 text-sm font-semibold">Cadastrar primeira conta</button></div></section></main>;
 }
 
-function Login({ done }: { done: (u: User) => void }) {
+function Login({ done, recoveryCallback }: { done: (u: User) => void; recoveryCallback: { hasCode: boolean; hasImplicitSession: boolean; hasError: boolean } | null }) {
   const [mode, setMode] = useState<"login" | "signup" | "forgot" | "reset">("login");
+  const [recoveryStatus, setRecoveryStatus] = useState<"idle" | "checking" | "ready" | "invalid">("idle");
   const [busy, setBusy] = useState(false);
   const submitting = useRef(false);
   const [inviteToken, setInviteToken] = useState("");
@@ -612,9 +633,36 @@ function Login({ done }: { done: (u: User) => void }) {
     const params = new URLSearchParams(window.location.search);
     const token = params.get("invite") || "";
     setInviteToken(token);
-    if (params.has("reset-password")) setMode("reset");
-    else if (token) setMode("signup");
-  }, []);
+    if (params.has("reset-password")) {
+      setMode("reset");
+      setRecoveryStatus("checking");
+      let active = true;
+      const callback = recoveryCallback;
+      if (!supabase || !callback || callback.hasError || (!callback.hasCode && !callback.hasImplicitSession)) {
+        setRecoveryStatus("invalid");
+        return () => { active = false; };
+      }
+      void (async () => {
+        try {
+          const { data, error } = await withTimeout(
+            supabase.auth.getSession(),
+            WORKSPACE_REQUEST_TIMEOUT_MS,
+            SESSION_LOOKUP_TIMEOUT_MESSAGE,
+          );
+          const callbackUrl = new URL(window.location.href);
+          const callbackWasConsumed = callback.hasCode
+            ? !callbackUrl.searchParams.has("code")
+            : !callbackUrl.hash.includes("access_token") && !callbackUrl.hash.includes("refresh_token");
+          if (active) setRecoveryStatus(!error && data.session && callbackWasConsumed ? "ready" : "invalid");
+        } catch {
+          if (active) setRecoveryStatus("invalid");
+        }
+      })();
+      return () => { active = false; };
+    }
+    setRecoveryStatus("idle");
+    if (token) setMode("signup");
+  }, [supabase, recoveryCallback]);
   async function finishSupabaseUser(authUser: { id: string; email?: string; user_metadata?: Record<string, unknown> }) {
     if (!supabase) return;
     const { data: profile, error } = await supabase.from("profiles").select("full_name, account_status, account_role").eq("id", authUser.id).maybeSingle();
@@ -631,6 +679,7 @@ function Login({ done }: { done: (u: User) => void }) {
   }
   function switchMode(nextMode: typeof mode) {
     setMode(nextMode);
+    if (nextMode !== "reset") setRecoveryStatus("idle");
     setE("");
     setNotice("");
     setFieldErrors({});
@@ -645,6 +694,7 @@ function Login({ done }: { done: (u: User) => void }) {
   async function submit(x: React.FormEvent) {
     x.preventDefault();
     if (busy || submitting.current) return;
+    if (mode === "reset" && recoveryStatus !== "ready") return;
     const nextFieldErrors: Record<string, string> = {};
     const email = u.trim();
     const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -708,12 +758,29 @@ function Login({ done }: { done: (u: User) => void }) {
         const response = await fetch("/api/auth/password-reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: u.trim() }) });
         const payload = await response.json();
         if (!response.ok) return setE(payload.error || "Não foi possível solicitar a recuperação.");
+        const { error } = await supabase.auth.resetPasswordForEmail(u.trim(), { redirectTo: `${window.location.origin}/?reset-password=1` });
+        if (error) return setE("Não foi possível enviar o link de recuperação agora. Tente novamente em instantes.");
         setNotice("Se o e-mail estiver cadastrado, enviamos um link seguro para redefinir sua senha.");
         return;
       }
       if (supabase && mode === "reset") {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError || !sessionData.session) {
+          setRecoveryStatus("invalid");
+          return;
+        }
         const { error } = await supabase.auth.updateUser({ password: p });
-        if (error) return setE("Não foi possível atualizar a senha. Verifique os requisitos e tente novamente.");
+        if (error) {
+          const errorCode = (error as { code?: string }).code;
+          if (errorCode === "weak_password") {
+            return setE("Essa senha não atende aos requisitos de segurança. Tente uma senha mais longa e combine letras, números e símbolos.");
+          }
+          if (error.status === 401 || error.status === 403 || ["session_not_found", "otp_expired", "flow_state_expired"].includes(errorCode || "")) {
+            setRecoveryStatus("invalid");
+            return;
+          }
+          return setE("Não foi possível salvar a nova senha agora. Tente novamente em instantes.");
+        }
         switchMode("login");
         setNotice("Senha atualizada. Você já pode entrar.");
         window.history.replaceState({}, "", "/");
@@ -741,15 +808,15 @@ function Login({ done }: { done: (u: User) => void }) {
           </motion.section>
           {requestSent ? <motion.section className="login-card panel text-center" aria-busy={busy} initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}><Image src="/valurise-icon.webp" alt="Valurise" width={128} height={128} className="mx-auto h-14 w-14"/><h2 className="mt-5 text-xl font-semibold">Solicitação recebida</h2><p className="muted mt-3 text-sm leading-6">Se os dados permitirem um novo cadastro, sua solicitação seguirá para análise do Master. Após a aprovação, o acesso será liberado. Se já tem uma conta, entre ou recupere sua senha. Por segurança, não informamos qual situação se aplica.</p><button type="button" disabled={busy} onClick={() => { setRequestSent(false); setU(u.includes("@") ? u : ""); switchMode("login"); }} className="login-submit primary mt-5 disabled:opacity-60">Ir para o login <ArrowRight size={18}/></button></motion.section> : <motion.form noValidate aria-busy={busy} onSubmit={submit} className="login-card panel" initial={{ opacity: 0, y: 12, scale: 0.99 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.36, ease: motionTokens.ease.enter, delay: 0.1 }}>
             <div className="login-card-heading"><h2>{mode === "signup" ? (inviteToken ? "Acesse pelo convite" : "Solicite seu acesso") : mode === "forgot" ? "Recuperar senha" : mode === "reset" ? "Nova senha" : "Acesse sua conta"}</h2><p>{mode === "signup" ? "O Master analisará sua solicitação antes de liberar o acesso." : mode === "forgot" ? "Use o e-mail cadastrado para receber o link seguro." : mode === "reset" ? "Use uma senha forte e exclusiva." : "Entre para acompanhar sua vida financeira."}</p></div>
-            <div className="login-fields">
+            {mode === "reset" && recoveryStatus === "checking" ? <p role="status" aria-live="polite" className="login-feedback">Validando o link de redefinição…</p> : mode === "reset" && recoveryStatus === "invalid" ? <div className="login-fields"><p role="alert" aria-live="assertive" className="login-feedback login-feedback-error">Este link de redefinição expirou, já foi usado ou não é válido. Solicite um novo link para continuar.</p><button type="button" onClick={() => { window.history.replaceState({}, "", "/"); switchMode("forgot"); }} className="login-submit primary">Solicitar novo link <ArrowRight size={18} aria-hidden="true" /></button></div> : <div className="login-fields">
               {mode === "signup" && <><label className="login-field-label" htmlFor="signup-name">Seu nome</label><input id="signup-name" value={name} onChange={(x) => { setName(x.target.value); setFieldErrors((current) => ({ ...current, name: "" })); }} className="field" placeholder="Como podemos te chamar?" autoComplete="name" required maxLength={120} aria-invalid={Boolean(fieldErrors.name)} aria-describedby={fieldErrors.name ? "signup-name-error" : undefined} />{fieldErrors.name && <small id="signup-name-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.name}</small>}<label className="login-field-label" htmlFor="signup-username">Usuário</label><input id="signup-username" value={username} onChange={(x) => { setUsername(x.target.value); setFieldErrors((current) => ({ ...current, username: "" })); }} className="field" placeholder="Ex.: grazi.borges" autoComplete="username" autoCapitalize="none" autoCorrect="off" required maxLength={32} aria-invalid={Boolean(fieldErrors.username)} aria-describedby={fieldErrors.username ? "signup-username-error" : undefined} />{fieldErrors.username && <small id="signup-username-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.username}</small>}{username.trim() && <p className="muted -mt-2 text-xs">Seu usuário de acesso será: <b className="text-[var(--fg)]">{suggestedUsername || "—"}</b></p>}</>}
               {mode !== "reset" && <><label className="login-field-label" htmlFor="login-identifier">{mode === "login" ? "Usuário ou e-mail" : "E-mail"}</label><input id="login-identifier" value={u} onChange={(x) => { setU(x.target.value); setFieldErrors((current) => ({ ...current, identifier: "" })); }} className="field" type={mode === "login" ? "text" : "email"} placeholder={mode === "login" ? "Seu usuário ou e-mail" : "voce@exemplo.com"} autoComplete={mode === "login" ? "username" : "email"} required maxLength={254} aria-invalid={Boolean(fieldErrors.identifier)} aria-describedby={fieldErrors.identifier ? "login-identifier-error" : undefined} />{fieldErrors.identifier && <small id="login-identifier-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.identifier}</small>}</>}
               {mode !== "forgot" && <><label className="login-field-label" htmlFor="login-password">{mode === "reset" ? "Nova senha" : "Senha"}</label><div className="login-password-wrap"><LockKeyhole className="login-field-icon" size={18} aria-hidden="true" /><input id="login-password" value={p} onChange={(x) => { setP(x.target.value); setFieldErrors((current) => ({ ...current, password: "" })); }} className="field login-password" type={showPassword ? "text" : "password"} placeholder={mode === "reset" ? "Crie uma nova senha" : "Digite sua senha"} autoComplete={mode === "reset" || mode === "signup" ? "new-password" : "current-password"} required minLength={mode === "signup" || mode === "reset" ? 8 : 1} maxLength={200} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? "login-password-error" : undefined} /><button className="login-password-toggle" type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}>{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}</button></div>{fieldErrors.password && <small id="login-password-error" className="-mt-2 text-xs text-[var(--danger)]">{fieldErrors.password}</small>}{(mode === "signup" || mode === "reset") && <small className="muted -mt-1 text-xs">Use pelo menos 8 caracteres; uma frase longa é mais segura.</small>}</>}
-            </div>
+            </div>}
             {mode === "signup" && <div className="consent-options"><label className="consent-option"><input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} /><span>Li e aceito a <a href="/privacidade" target="_blank" rel="noreferrer">Política de Privacidade</a>.</span></label><label className="consent-option"><input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} /><span>Li e aceito os <a href="/termos" target="_blank" rel="noreferrer">Termos de Uso</a>.</span></label></div>}
             <AnimatePresence>{e && <motion.p role="alert" aria-live="assertive" className="login-feedback login-feedback-error" initial={{ opacity: 0, y: -2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: motionTokens.duration.fast }}>{e}</motion.p>}</AnimatePresence>
             {notice && <p role="status" aria-live="polite" className="login-feedback login-feedback-success">{notice}</p>}
-            <button disabled={busy} className="login-submit primary disabled:cursor-wait disabled:opacity-60" type="submit"><span>{busy ? "Aguarde…" : mode === "signup" ? "Solicitar acesso" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? "Salvar nova senha" : "Entrar na conta"}</span>{busy ? <RefreshCw className="animate-spin" size={17} aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>
+            {!(mode === "reset" && recoveryStatus === "invalid") && <button disabled={busy || (mode === "reset" && recoveryStatus !== "ready")} className="login-submit primary disabled:cursor-wait disabled:opacity-60" type="submit"><span>{busy ? "Aguarde…" : mode === "signup" ? "Solicitar acesso" : mode === "forgot" ? "Enviar link seguro" : mode === "reset" ? recoveryStatus === "checking" ? "Validando link…" : "Salvar nova senha" : "Entrar na conta"}</span>{busy || (mode === "reset" && recoveryStatus === "checking") ? <RefreshCw className="animate-spin" size={17} aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>}
             {supabase && <div className="login-actions">{mode !== "login" && <button disabled={busy} type="button" onClick={() => switchMode("login")}>Já tenho acesso</button>}{mode === "login" && <><button disabled={busy} type="button" onClick={() => switchMode("forgot")}>Esqueci minha senha</button><button disabled={busy} type="button" onClick={() => switchMode("signup")}>Solicitar acesso</button></>}</div>}
           </motion.form>}
           <motion.footer className="login-trust" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.28, delay: 0.28 }}><ShieldCheck size={15} aria-hidden="true" /> Dados protegidos com autenticação segura</motion.footer>
@@ -1042,9 +1109,24 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
   const markRecurringBillPaid = (billId: string, period: string, account: string) => {
     const currentData = dataRef.current;
     const bill = currentData.recurringBills?.find((item) => item.id === billId);
-    if (!bill || !account.trim()) return setToast("Escolha uma conta para registrar o pagamento.");
+    if (!bill || !account.trim()) {
+      setToast("Escolha uma conta para registrar o pagamento.");
+      return false;
+    }
     const transactionId = `payable:${bill.id}:${period}`;
-    if (txRef.current.some((transaction) => transaction.id === transactionId)) return setToast("Este pagamento já está registrado no extrato.");
+    if (txRef.current.some((transaction) => transaction.id === transactionId)) {
+      setToast("Este pagamento já está registrado no extrato.");
+      return false;
+    }
+    const eligibleSources = filterFundingOptions(
+      buildFundingSourceOptions(currentData.institutions || [], txRef.current)
+        .filter((source) => source.cardMode !== "pix_credit"),
+      bill.amountCents,
+    );
+    if (!eligibleSources.some((source) => source.accountLabel === account)) {
+      setToast("O saldo ou limite disponível não é suficiente para este pagamento.");
+      return false;
+    }
     const now = new Date();
     const transaction: FinanceTransaction = {
       id: transactionId,
@@ -1063,6 +1145,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
     saveData(nextData);
     saveTx([...txRef.current, transaction]);
     setToast(`Pagamento de “${bill.name}” registrado no extrato.`);
+    return true;
   };
   const restoreFinancialBackup = (nextData: Data, nextTransactions: FinanceTransaction[]) => {
     dataRef.current = nextData;
@@ -1687,13 +1770,13 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
           />
         )}{" "}
         {view === "statement" && (
-          <Statement tx={tx} month={month} save={saveTx} toast={setToast} categoryIcons={data.categoryIcons} businessWorkspace={workspace.type === "business"} />
+          <Statement data={data} tx={tx} month={month} save={saveTx} toast={setToast} categoryIcons={data.categoryIcons} businessWorkspace={workspace.type === "business"} />
         )}{" "}
         {view === "accounts" && (
-          workspace.type === "business" ? <BusinessAccountsHub data={data} save={saveData} toast={setToast} saveTx={saveTx} tx={tx} /> : <Institutions data={data} save={saveData} toast={setToast} />
+          workspace.type === "business" ? <BusinessAccountsHub data={data} save={saveData} toast={setToast} saveTx={saveTx} tx={tx} /> : <Institutions data={data} save={saveData} toast={setToast} transactions={tx} />
         )}{" "}
         {view === "cards" && (
-          <Cards data={data} save={saveData} toast={setToast} />
+          <Cards data={data} save={saveData} toast={setToast} transactions={tx} />
         )}{" "}
         {view === "investments" && (
           <Investments data={data} transactions={tx} save={saveData} saveTransactions={saveTx} toast={setToast} />
@@ -1766,6 +1849,7 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
         {sheet && (
           <Launcher
             data={data}
+            transactions={tx}
             workspace={workspace}
             go={setView}
             createCategory={createCategory}
@@ -2121,8 +2205,8 @@ function BusinessAccountsHub({ data, save, toast, saveTx, tx }: any) {
     <header><p className="muted text-xs">Financeiro</p><h2 className="mt-1 text-2xl font-semibold tracking-tight">Bancos e Caixa</h2><p className="muted mt-2 text-sm">Contas, cartões e aplicações financeiras da empresa.</p></header>
     <div role="tablist" aria-label="Áreas de bancos e caixa" className="panel mt-4 flex flex-wrap gap-2 rounded-2xl p-2">{tabs.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={section === id} onClick={() => setSection(id)} className={`min-h-10 rounded-xl px-3 text-xs font-medium ${section === id ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "muted hover:bg-[var(--panel2)]"}`}>{label}</button>)}</div>
     {section === "accounts" && accountBalances.length > 1 && <section className="panel mt-4 rounded-2xl p-5" aria-label="Saldo por conta e caixa"><h3 className="font-semibold">Saldo por conta e caixa</h3><p className="muted mt-1 text-xs">Comparação dos saldos consolidados registrados.</p><div className="mt-4 space-y-3">{accountBalances.map((item: { name: string; balanceCents: number }) => <div key={item.name}><div className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate">{item.name}</span><b className="shrink-0 tabular-nums">{formatBRL(item.balanceCents)}</b></div><div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[var(--panel2)]" role="img" aria-label={item.name + ": " + formatBRL(item.balanceCents)}><span className={"block h-full rounded-full " + (item.balanceCents < 0 ? "bg-[var(--danger)]" : "bg-[var(--accent)]")} style={{ width: Math.max(2, Math.abs(item.balanceCents) / largestBalance * 100) + "%" }}/></div></div>)}</div></section>}
-    {section === "accounts" && <div role="tabpanel" className="mt-4"><Institutions data={data} save={save} toast={toast} businessMode /></div>}
-    {section === "cards" && <div role="tabpanel" className="mt-4"><Cards data={data} save={save} toast={toast}/></div>}
+    {section === "accounts" && <div role="tabpanel" className="mt-4"><Institutions data={data} save={save} toast={toast} transactions={tx} businessMode /></div>}
+    {section === "cards" && <div role="tabpanel" className="mt-4"><Cards data={data} save={save} toast={toast} transactions={tx}/></div>}
     {section === "investments" && <div role="tabpanel" className="mt-4"><Investments data={data} transactions={tx} save={save} saveTransactions={saveTx} toast={toast}/></div>}
   </section>;
 }
@@ -2279,8 +2363,18 @@ function ProfileSheet({
               if (!supabase) return toast("A autenticação segura ainda não está disponível.");
               const { data } = await supabase.auth.getUser();
               if (!data.user?.email) return toast("A autenticação segura ainda não está disponível.");
-              const { error } = await supabase.auth.resetPasswordForEmail(data.user.email, { redirectTo: `${window.location.origin}/?reset-password=1` });
-              toast(error ? "Não foi possível enviar o link de senha." : "Enviamos um link seguro para seu e-mail.");
+              try {
+                const response = await fetch("/api/auth/password-reset", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ email: data.user.email }),
+                });
+                if (!response.ok) return toast("Não foi possível enviar o link de senha agora.");
+                const { error } = await supabase.auth.resetPasswordForEmail(data.user.email, { redirectTo: `${window.location.origin}/?reset-password=1` });
+                toast(error ? "Não foi possível enviar o link de senha agora." : "Enviamos um link seguro para seu e-mail.");
+              } catch {
+                toast("Não foi possível enviar o link de senha agora.");
+              }
             }}
             className="mt-3 flex w-full items-center justify-between rounded-xl bg-[var(--panel2)] px-4 py-3 text-left text-sm"
           >
@@ -2486,7 +2580,7 @@ function DashboardWidgets({
     id === "flow" ? (
       <CashflowPreview key={id} sum={sum} />
     ) : id === "categories" ? (
-      <CategorySpendPreview key={id} sum={sum} categoryIcons={data.categoryIcons} />
+      <CategorySpendPreview key={id} transactions={allTx} categoryIcons={data.categoryIcons} />
     ) : id === "evolution" ? (
       <FinancialEvolution key={id} allTx={allTx} />
     ) : id === "improvements" ? (
@@ -2670,7 +2764,8 @@ function CashflowPreview({ sum }: { sum: ReturnType<typeof calculateSummary> }) 
     </section>
   );
 }
-function CategorySpendPreview({ sum, categoryIcons }: { sum: ReturnType<typeof calculateSummary>; categoryIcons?: Record<string, FinanceIconId> }) {
+function CategorySpendPreview({ transactions, categoryIcons }: { transactions: FinanceTransaction[]; categoryIcons?: Record<string, FinanceIconId> }) {
+  const sum = calculateSummary(transactions);
   const palette = ["#4edea3", "#7c8cff", "#f7bd5c", "#f48ea7", "#50bce9"];
   const categories =
     sum.topCategories.length > 5
@@ -2697,7 +2792,7 @@ function CategorySpendPreview({ sum, categoryIcons }: { sum: ReturnType<typeof c
     <section className="panel rounded-2xl p-5">
       <div>
         <b>Gestão por categoria</b>
-        <p className="muted mt-1 text-xs">Onde seu dinheiro foi neste mês</p>
+        <p className="muted mt-1 text-xs">Distribuição de gastos em todo o histórico</p>
       </div>
       {sum.topCategories.length ? (
         <div className="mt-5 grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-4">
@@ -2959,20 +3054,9 @@ function FinancialEvolution({ allTx }: { allTx: FinanceTransaction[] }) {
       balance,
     };
   });
-  const maximum = Math.max(
-    1,
-    ...points.flatMap((item) => [item.income, item.expense]),
-  );
-  const balanceMin = Math.min(...points.map((item) => item.balance), 0);
-  const balanceMax = Math.max(...points.map((item) => item.balance), 1);
-  const line = points
-    .map(
-      (item, index) =>
-        `${(index / Math.max(1, points.length - 1)) * 100},${100 - ((item.balance - balanceMin) / (balanceMax - balanceMin || 1)) * 82 - 9}`,
-    )
-    .join(" ");
   const currentBalance = points.at(-1)?.balance || 0;
   const currentFlow = (points.at(-1)?.income || 0) - (points.at(-1)?.expense || 0);
+  const hasPeriodData = points.some((item) => item.income || item.expense || item.balance);
   return (
     <section className="panel rounded-2xl p-5">
       <div className="flex items-start justify-between gap-3">
@@ -2984,7 +3068,7 @@ function FinancialEvolution({ allTx }: { allTx: FinanceTransaction[] }) {
         </div>
         <span className="shrink-0 rounded-full bg-[var(--accent)]/15 px-2.5 py-1 text-xs font-medium text-[var(--accent)]">6 meses</span>
       </div>
-      {allTx.length ? (
+      {hasPeriodData ? (
         <>
           <div className="mt-5 grid grid-cols-2 gap-3">
             <div className="rounded-xl bg-[var(--panel2)] p-3">
@@ -3000,90 +3084,23 @@ function FinancialEvolution({ allTx }: { allTx: FinanceTransaction[] }) {
               </b>
             </div>
           </div>
-          <div className="relative mt-4 h-48 overflow-hidden rounded-2xl bg-[var(--panel2)] px-3 pb-4 pt-3">
-            <svg
-              className="absolute inset-0 h-full w-full overflow-visible"
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              aria-label="Linha de evolução do saldo"
-            >
-              {[25, 50, 75].map((y) => (
-                <line
-                  key={y}
-                  x1="0"
-                  x2="100"
-                  y1={y}
-                  y2={y}
-                  stroke="var(--border)"
-                  strokeWidth="0.6"
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))}
-              <motion.polyline
-                fill="none"
-                stroke="var(--accent)"
-                strokeWidth="2.5"
-                vectorEffect="non-scaling-stroke"
-                points={line}
-                initial={{ pathLength: 0, opacity: 0.4 }}
-                animate={{ pathLength: 1, opacity: 1 }}
-                transition={{ duration: 0.7, ease: motionTokens.ease.enter }}
-              />
-            </svg>
-            <div className="absolute inset-x-5 bottom-4 top-4 flex items-end justify-around gap-2">
-              {points.map((item) => (
-                <div
-                  key={item.key}
-                  className="flex h-full flex-1 items-end gap-1"
-                >
-                  <motion.span
-                    title={`Receitas: ${formatBRL(item.income)}`}
-                    className="min-h-1 flex-1 rounded-t bg-[var(--accent)]/80"
-                    initial={{ scaleY: 0 }}
-                    animate={{ scaleY: 1 }}
-                    transition={{ duration: 0.55, delay: 0.05, ease: motionTokens.ease.enter }}
-                    style={{
-                      height: `${Math.max(3, (item.income / maximum) * 68)}%`,
-                      transformOrigin: "bottom",
-                    }}
-                  />
-                  <motion.span
-                    title={`Consumo: ${formatBRL(item.expense)}`}
-                    className="min-h-1 flex-1 rounded-t bg-[var(--danger)]/70"
-                    initial={{ scaleY: 0 }}
-                    animate={{ scaleY: 1 }}
-                    transition={{ duration: 0.55, delay: 0.12, ease: motionTokens.ease.enter }}
-                    style={{
-                      height: `${Math.max(3, (item.expense / maximum) * 68)}%`,
-                      transformOrigin: "bottom",
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="muted mt-3 flex justify-around px-2 text-[10px]">
-            {points.map((item) => (
-              <span key={item.key}>{item.label}</span>
-            ))}
-          </div>
-          <div className="muted mt-4 flex gap-4 text-xs">
-            <span>
-              <i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />
-              Receitas
-            </span>
-            <span>
-              <i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--danger)]" />
-              Consumo
-            </span>
-            <span>
-              <i className="mr-1 inline-block h-2 w-2 rounded-full bg-[var(--accent)]" />
-              Saldo
-            </span>
+          <div className="mt-4 h-52 rounded-2xl bg-[var(--panel2)] px-2 py-3 sm:px-3" role="img" aria-label="Gráfico de linhas da evolução de receitas, despesas e saldo acumulado">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={points} margin={{ top: 8, right: 10, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" tick={{ fill: "var(--muted)", fontSize: 10 }} tickLine={false} axisLine={false} />
+                <YAxis width={46} tick={{ fill: "var(--muted)", fontSize: 9 }} tickLine={false} axisLine={false} tickFormatter={(value: number) => new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(value / 100)} />
+                <Tooltip formatter={(value) => formatBRL(Number(value))} labelStyle={{ color: "var(--fg)" }} contentStyle={{ background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--fg)" }} />
+                <Legend wrapperStyle={{ fontSize: 11, color: "var(--muted)" }} />
+                <Line name="Receitas" type="monotone" dataKey="income" stroke="#4edea3" strokeWidth={2.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                <Line name="Consumo" type="monotone" dataKey="expense" stroke="#f48e9a" strokeWidth={2.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+                <Line name="Saldo acumulado" type="monotone" dataKey="balance" stroke="#7c8cff" strokeWidth={2.5} dot={{ r: 2 }} activeDot={{ r: 4 }} />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
         </>
       ) : (
-        <Empty text="Registre movimentações para visualizar o comparativo dos últimos meses." />
+        <Empty text="Registre movimentações nos últimos seis meses para visualizar a evolução financeira." />
       )}
     </section>
   );
@@ -3478,6 +3495,10 @@ function financialAccountOptions(data: Data) {
     })),
   );
 }
+function fundingSourceDescription(source: { label: string; kind: "account" | "card"; availableCents: number }) {
+  const balanceName = source.kind === "card" ? "Limite disponível" : "Saldo disponível";
+  return `${source.label} · ${balanceName}: ${formatBRL(source.availableCents)}`;
+}
 function dateAtLocalNoon(date: string) {
   return new Date(`${date}T12:00:00`).toISOString();
 }
@@ -3498,7 +3519,12 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
   const [aporteAccount, setAporteAccount] = useState("");
   const [aporteDate, setAporteDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const items = data.investments || [];
-  const accounts = financialAccountOptions(data);
+  const aporteCents = parseMoneyInputToCents(aporte);
+  const accounts = filterFundingOptions(
+    buildFundingSourceOptions(data.institutions || [], transactions),
+    aporteCents ?? 0,
+    ["account"],
+  );
   const persist = () => {
     const cents = parseMoneyInputToCents(contributed);
     const currentCents = current.trim() ? parseMoneyInputToCents(current) : undefined;
@@ -3535,6 +3561,15 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
     const investment = items.find((item: any) => item.id === aporteFor);
     if (!investment || cents === null || cents <= 0 || !aporteAccount || !aporteDate) {
       toast("Informe um valor positivo, a conta de origem e a data do aporte.");
+      return;
+    }
+    const eligibleAccounts = filterFundingOptions(
+      buildFundingSourceOptions(data.institutions || [], transactions),
+      cents,
+      ["account"],
+    );
+    if (!eligibleAccounts.some((account) => account.accountLabel === aporteAccount)) {
+      toast("O saldo disponível na conta não é suficiente para este aporte.");
       return;
     }
     const transaction: FinanceTransaction = {
@@ -3651,15 +3686,15 @@ function Investments({ data, transactions = [], save, saveTransactions, toast }:
               Conta de origem
               <select className="field mt-1" value={aporteAccount} onChange={(event) => setAporteAccount(event.target.value)}>
                 <option value="">Selecione a conta</option>
-                {accounts.map((account: { value: string; label: string }) => <option key={account.value} value={account.value}>{account.label}</option>)}
+                {accounts.map((account) => <option key={account.id} value={account.accountLabel}>{fundingSourceDescription(account)}</option>)}
               </select>
             </label>
             <label className="block text-sm">
               Data do aporte
               <input className="field mt-1" type="date" max={format(new Date(), "yyyy-MM-dd")} value={aporteDate} onChange={(event) => setAporteDate(event.target.value)} />
             </label>
-            {!accounts.length && <p className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Cadastre uma conta antes de registrar um aporte.</p>}
-            <button disabled={!accounts.length} onClick={addAporte} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">
+            {!accounts.length && <p className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Nenhuma conta tem saldo suficiente para o valor informado. Escolha um valor menor ou transfira dinheiro para uma conta.</p>}
+            <button disabled={!accounts.some((account) => account.accountLabel === aporteAccount)} onClick={addAporte} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">
               Confirmar aporte
             </button>
           </section>
@@ -4338,8 +4373,15 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
     };
   });
   const hasPayableHistory = payableHistory.some((item) => item.paidCents || item.pendingCents);
-  const paymentAccounts = financialAccountOptions(data);
-  const openPayment = (bill: any) => { setPaymentAccount(bill.account || paymentAccounts[0]?.value || ""); setPaying(bill); };
+  const paymentFundingSources = buildFundingSourceOptions(data.institutions || [], tx)
+    .filter((source) => source.cardMode !== "pix_credit");
+  const paymentOptionsForBill = (bill: any) => filterFundingOptions(paymentFundingSources, bill.amountCents);
+  const openPayment = (bill: any) => {
+    const options = paymentOptionsForBill(bill);
+    const preferred = options.find((source) => source.accountLabel === bill.account);
+    setPaymentAccount(preferred?.accountLabel || options[0]?.accountLabel || "");
+    setPaying(bill);
+  };
   const openNew = (monthKey = currentMonth, day?: number) => {
     setName(""); setAmount(""); setCategory(""); setFrequency("monthly"); setStartMonth(monthKey);
     setDueDay(day ? String(day) : ""); setAdding(true); setEditing(null);
@@ -4446,7 +4488,7 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
                   </small>
                   {businessMode && <small className={`mt-1 inline-block text-[10px] ${isRecurringBillPaidInMonth(bill, currentMonth) ? "text-[var(--accent)]" : isCommitmentLateInMonth(bill, currentMonth, today) ? "text-[var(--danger)]" : "text-amber-300"}`}>{isRecurringBillPaidInMonth(bill, currentMonth) ? "Pago" : isCommitmentLateInMonth(bill, currentMonth, today) ? "Vencido" : "Pendente"}</small>}
                 </span>
-                <span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b>{businessMode && !isRecurringBillPaidInMonth(bill, currentMonth) && <button type="button" onClick={() => openPayment(bill)} disabled={!paymentAccounts.length} className="mt-1 min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)] disabled:opacity-50">Registrar pagamento</button>}<ItemActions className="mt-1 justify-end" label={`a conta recorrente ${bill.name}`} onEdit={() => startEdit(bill)} onDelete={() => setDeleting(bill)} /></span>
+                <span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b>{businessMode && !isRecurringBillPaidInMonth(bill, currentMonth) && <><button type="button" onClick={() => openPayment(bill)} disabled={!paymentOptionsForBill(bill).length} className="mt-1 min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)] disabled:opacity-50">Registrar pagamento</button>{!paymentOptionsForBill(bill).length && <small className="block max-w-36 text-[10px] text-[var(--muted)]">Sem saldo ou limite suficiente</small>}</>}<ItemActions className="mt-1 justify-end" label={`a conta recorrente ${bill.name}`} onEdit={() => startEdit(bill)} onDelete={() => setDeleting(bill)} /></span>
               </div>
             ))}
           </div>
@@ -4516,7 +4558,7 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
         </Sheet>
       )}
       {deleting && <DeleteConfirm title="Excluir conta recorrente?" description={`“${deleting.name}” deixará de ser considerado nos próximos vencimentos e compromissos.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, recurringBills: bills.filter((bill: any) => bill.id !== deleting.id) }); toast("Conta recorrente excluída."); setDeleting(null); }} />}
-      {paying && <Sheet close={() => setPaying(null)}><section className="space-y-3"><b className="text-lg">Registrar pagamento</b><p className="muted text-sm">Isso cria uma despesa de {formatBRL(paying.amountCents)} no extrato e marca este compromisso como pago em {format(calendarMonth, "MMMM yyyy", { locale: ptBR })}.</p><label className="block space-y-1.5 text-sm"><span>Conta de saída</span><select aria-label="Conta de saída do pagamento" className="field" value={paymentAccount} onChange={(event) => setPaymentAccount(event.target.value)}>{paymentAccounts.map((item: { value: string; label: string }) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><button type="button" onClick={() => { onPayBill(paying.id, currentMonth, paymentAccount); setPaying(null); }} disabled={!paymentAccount} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">Confirmar pagamento</button></section></Sheet>}
+      {paying && <Sheet close={() => setPaying(null)}><section className="space-y-3"><b className="text-lg">Registrar pagamento</b><p className="muted text-sm">Isso cria uma despesa de {formatBRL(paying.amountCents)} no extrato e marca este compromisso como pago em {format(calendarMonth, "MMMM yyyy", { locale: ptBR })}.</p><label className="block space-y-1.5 text-sm"><span>Conta de saída</span><select aria-label="Conta de saída do pagamento" className="field" value={paymentAccount} onChange={(event) => setPaymentAccount(event.target.value)}><option value="">Selecione uma conta</option>{paymentOptionsForBill(paying).map((item) => <option key={item.id} value={item.accountLabel}>{fundingSourceDescription(item)}</option>)}</select></label>{!paymentOptionsForBill(paying).length && <p role="alert" className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Nenhuma conta tem saldo ou limite disponível suficiente para este pagamento.</p>}<button type="button" onClick={() => { if (onPayBill(paying.id, currentMonth, paymentAccount)) setPaying(null); }} disabled={!paymentAccount || !paymentOptionsForBill(paying).some((source) => source.accountLabel === paymentAccount)} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">Confirmar pagamento</button></section></Sheet>}
     </section>
   );
 }
@@ -4799,21 +4841,13 @@ function CardInvoicePreview({ data, tx }: any) {
                 total + item.amountCents,
               0,
             );
-          const futureInstallments = tx
-            .filter((item: FinanceTransaction) =>
-              item.type === "expense" &&
-              item.account === label &&
-              Boolean(item.installmentGroupId) &&
-              item.date.slice(0, 7) > currentMonth,
-            )
-            .reduce((total: number, item: FinanceTransaction) => total + item.amountCents, 0);
           const nextInvoice = tx
             .filter((item: FinanceTransaction) =>
               item.type === "expense" && item.account === label && item.date.startsWith(nextMonth),
             )
             .reduce((total: number, item: FinanceTransaction) => total + item.amountCents, 0);
-          const committedLimit = current + futureInstallments;
-          const available = Math.max(0, card.limit - committedLimit);
+          const available = getCardAvailableCents(card.limit, label, tx);
+          const committedLimit = card.limit - available;
           return (
             <div className="py-3" key={card.id}>
               <div className="flex justify-between text-sm">
@@ -4863,13 +4897,21 @@ function Reports({ tx, data, month, businessMode = false }: any) {
     return totals;
   }, {});
   const topRevenueCategories = (Object.entries(revenueByCategory) as [string, number][]).sort((left, right) => right[1] - left[1]).slice(0, 6);
+  const reportAccounts = (data.institutions || []).flatMap((institution: Institution) =>
+    institution.accounts.map((account) => ({
+      name: `${institution.name} · ${account.name}`,
+      balanceCents: accountBalance(account.balance, `${institution.name} • ${account.name}`, tx),
+    })),
+  );
+  const reportTransactions = [...current].sort((left: FinanceTransaction, right: FinanceTransaction) => right.date.localeCompare(left.date));
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
         title="Relatórios"
         help="Comparativos objetivos, calculados a partir dos lançamentos registrados — sem IA e sem estimativas escondidas."
       />
-      <div className="mt-5 grid gap-4 sm:grid-cols-2">
+      <div className="mt-4 flex justify-end"><button type="button" onClick={() => printFinancePdf(`Valurise-relatorio-${format(month, "yyyy-MM")}`)} className="min-h-10 rounded-xl bg-[var(--panel2)] px-4 text-sm font-medium text-[var(--accent)]">Exportar PDF</button></div>
+      <div className="mt-3 grid gap-4 sm:grid-cols-2">
         <section className="panel rounded-2xl p-5">
           <p className="muted text-xs">RESULTADO DO MÊS</p>
           <b className="mt-2 block text-3xl">
@@ -4932,6 +4974,19 @@ function Reports({ tx, data, month, businessMode = false }: any) {
           <b>{formatBRL(summary.expenseCents)}</b>
         </div>
       </section>
+      <FinancePrintDocument
+        title="Relatório financeiro"
+        subtitle={`${businessMode ? "Espaço empresarial" : "Finanças pessoais"} · ${format(month, "MMMM yyyy", { locale: ptBR })}`}
+        metrics={[
+          { label: "Receitas", value: formatBRL(summary.incomeCents) },
+          { label: "Despesas", value: formatBRL(summary.expenseCents) },
+          { label: "Resultado do período", value: formatBRL(summary.incomeCents - summary.expenseCents) },
+          { label: "Orçamento planejado", value: formatBRL(budgetTotal) },
+        ]}
+        accounts={reportAccounts}
+        categories={summary.topCategories.map((item) => ({ name: item.category, amountCents: item.amountCents }))}
+        transactions={reportTransactions}
+      />
     </section>
   );
 }
@@ -5102,12 +5157,13 @@ function PersonalFinanceChat({ workspace, startMovement, approveAction, close, g
     <p className="muted mt-2 shrink-0 text-center text-[10px] leading-4">{connected ? `${actionsEnabled ? "Propostas sempre exigem sua confirmação" : "A Val consulta seus dados somente com sua permissão"}` : "Se a Val estiver indisponível, use os atalhos para registrar movimentações."}</p>
   </section>;
 }
-function Launcher({ data, workspace, go, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
+function Launcher({ data, transactions = [], workspace, go, close, saved, createCategory, createInvestment, approvePersonalAiAction }: any) {
   const [k, setK] = useState<Kind | null>(null),
     [step, setStep] = useState(0),
     [amount, setAmount] = useState(""),
     [cat, setCat] = useState(""),
     [source, setSource] = useState(""),
+    [sourceOptionId, setSourceOptionId] = useState(""),
     [dest, setDest] = useState(""),
     [description, setDescription] = useState(""),
     [attachmentUrl, setAttachmentUrl] = useState(""),
@@ -5120,19 +5176,10 @@ function Launcher({ data, workspace, go, close, saved, createCategory, createInv
     [investmentClass, setInvestmentClass] = useState("Renda fixa"),
     [installmentCount, setInstallmentCount] = useState("1"),
     [showInvestment, setShowInvestment] = useState(false);
-  const options = data.institutions.flatMap((i: Institution) => [
-    ...i.accounts.map((a) => ({
-      id: `account:${i.id}:${a.id}`,
-      label: `${i.name} • ${a.name}`,
-      kind: "account" as const,
-    })),
-    ...i.cards.map((c) => ({
-      id: `card:${i.id}:${c.id}`,
-      label: `${i.name} • ${cardAccountLabel(c.name)}`,
-      kind: "card" as const,
-    })),
-  ]);
-  const selectedSource = options.find((option: { label: string }) => option.label === source);
+  const parsedAmountCents = parseMoneyInputToCents(amount);
+  const amountCents = parsedAmountCents ?? 0;
+  const options = buildFundingSourceOptions(data.institutions, transactions);
+  const selectedSource = options.find((option) => option.id === sourceOptionId);
   const sourceIsCard = selectedSource?.kind === "card";
   const categoryStep =
     k === "expense" || k === "income" || k === "investment" ? 1 : -1;
@@ -5152,31 +5199,40 @@ function Launcher({ data, workspace, go, close, saved, createCategory, createInv
                 ? "De qual conta saiu?"
               : "Como você pagou?"
       : "Para qual conta foi?";
-  const choose = (value: string) => {
+  const choose = (option: (typeof options)[number]) => {
     if (step === sourceStep) {
-      setSource(value);
-      if (options.find((option: { label: string }) => option.label === value)?.kind !== "card") setInstallmentCount("1");
-    } else setDest(value);
+      setSource(option.accountLabel);
+      setSourceOptionId(option.id);
+      if (option.kind !== "card") setInstallmentCount("1");
+    } else setDest(option.accountLabel);
   };
-  const parsedAmountCents = parseMoneyInputToCents(amount);
-  const amountCents = parsedAmountCents ?? 0;
   const selectedInstallmentCount = Number(installmentCount);
   const valid = () => {
     if (step === 0) return Number.isSafeInteger(amountCents) && amountCents > 0;
     if (step === categoryStep) return Boolean(cat);
-    if (step === sourceStep) return Boolean(source);
+    if (step === sourceStep) {
+      if (k === "income" || k === "salary") return Boolean(source);
+      return Boolean(selectedSource && selectedSource.availableCents >= amountCents);
+    }
     if (step === destinationStep) return Boolean(dest) && dest !== source;
     if (step === detailsStep && k === "expense" && sourceIsCard && selectedInstallmentCount > 1) {
       return selectedInstallmentCount <= 48 && selectedInstallmentCount <= amountCents;
+    }
+    if (step > sourceStep && ["expense", "investment", "transfer"].includes(k || "")) {
+      return Boolean(selectedSource && selectedSource.availableCents >= amountCents);
     }
     return true;
   };
   const final = () => {
     if (!k) return;
+    if (["expense", "investment", "transfer"].includes(k) && (!selectedSource || selectedSource.availableCents < amountCents)) {
+      setStep(sourceStep);
+      return;
+    }
     const transaction: FinanceTransaction = {
         id: crypto.randomUUID(),
         type: k === "salary" ? "income" : k,
-        subtype: k,
+        subtype: k === "expense" && selectedSource?.cardMode === "pix_credit" ? "pix_credit" : k,
         amountCents,
         category: cat || labels(k),
         account: source,
@@ -5347,28 +5403,44 @@ function Launcher({ data, workspace, go, close, saved, createCategory, createInv
         </button>
       </div>
     );
-  else if (step === sourceStep || step === destinationStep)
+  else if (step === sourceStep || step === destinationStep) {
+    const sourceCandidates = step === destinationStep
+      ? options.filter((option) => option.kind === "account")
+      : k === "income" || k === "salary"
+        ? options.filter((option) => option.kind === "account")
+        : filterFundingOptions(options, amountCents, k === "expense" ? ["account", "card"] : ["account"]);
     body = (
       <div className="mt-5 space-y-2">
-        {options.filter((option: { kind: string }) =>
-          k === "expense" && step === sourceStep ? true : option.kind === "account",
-        ).length ? (
-          options.filter((option: { kind: string }) =>
-            k === "expense" && step === sourceStep ? true : option.kind === "account",
-          ).map((x: { id: string; label: string }) => (
-            <button
-              onClick={() => choose(x.label)}
-              className={`block w-full rounded-xl bg-[var(--panel2)] p-3 text-left text-sm transition hover:ring-1 hover:ring-[var(--accent)] ${source === x.label || dest === x.label ? "ring-1 ring-[var(--accent)]" : ""}`}
-              key={x.id}
+        {sourceCandidates.length ? (
+          sourceCandidates.map((option, index) => {
+            const selected = step === sourceStep ? sourceOptionId === option.id : dest === option.accountLabel;
+            const amountLabel = option.kind === "card" ? "Limite disponível" : "Saldo disponível";
+            const detailsId = `funding-option-details-${index}`;
+            return <button
+              onClick={() => choose(option)}
+              aria-pressed={selected}
+              aria-label={option.label}
+              aria-describedby={detailsId}
+              className={`block w-full rounded-xl bg-[var(--panel2)] p-3 text-left text-sm transition hover:ring-1 hover:ring-[var(--accent)] ${selected ? "ring-1 ring-[var(--accent)]" : ""}`}
+              key={option.id}
             >
-              {x.label}
-            </button>
-          ))
+              <span className="block truncate">{option.label}</span>
+              <span className="muted mt-1 block" id={detailsId}>
+                {option.kind === "card" && option.cardMode === "pix_credit" && <small className="block">Compra via Pix no crédito · entra na fatura</small>}
+                <small className="block">{amountLabel}: {formatBRL(option.availableCents)}</small>
+              </span>
+            </button>;
+          })
         ) : (
-          <Empty text={k === "expense" && step === sourceStep ? "Cadastre uma conta ou cartão para continuar." : "Cadastre uma conta para continuar."} />
+          <Empty text={k === "expense" && step === sourceStep
+            ? "Nenhuma conta tem saldo ou cartão tem limite suficiente para esse valor. Ajuste o valor ou atualize os saldos."
+            : step === destinationStep
+              ? "Cadastre uma conta de destino para continuar."
+              : "Nenhuma conta tem saldo suficiente para esse valor. Ajuste o valor ou atualize os saldos."} />
         )}
       </div>
     );
+  }
   else if (step === detailsStep)
     body = (
       <div className="mt-5 space-y-3">
@@ -5454,6 +5526,7 @@ function Launcher({ data, workspace, go, close, saved, createCategory, createInv
           {source}
           {dest && ` → ${dest}`}
         </p>
+        {k === "expense" && selectedSource?.cardMode === "pix_credit" && <p className="mt-2 text-xs text-[var(--accent)]">Pix no crédito · o valor será lançado na fatura do cartão.</p>}
         {k === "expense" && sourceIsCard && selectedInstallmentCount > 1 && (() => {
           const parts = splitInstallmentCents(amountCents, selectedInstallmentCount);
           return <p className="muted mt-2 text-sm">{selectedInstallmentCount} parcelas de {formatBRL(Math.min(...parts))} a {formatBRL(Math.max(...parts))}</p>;
@@ -5668,7 +5741,7 @@ function Onboard({ user, finish }: any) {
     </main>
   );
 }
-function Institutions({ data, save, toast, businessMode = false }: any) {
+function Institutions({ data, save, toast, transactions = [], businessMode = false }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{ institution: Institution; account?: any } | null>(null);
   const [deleting, setDeleting] = useState<{ institution: Institution; account?: any } | null>(null);
@@ -5728,7 +5801,7 @@ function Institutions({ data, save, toast, businessMode = false }: any) {
             <div className="panel rounded-2xl p-4" data-testid="institution-card" key={i.id}>
               <div className="flex items-start justify-between gap-3"><span className="flex min-w-0 items-center gap-3"><FinanceIconBadge iconId={resolveInstitutionIconId(i)} size={40}/><b className="min-w-0 truncate">{i.name}</b></span><ItemActions className="mt-0 shrink-0" label={`a instituição ${i.name}`} onEdit={() => { setEditing({ institution: i }); setN(i.name); setEditingIconId(i.iconId || ""); }} onDelete={() => setDeleting({ institution: i })} /></div>
               {i.accounts.length === 0 && <p className="muted mt-2 text-sm">Sem conta</p>}
-              {i.accounts.length > 0 && <div className="mt-3 divide-y divide-[var(--border)]">{i.accounts.map((account: any) => <div data-testid="institution-account-row" key={account.id} className="flex items-center justify-between gap-3 py-2"><span className="flex min-w-0 items-center"><span className="min-w-0"><b className="block truncate text-sm">{account.name}</b><small className="muted">Saldo inicial: {formatBRL(account.balance || 0)}</small></span></span><ItemActions className="mt-0 shrink-0" label={`a conta ${account.name}`} onEdit={() => { setEditing({ institution: i, account }); setN(account.name); setEditingIconId(""); }} onDelete={() => setDeleting({ institution: i, account })} /></div>)}</div>}
+              {i.accounts.length > 0 && <div className="mt-3 divide-y divide-[var(--border)]">{i.accounts.map((account: any) => { const label = `${i.name} • ${account.name}`; const balance = accountBalance(account.balance || 0, label, transactions); return <div data-testid="institution-account-row" key={account.id} className="flex items-center justify-between gap-3 py-2"><span className="flex min-w-0 items-center"><span className="min-w-0"><b className="block truncate text-sm">{account.name}</b><small className="muted mt-0.5 block">Saldo atual: <strong className="text-[var(--fg)]">{formatBRL(balance)}</strong></small><small className="muted block">Saldo inicial: {formatBRL(account.balance || 0)}</small></span></span><ItemActions className="mt-0 shrink-0" label={`a conta ${account.name}`} onEdit={() => { setEditing({ institution: i, account }); setN(account.name); setEditingIconId(""); }} onDelete={() => setDeleting({ institution: i, account })} /></div>; })}</div>}
             </div>
           ))}
         </div>
@@ -5833,7 +5906,7 @@ function Institutions({ data, save, toast, businessMode = false }: any) {
     </section>
   );
 }
-function Cards({ data, save, toast }: any) {
+function Cards({ data, save, toast, transactions = [] }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<{ institution: Institution; card: any } | null>(null);
   const [deleting, setDeleting] = useState<{ institution: Institution; card: any } | null>(null);
@@ -5889,7 +5962,7 @@ function Cards({ data, save, toast }: any) {
         <div className="mt-5 space-y-3">
           {cards.map(({ institution, card }) => (
             <article className="panel rounded-2xl p-4" key={card.id}>
-              <div className="flex items-center gap-3"><FinanceIconBadge iconId={card.iconId || resolveInstitutionIconId(institution)} size={42}/><span className="min-w-0"><b className="block truncate">{institution.name}</b><p className="muted mt-1 text-sm">{cardDisplayLabel(card.name)} · limite {formatBRL(card.limit)}</p></span></div>
+              <div className="flex items-center gap-3"><FinanceIconBadge iconId={card.iconId || resolveInstitutionIconId(institution)} size={42}/><span className="min-w-0"><b className="block truncate">{institution.name}</b><p className="muted mt-1 text-sm">{cardDisplayLabel(card.name)} · limite {formatBRL(card.limit)}</p><small className="muted mt-1 block">Disponível: {formatBRL(getCardAvailableCents(card.limit, `${institution.name} • ${cardAccountLabel(card.name)}`, transactions))}</small></span></div>
               {(card.closingDay || card.dueDay) && (
                 <p className="muted mt-1 text-xs">
                   Fecha dia {card.closingDay || "—"} · vence dia{" "}
@@ -6228,12 +6301,15 @@ function Statement({ tx, month, save, toast, categoryIcons, businessWorkspace = 
     },
     {},
   );
+  const printableTransactions = [...visible].sort((left, right) => right.date.localeCompare(left.date));
+  const printableSummary = calculateSummary(printableTransactions);
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
         title={businessWorkspace ? "Movimentações" : "Extrato"}
         help={businessWorkspace ? "Consulte as entradas, despesas, aplicações e transferências registradas no espaço empresarial." : "Aqui ficam todas as movimentações registradas. Use-o para conferir o que entrou, saiu, foi investido ou transferido."}
       />
+      <div className="mt-4 flex justify-end"><button type="button" onClick={() => printFinancePdf(`Valurise-extrato-${scope === "all" ? "historico" : format(month, "yyyy-MM")}`)} className="min-h-10 rounded-xl bg-[var(--panel2)] px-4 text-sm font-medium text-[var(--accent)]">Exportar PDF</button></div>
       <input
         value={query}
         onChange={(event) => setQuery(event.target.value)}
@@ -6355,6 +6431,17 @@ function Statement({ tx, month, save, toast, categoryIcons, businessWorkspace = 
           }
         />
       )}
+      <FinancePrintDocument
+        title={businessWorkspace ? "Movimentações financeiras" : "Extrato financeiro"}
+        subtitle={`${businessWorkspace ? "Espaço empresarial" : "Finanças pessoais"} · ${scope === "all" ? "Todo o histórico" : format(month, "MMMM yyyy", { locale: ptBR })}${query.trim() ? ` · Busca: ${query.trim()}` : ""}`}
+        metrics={[
+          { label: "Receitas", value: formatBRL(printableSummary.incomeCents) },
+          { label: "Despesas", value: formatBRL(printableSummary.expenseCents) },
+          { label: "Resultado", value: formatBRL(printableSummary.incomeCents - printableSummary.expenseCents) },
+          { label: "Movimentações", value: String(printableTransactions.length) },
+        ]}
+        transactions={printableTransactions}
+      />
       {selected && (
         <Sheet close={() => setSelected(null)}>
           <section className="space-y-4">
