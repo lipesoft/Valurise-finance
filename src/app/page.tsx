@@ -1113,6 +1113,10 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
       setToast("Escolha uma conta para registrar o pagamento.");
       return false;
     }
+    if (isRecurringBillPaidInMonth(bill, period)) {
+      setToast("Este compromisso já foi marcado como pago neste mês.");
+      return false;
+    }
     const transactionId = `payable:${bill.id}:${period}`;
     if (txRef.current.some((transaction) => transaction.id === transactionId)) {
       setToast("Este pagamento já está registrado no extrato.");
@@ -1145,6 +1149,23 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
     saveData(nextData);
     saveTx([...txRef.current, transaction]);
     setToast(`Pagamento de “${bill.name}” registrado no extrato.`);
+    return true;
+  };
+  const undoRecurringBillPayment = (billId: string, period: string) => {
+    const currentData = dataRef.current;
+    const bill = currentData.recurringBills?.find((item) => item.id === billId);
+    if (!bill || !isRecurringBillPaidInMonth(bill, period)) return false;
+    const transactionId = `payable:${bill.id}:${period}`;
+    const hadTransaction = txRef.current.some((transaction) => transaction.id === transactionId);
+    const nextData = {
+      ...currentData,
+      recurringBills: currentData.recurringBills?.map((item) => item.id === billId ? setRecurringBillPaidInMonth(item, period, false) : item) || [],
+    };
+    saveData(nextData);
+    if (hadTransaction) saveTx(txRef.current.filter((transaction) => transaction.id !== transactionId));
+    setToast(hadTransaction
+      ? "Pagamento desfeito; a despesa foi removida do extrato."
+      : "Compromisso voltou para pendente; não havia despesa no extrato.");
     return true;
   };
   const restoreFinancialBackup = (nextData: Data, nextTransactions: FinanceTransaction[]) => {
@@ -1793,11 +1814,11 @@ function App({ user, workspace, workspaces, onSwitchWorkspace, onDeleteBusinessW
         {view === "receivables" && (
           <Receivables data={data} tx={tx} month={month} setMonth={setMonth} save={saveData} toast={setToast} onReceive={markReceivableReceived} businessMode={workspace.type === "business"} />
         )}
-        {view === "payables" && workspace.type === "business" && <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} onPayBill={markRecurringBillPaid} businessMode />}
+        {view === "payables" && workspace.type === "business" && <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} onPayBill={markRecurringBillPaid} onUndoBillPayment={undoRecurringBillPayment} businessMode />}
         {view === "cashflow" && workspace.type === "business" && <BusinessFinanceDetail workspaceId={workspace.id} month={month} data={data} allTransactions={tx} cashBalanceCents={businessCashBalance(data, tx)} mode="cashflow" />}
         {view === "result" && workspace.type === "business" && <BusinessFinanceDetail workspaceId={workspace.id} month={month} data={data} allTransactions={tx} cashBalanceCents={businessCashBalance(data, tx)} mode="result" />}
         {view === "planning" && (
-          workspace.type === "business" ? <div className="mx-auto max-w-5xl px-4 pb-10 lg:px-10"><BusinessFinanceSettings workspaceId={workspace.id} toast={setToast} section="planning"/><div className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Orçamento e metas</h2><p className="muted mt-1 text-xs">Planejamento financeiro do espaço empresarial.</p></div><button type="button" onClick={() => setView("budgets")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs text-[var(--accent)]">Orçamentos</button></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setView("goals")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Metas de caixa</button><button type="button" onClick={() => setView("categories")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Categorias auxiliares</button></div></div></div> : <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} />
+          workspace.type === "business" ? <div className="mx-auto max-w-5xl px-4 pb-10 lg:px-10"><BusinessFinanceSettings workspaceId={workspace.id} toast={setToast} section="planning"/><div className="panel mt-5 rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-semibold">Orçamento e metas</h2><p className="muted mt-1 text-xs">Planejamento financeiro do espaço empresarial.</p></div><button type="button" onClick={() => setView("budgets")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs text-[var(--accent)]">Orçamentos</button></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => setView("goals")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Metas de caixa</button><button type="button" onClick={() => setView("categories")} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Categorias auxiliares</button></div></div></div> : <Planning data={data} tx={tx} month={month} save={saveData} toast={setToast} onReceive={markReceivableReceived} onPayBill={markRecurringBillPaid} onUndoBillPayment={undoRecurringBillPayment} />
         )}
         {view === "reports" && <Reports tx={tx} data={data} month={month} businessMode={workspace.type === "business"} />}
         {view === "settings" && (
@@ -4324,12 +4345,13 @@ function Receivables({ data, tx, month, setMonth, save, toast, onReceive, busine
   </section>;
 }
 
-function Planning({ data, tx, month, save, toast, onReceive, onPayBill, businessMode = false }: any) {
+function Planning({ data, tx, month, save, toast, onReceive, onPayBill, onUndoBillPayment, businessMode = false }: any) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [deleting, setDeleting] = useState<any | null>(null);
   const [paying, setPaying] = useState<any | null>(null);
   const [paymentAccount, setPaymentAccount] = useState("");
+  const [plannedPaymentAccount, setPlannedPaymentAccount] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(month);
   const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
@@ -4375,15 +4397,16 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
   const hasPayableHistory = payableHistory.some((item) => item.paidCents || item.pendingCents);
   const paymentFundingSources = buildFundingSourceOptions(data.institutions || [], tx)
     .filter((source) => source.cardMode !== "pix_credit");
+  const planningFundingSources = paymentFundingSources;
   const paymentOptionsForBill = (bill: any) => filterFundingOptions(paymentFundingSources, bill.amountCents);
   const openPayment = (bill: any) => {
     const options = paymentOptionsForBill(bill);
     const preferred = options.find((source) => source.accountLabel === bill.account);
-    setPaymentAccount(preferred?.accountLabel || options[0]?.accountLabel || "");
+    setPaymentAccount(preferred?.accountLabel || "");
     setPaying(bill);
   };
   const openNew = (monthKey = currentMonth, day?: number) => {
-    setName(""); setAmount(""); setCategory(""); setFrequency("monthly"); setStartMonth(monthKey);
+    setName(""); setAmount(""); setCategory(""); setPlannedPaymentAccount(""); setFrequency("monthly"); setStartMonth(monthKey);
     setDueDay(day ? String(day) : ""); setAdding(true); setEditing(null);
   };
   const persist = () => {
@@ -4393,12 +4416,13 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
     const schedule = { frequency, ...(startMonth ? { startMonth } : {}) };
     save({
       ...data,
-      recurringBills: editing ? bills.map((bill: any) => bill.id === editing.id ? { ...bill, name: name.trim(), amountCents, dueDay: due, category: category.trim() || undefined, ...schedule } : bill) : [...bills, {
+      recurringBills: editing ? bills.map((bill: any) => bill.id === editing.id ? { ...bill, name: name.trim(), amountCents, dueDay: due, category: category.trim() || undefined, account: plannedPaymentAccount || undefined, ...schedule } : bill) : [...bills, {
           id: crypto.randomUUID(),
           name: name.trim(),
           amountCents,
           dueDay: due,
           category: category.trim() || undefined,
+          account: plannedPaymentAccount || undefined,
           ...schedule,
           active: true,
         }],
@@ -4408,12 +4432,13 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
     setAmount("");
     setDueDay("");
     setCategory("");
+    setPlannedPaymentAccount("");
     setFrequency("monthly");
     setStartMonth(currentMonth);
     setAdding(false);
     setEditing(null);
   };
-  const startEdit = (bill: any) => { setEditing(bill); setName(bill.name); setAmount(centsInput(bill.amountCents)); setDueDay(String(bill.dueDay)); setCategory(bill.category || ""); setFrequency(bill.frequency || "monthly"); setStartMonth(bill.startMonth || ""); };
+  const startEdit = (bill: any) => { setEditing(bill); setName(bill.name); setAmount(centsInput(bill.amountCents)); setDueDay(String(bill.dueDay)); setCategory(bill.category || ""); setPlannedPaymentAccount(bill.account || ""); setFrequency(bill.frequency || "monthly"); setStartMonth(bill.startMonth || ""); };
   return (
     <section className="mx-auto max-w-3xl px-4 pt-8">
       <SectionTitle
@@ -4467,6 +4492,8 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
         onAddForDate={openNew}
         transactions={tx}
         onReceive={onReceive}
+        onRequestPayment={openPayment}
+        onUndoPayment={onUndoBillPayment}
       />}
       <section className="panel mt-4 rounded-2xl p-5">
         <div className="flex items-center justify-between">
@@ -4486,6 +4513,7 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
                     vence dia {bill.occurrenceDay} · {bill.frequency === "once" ? "uma vez" : bill.frequency === "yearly" ? "anual" : "mensal"}
                     {bill.category ? ` · ${bill.category}` : ""}
                   </small>
+                  <small className="muted block">Origem padrão: {bill.account || "escolher ao pagar"}</small>
                   {businessMode && <small className={`mt-1 inline-block text-[10px] ${isRecurringBillPaidInMonth(bill, currentMonth) ? "text-[var(--accent)]" : isCommitmentLateInMonth(bill, currentMonth, today) ? "text-[var(--danger)]" : "text-amber-300"}`}>{isRecurringBillPaidInMonth(bill, currentMonth) ? "Pago" : isCommitmentLateInMonth(bill, currentMonth, today) ? "Vencido" : "Pendente"}</small>}
                 </span>
                 <span className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b>{businessMode && !isRecurringBillPaidInMonth(bill, currentMonth) && <><button type="button" onClick={() => openPayment(bill)} disabled={!paymentOptionsForBill(bill).length} className="mt-1 min-h-9 rounded-lg px-2 text-xs font-medium text-[var(--accent)] disabled:opacity-50">Registrar pagamento</button>{!paymentOptionsForBill(bill).length && <small className="block max-w-36 text-[10px] text-[var(--muted)]">Sem saldo ou limite suficiente</small>}</>}<ItemActions className="mt-1 justify-end" label={`a conta recorrente ${bill.name}`} onEdit={() => startEdit(bill)} onDelete={() => setDeleting(bill)} /></span>
@@ -4520,7 +4548,25 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
               placeholder="Dia de vencimento"
             />
             <div className="space-y-1.5 text-sm">
-              <div className="flex items-center gap-2"><label htmlFor="recurring-bill-frequency">Repetição</label><HelpHint label="Repetição dos compromissos">A repetição cria lembretes nos meses seguintes. Ela não registra despesas nem debita sua conta; lance o pagamento no extrato quando acontecer.</HelpHint></div>
+              <label htmlFor="recurring-bill-payment-account">Origem do pagamento (opcional)</label>
+              <select
+                id="recurring-bill-payment-account"
+                aria-label="Fonte de pagamento padrão"
+                className="field"
+                value={plannedPaymentAccount}
+                onChange={(event) => setPlannedPaymentAccount(event.target.value)}
+              >
+                <option value="">Escolher conta ou cartão ao pagar</option>
+                {planningFundingSources.map((source) => (
+                  <option key={source.id} value={source.accountLabel}>
+                    {source.label} · {source.kind === "card" ? "cartão de crédito" : "conta"}
+                  </option>
+                ))}
+              </select>
+              <p className="muted text-xs">Ao registrar o pagamento, a despesa será lançada nesta origem. Conta reduz o saldo; cartão entra na fatura e reduz o limite disponível.</p>
+            </div>
+            <div className="space-y-1.5 text-sm">
+              <div className="flex items-center gap-2"><label htmlFor="recurring-bill-frequency">Repetição</label><HelpHint label="Repetição dos compromissos">A repetição cria lembretes nos meses seguintes. O pagamento só é lançado quando você registra a baixa; nesse momento, usamos a conta ou o cartão escolhidos.</HelpHint></div>
               <select id="recurring-bill-frequency" className="field" value={frequency} onChange={(event) => {
                 const nextFrequency = event.target.value as "once" | "monthly" | "yearly";
                 setFrequency(nextFrequency);
@@ -4558,7 +4604,7 @@ function Planning({ data, tx, month, save, toast, onReceive, onPayBill, business
         </Sheet>
       )}
       {deleting && <DeleteConfirm title="Excluir conta recorrente?" description={`“${deleting.name}” deixará de ser considerado nos próximos vencimentos e compromissos.`} close={() => setDeleting(null)} confirm={() => { save({ ...data, recurringBills: bills.filter((bill: any) => bill.id !== deleting.id) }); toast("Conta recorrente excluída."); setDeleting(null); }} />}
-      {paying && <Sheet close={() => setPaying(null)}><section className="space-y-3"><b className="text-lg">Registrar pagamento</b><p className="muted text-sm">Isso cria uma despesa de {formatBRL(paying.amountCents)} no extrato e marca este compromisso como pago em {format(calendarMonth, "MMMM yyyy", { locale: ptBR })}.</p><label className="block space-y-1.5 text-sm"><span>Conta de saída</span><select aria-label="Conta de saída do pagamento" className="field" value={paymentAccount} onChange={(event) => setPaymentAccount(event.target.value)}><option value="">Selecione uma conta</option>{paymentOptionsForBill(paying).map((item) => <option key={item.id} value={item.accountLabel}>{fundingSourceDescription(item)}</option>)}</select></label>{!paymentOptionsForBill(paying).length && <p role="alert" className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Nenhuma conta tem saldo ou limite disponível suficiente para este pagamento.</p>}<button type="button" onClick={() => { if (onPayBill(paying.id, currentMonth, paymentAccount)) setPaying(null); }} disabled={!paymentAccount || !paymentOptionsForBill(paying).some((source) => source.accountLabel === paymentAccount)} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">Confirmar pagamento</button></section></Sheet>}
+      {paying && <Sheet close={() => setPaying(null)}><section className="space-y-3"><b className="text-lg">Registrar pagamento</b><p className="muted text-sm">Isso lança uma despesa de {formatBRL(paying.amountCents)} no extrato e marca o compromisso como pago em {format(calendarMonth, "MMMM yyyy", { locale: ptBR })}. O cartão escolhido entra na fatura; uma conta reduz o saldo disponível.</p><label className="block space-y-1.5 text-sm"><span>Conta ou cartão de saída</span><select aria-label="Conta ou cartão de saída do pagamento" className="field" value={paymentAccount} onChange={(event) => setPaymentAccount(event.target.value)}><option value="">Selecione uma origem</option>{paymentOptionsForBill(paying).map((item) => <option key={item.id} value={item.accountLabel}>{fundingSourceDescription(item)}</option>)}</select></label>{paying.account && !paymentOptionsForBill(paying).some((source) => source.accountLabel === paying.account) && <p role="alert" className="rounded-xl bg-amber-400/10 p-3 text-xs text-amber-300">A origem definida no planejamento não tem saldo ou limite suficiente agora. Escolha outra origem disponível ou ajuste o saldo/limite.</p>}{!paymentOptionsForBill(paying).length && <p role="alert" className="muted rounded-xl bg-[var(--panel2)] p-3 text-xs">Nenhuma conta ou cartão tem saldo ou limite disponível suficiente para este pagamento.</p>}<button type="button" onClick={() => { if (onPayBill(paying.id, currentMonth, paymentAccount)) setPaying(null); }} disabled={!paymentAccount || !paymentOptionsForBill(paying).some((source) => source.accountLabel === paymentAccount)} className="primary h-11 w-full rounded-xl text-sm disabled:opacity-50">Confirmar pagamento</button></section></Sheet>}
     </section>
   );
 }
@@ -4688,11 +4734,12 @@ function MonthlyReview({ data, save }: any) {
     </section>
   );
 }
-function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddForDate, transactions = [], onReceive }: any) {
+function FinancialCalendar({ month, setMonth, bills, data, onAddForDate, transactions = [], onReceive, onRequestPayment, onUndoPayment }: any) {
   const [selectedDay, setSelectedDay] = useState<number | null>(() => {
     const now = new Date();
     return format(month, "yyyy-MM") === format(now, "yyyy-MM") ? now.getDate() : null;
   });
+  const [undoingPayment, setUndoingPayment] = useState<any | null>(null);
   const key = format(month, "yyyy-MM");
   const today = new Date();
   const isCurrent = key === format(today, "yyyy-MM");
@@ -4713,14 +4760,6 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
   const changeMonth = (offset: number) => {
     setMonth(startOfMonth(addMonths(month, offset)));
     setSelectedDay(null);
-  };
-  const togglePaid = (bill: any) => {
-    const paid = !isRecurringBillPaidInMonth(bill, key);
-    save({
-      ...data,
-      recurringBills: bills.map((item: any) => item.id === bill.id ? setRecurringBillPaidInMonth(item, key, paid) : item),
-    });
-    toast(paid ? `${bill.name} marcada como paga neste mês.` : `${bill.name} voltou para pendente neste mês.`);
   };
   return (
     <section className="panel mt-4 overflow-hidden rounded-2xl">
@@ -4792,9 +4831,9 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
                 <div key={bill.id} className="flex items-center justify-between gap-3 py-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${status(bill) === "paid" ? "bg-[var(--accent)]/15 text-[var(--accent)]" : status(bill) === "late" ? "bg-[var(--danger)]/10 text-[var(--danger)]" : "bg-[var(--panel)] text-amber-400"}`}><ReceiptText size={16} /></span>
-                    <span className="min-w-0"><b className="block truncate text-sm">{bill.name}</b><small className="muted block truncate">{bill.category || "Sem categoria"} · {bill.frequency === "once" ? "uma vez" : bill.frequency === "yearly" ? "anual" : "mensal"} · {status(bill) === "paid" ? "Paga" : status(bill) === "late" ? "Atrasada" : "Pendente"}</small></span>
+                    <span className="min-w-0"><b className="block truncate text-sm">{bill.name}</b><small className="muted block truncate">{bill.category || "Sem categoria"} · {bill.frequency === "once" ? "uma vez" : bill.frequency === "yearly" ? "anual" : "mensal"} · {status(bill) === "paid" ? "Paga" : status(bill) === "late" ? "Atrasada" : "Pendente"}</small><small className="muted block truncate">Origem: {bill.account || "escolher ao pagar"}</small></span>
                   </div>
-                  <div className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b><button onClick={() => togglePaid(bill)} className={`mt-1 min-h-9 rounded-lg px-2 text-xs ${status(bill) === "paid" ? "text-[var(--muted)] hover:bg-[var(--panel)]" : "text-[var(--accent)] hover:bg-[var(--panel)]"}`}>{status(bill) === "paid" ? "Desfazer" : "Marcar paga"}</button></div>
+                  <div className="shrink-0 text-right"><b className="block text-sm">{formatBRL(bill.amountCents)}</b><button type="button" onClick={() => status(bill) === "paid" ? setUndoingPayment(bill) : onRequestPayment?.(bill)} className={`mt-1 min-h-9 rounded-lg px-2 text-xs ${status(bill) === "paid" ? "text-[var(--muted)] hover:bg-[var(--panel)]" : "text-[var(--accent)] hover:bg-[var(--panel)]"}`}>{status(bill) === "paid" ? "Desfazer" : "Registrar pagamento"}</button></div>
                 </div>
               ))}
             </div>}
@@ -4810,6 +4849,7 @@ function FinancialCalendar({ month, setMonth, bills, save, data, toast, onAddFor
           </div>
         )}
       </div>
+      {undoingPayment && <Sheet close={() => setUndoingPayment(null)}><section className="space-y-4"><div><b className="text-lg">Desfazer pagamento?</b><p className="muted mt-2 text-sm leading-6">A despesa vinculada será removida do extrato e “{undoingPayment.name}” voltará para pendente neste mês.</p></div><div className="flex gap-2"><button type="button" onClick={() => setUndoingPayment(null)} className="h-11 flex-1 rounded-xl bg-[var(--panel2)] text-sm font-medium">Manter pagamento</button><button type="button" onClick={() => { onUndoPayment?.(undoingPayment.id, key); setUndoingPayment(null); }} className="h-11 flex-1 rounded-xl bg-[var(--danger)] px-3 text-sm font-semibold text-white">Desfazer pagamento</button></div></section></Sheet>}
     </section>
   );
 }

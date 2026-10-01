@@ -395,6 +395,60 @@ test("parcelamento no cartão divide centavos, cria parcelas futuras e reserva l
   await expect(page.getByText(/disponível:/)).toContainText(/1\.900,00/);
 });
 
+test("planejamento mensal registra o pagamento na origem escolhida e permite desfazer com segurança", async ({ page }) => {
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  await loginWithFinancialSeed(page);
+  await page.getByRole("button", { name: "Planejamento", exact: true }).click();
+  await page.getByRole("button", { name: "Adicionar compromisso", exact: true }).click();
+  await page.getByPlaceholder("Ex.: Internet, aluguel, Netflix").fill("Apple Music QA");
+  await page.getByPlaceholder("Valor previsto").fill("49,90");
+  await page.getByPlaceholder("Dia de vencimento").fill(String(now.getDate()));
+  await page.getByLabel("Fonte de pagamento padrão").selectOption("Banco Teste • Cartão");
+  await page.getByRole("button", { name: "Adicionar ao planejamento" }).click();
+
+  await expect(page.getByText("Apple Music QA", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Origem: Banco Teste • Cartão", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Registrar pagamento", exact: true }).click();
+  const paymentSource = page.getByLabel("Conta ou cartão de saída do pagamento");
+  await expect(paymentSource).toHaveValue("Banco Teste • Cartão");
+  await page.getByRole("button", { name: "Confirmar pagamento", exact: true }).click();
+  await expect(page.getByText("Pagamento de “Apple Music QA” registrado no extrato.")).toBeVisible();
+
+  const saved = await page.evaluate((keys) => ({
+    data: JSON.parse(localStorage.getItem(keys.data) || "{}"),
+    transactions: JSON.parse(localStorage.getItem(keys.transactions) || "[]"),
+  }), {
+    data: `valurise:v2:${user.id}:workspace:${personalWorkspaceId}:data`,
+    transactions: `valurise:v2:${user.id}:workspace:${personalWorkspaceId}:tx`,
+  });
+  expect(saved.data.recurringBills[0]).toMatchObject({ account: "Banco Teste • Cartão" });
+  expect(saved.data.recurringBills[0].paidMonths).toContain(currentMonth);
+  expect(saved.transactions).toHaveLength(1);
+  expect(saved.transactions[0]).toMatchObject({ type: "expense", account: "Banco Teste • Cartão", amountCents: 4_990 });
+
+  await page.getByRole("button", { name: "Contas", exact: true }).click();
+  await expect(page.getByTestId("institution-account-row").first()).toContainText("Saldo atual: R$ 1.000,00");
+  await page.getByRole("button", { name: "Cartões", exact: true }).click();
+  await expect(page.getByText("Disponível: R$ 1.950,10")).toBeVisible();
+
+  await page.getByRole("button", { name: "Planejamento", exact: true }).click();
+  await page.getByRole("button", { name: "Desfazer", exact: true }).click();
+  await expect(page.getByText("Desfazer pagamento?")).toBeVisible();
+  await page.getByRole("button", { name: "Desfazer pagamento", exact: true }).click();
+  await expect(page.getByText("Pagamento desfeito; a despesa foi removida do extrato.")).toBeVisible();
+
+  const reverted = await page.evaluate((keys) => ({
+    data: JSON.parse(localStorage.getItem(keys.data) || "{}"),
+    transactions: JSON.parse(localStorage.getItem(keys.transactions) || "[]"),
+  }), {
+    data: `valurise:v2:${user.id}:workspace:${personalWorkspaceId}:data`,
+    transactions: `valurise:v2:${user.id}:workspace:${personalWorkspaceId}:tx`,
+  });
+  expect(reverted.data.recurringBills[0].paidMonths).not.toContain(currentMonth);
+  expect(reverted.transactions).toHaveLength(0);
+});
+
 test("Dashboard mantém categorias no histórico todo, mostra evolução e Contas reflete saldo atual", async ({ page }) => {
   const now = new Date();
   const currentDate = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
