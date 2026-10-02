@@ -156,7 +156,7 @@ describe("diagnóstico seguro dos provedores de IA", () => {
       { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", tier: "economical", provider: "gemini" },
     ]);
     await expect(listProviderModels("deepseek", "fake-key")).resolves.toMatchObject([
-      { id: "deepseek-v4-flash", tier: "recommended" },
+      { id: "deepseek-v4-flash", tier: "economical" },
       { id: "deepseek-v4-pro", tier: "advanced" },
     ]);
     await expect(listProviderModels("openai", "fake-key")).resolves.toEqual([

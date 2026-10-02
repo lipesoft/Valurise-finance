@@ -487,7 +487,7 @@ test("painel Master cabe nas larguras mobile e desktop", async ({ page }) => {
   }
 });
 
-test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra uso sem overflow", async ({ page }) => {
+test("Central da Val limita chaves ao Master, controla custo DeepSeek e não causa overflow", async ({ page }) => {
   await page.route("**/rest/v1/user_consents**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
   await signInAsMaster(page);
   const necessaryCookies = page.getByRole("button", { name: "Apenas necessários" });
@@ -495,29 +495,31 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   const keySentinel = "e2e-central-key-fake-never-real-0001";
   const adminActions: Array<Record<string, unknown>> = [];
   const now = new Date().toISOString();
-  const freeModel = {
-    id: "model-free", provider_id: "openrouter", model_id: "openrouter/free", display_name: "OpenRouter Free",
-    is_free: true, free_verified: true, free_evidence: "OPENROUTER_OFFICIAL_ZERO_PRICE", is_enabled: true, priority: 1,
+  const deepseekModel = {
+    id: "model-deepseek", provider_id: "deepseek", model_id: "deepseek-flash", display_name: "DeepSeek V4.1 Flash",
+    is_free: false, free_verified: false, free_evidence: null, is_enabled: true, priority: 1,
     supports_chat: true, supports_tools: true, supports_structured_output: false, supports_reasoning: false, supports_streaming: true,
     context_window: 8192, health_status: "HEALTHY", last_health_check: now, last_success_at: now, last_failure_at: null,
-    last_latency_ms: 86, failure_count: 0, circuit_open_until: null, official_prompt_price: 0, official_completion_price: 0,
+    last_latency_ms: 86, failure_count: 0, circuit_open_until: null, official_prompt_price: 0.0000003, official_completion_price: 0.0000012,
+    input_cost_per_million: 0.3, output_cost_per_million: 1.2, pricing_source: "official peak price", price_verified_at: now,
     daily_request_limit: 100, monthly_request_limit: 1000, daily_token_limit: 20000, monthly_token_limit: 200000, catalog_seen_at: now,
   };
   const paidModel = {
-    ...freeModel, id: "model-paid", model_id: "paid/vendor-model", display_name: "Paid model",
+    ...deepseekModel, id: "model-paid", provider_id: "openrouter", model_id: "paid/vendor-model", display_name: "Paid model",
     is_free: false, free_verified: false, free_evidence: null, is_enabled: false, priority: 100,
     health_status: "UNAVAILABLE", official_prompt_price: 0.000001, official_completion_price: 0.000002,
   };
   const responseData = {
     providers: [
+      { id: "deepseek", enabled: true, free_tier_confirmed: false, health_status: "HEALTHY", priority: 1, last_health_check: now, last_latency_ms: 86, last_error_category: null, quota_headers: {}, updated_at: now },
       { id: "groq", enabled: false, free_tier_confirmed: false, health_status: "DISABLED", priority: 1, last_health_check: null, last_latency_ms: null, last_error_category: null, quota_headers: {}, updated_at: now },
-      { id: "openrouter", enabled: true, free_tier_confirmed: false, health_status: "HEALTHY", priority: 2, last_health_check: now, last_latency_ms: 86, last_error_category: null, quota_headers: { "x-ratelimit-remaining": "100" }, updated_at: now },
+      { id: "openrouter", enabled: false, free_tier_confirmed: false, health_status: "DISABLED", priority: 2, last_health_check: null, last_latency_ms: null, last_error_category: null, quota_headers: {}, updated_at: now },
     ],
-    keys: [{ id: "key-openrouter", provider_id: "openrouter", key_suffix: "D4F3", is_active: true, updated_at: now }],
-    models: [freeModel, paidModel],
-    settings: { daily_requests: 10, monthly_requests: 200, daily_tokens: 50000, monthly_tokens: 1000000, max_context_tokens: 12000, max_output_tokens: 700, max_attempts: 2, val_enabled: true, val_router_enabled: true, val_groq_enabled: false, val_openrouter_enabled: true, val_actions_enabled: true, val_insights_enabled: true },
-    overview: { status: "operational", requestsToday: 14, requestsMonth: 82, tokensToday: 4200, tokensMonth: 35000, successRate: 96, failuresToday: 1, fallbacksToday: 2, activeProviders: 1, freeModels: 1, averageLatencyMs: 430, uniqueUsersToday: 4 },
-    usageByModel: [{ period: "day", provider: "openrouter", model: "openrouter/free", requests: 14, tokens: 4200 }],
+    keys: [{ id: "key-deepseek", provider_id: "deepseek", key_suffix: "D4F3", is_active: true, updated_at: now }],
+    models: [deepseekModel, paidModel],
+    settings: { daily_requests: 10, monthly_requests: 200, daily_tokens: 50000, monthly_tokens: 1000000, max_context_tokens: 12000, max_output_tokens: 700, max_attempts: 1, monthly_cost_soft_limit_usd: 8, monthly_cost_hard_limit_usd: 10, reference_balance_usd: null, val_enabled: true, val_router_enabled: true, val_deepseek_enabled: true, val_fallback_enabled: false, val_groq_enabled: false, val_openrouter_enabled: false, val_actions_enabled: true, val_insights_enabled: true },
+    overview: { status: "operational", requestsToday: 14, requestsMonth: 82, tokensToday: 4200, tokensMonth: 35000, estimatedCostTodayUsd: 0.04, estimatedCostMonthUsd: 1.2, successRate: 96, failuresToday: 1, fallbacksToday: 0, activeProviders: 1, freeModels: 1, averageLatencyMs: 430, uniqueUsersToday: 4 },
+    usageByModel: [{ period: "day", provider: "deepseek", model: "deepseek-flash", requests: 14, attempts: 14, tokens: 4200, estimatedCostUsd: 0.04 }],
     recentErrors: [], users: [], audit: [],
   };
   await page.route("**/api/admin/val-ai", async (route) => {
@@ -533,41 +535,41 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   await expect(page.getByRole("heading", { name: "Central da Val" })).toBeVisible();
   const keyInput = page.getByPlaceholder("Cole a chave do provider").first();
   await expect(keyInput).toBeVisible();
-  await expect(page.getByPlaceholder("Cole a chave do provider")).toHaveCount(2);
+  await expect(page.getByPlaceholder("Cole a chave do provider")).toHaveCount(3);
   await page.getByRole("button", { name: "Visão geral" }).click();
   await expect(page.getByText("Operacional", { exact: true })).toBeVisible();
-  await expect(page.getByText("Há um modelo gratuito validado e pronto para consultas financeiras.")).toBeVisible();
-  await expect(page.getByText("1 modelo(s) gratuito(s) pronto(s) para ferramentas")).toBeVisible();
+  await expect(page.getByText("Há modelo habilitado, com saúde e capacidade compatíveis para a Val.")).toBeVisible();
+  await expect(page.getByText("1 modelo(s) habilitado(s) e pronto(s)")).toBeVisible();
   await expect(page.getByText("14", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Provedores" }).click();
   await expect(keyInput).toBeVisible();
   await keyInput.fill(keySentinel);
   await page.getByRole("button", { name: "Salvar chave protegida" }).first().click();
-  await expect(page.getByText("Salvar a chave apenas a guarda criptografada. Isso não ativa o provider nem libera a Val para os usuários.").first()).toBeVisible();
+  await expect(page.getByText("Chave guardada de forma criptografada.").first()).toBeVisible();
   await expect(keyInput).toHaveValue("");
-  expect(adminActions[0]).toMatchObject({ action: "save_key", provider: "groq", apiKey: keySentinel });
+  expect(adminActions[0]).toMatchObject({ action: "save_key", provider: "deepseek", apiKey: keySentinel });
 
   await page.getByRole("button", { name: "Modelos" }).click();
   const paidCard = page.getByRole("article").filter({ hasText: "paid/vendor-model" }).first();
-  await expect(paidCard.getByText("PAGO — BLOQUEADO PELO VALURISE")).toBeVisible();
-  await expect(paidCard.getByRole("button", { name: "Testar conexão gratuita" })).toBeDisabled();
-  const freeCard = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "OpenRouter Free" }) }).first();
-  await freeCard.getByRole("button", { name: "Testar conexão gratuita" }).click();
-  await expect(page.getByText("Teste concluído · openrouter/free · 86 ms · chamada de ferramenta validada.")).toBeVisible();
-  expect(adminActions.some((action) => action.action === "test_model" && action.modelId === "openrouter/free")).toBe(true);
+  await expect(paidCard.getByText("PAGO/SEM PREÇO · estimativa controlada")).toBeVisible();
+  await expect(paidCard.getByRole("button", { name: "Testar conexão" })).toBeDisabled();
+  const deepseekCard = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "DeepSeek V4.1 Flash" }) }).first();
+  await deepseekCard.getByRole("button", { name: "Testar conexão" }).click();
+  await expect(page.getByText("Conexão validada · deepseek-flash · 86 ms · ferramenta validada.")).toBeVisible();
+  expect(adminActions.some((action) => action.action === "test_model" && action.provider === "deepseek" && action.modelId === "deepseek-flash")).toBe(true);
 
   const visibleText = await page.locator("body").innerText();
   expect(visibleText).not.toContain(keySentinel);
   expect(JSON.stringify(await page.evaluate(() => localStorage))).not.toContain(keySentinel);
   await page.getByRole("button", { name: "Cotas e limites" }).click();
-  await expect(page.getByText(/Para disponibilizar a Val aos usuários, habilite Val, roteador/)).toBeVisible();
+  await expect(page.getByText(/DeepSeek é o único provider roteado por padrão/)).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Falhas para abrir circuito" })).toHaveValue("3");
   const monthlyTokens = page.getByRole("textbox", { name: "Tokens por mês" });
   await expect(monthlyTokens).toHaveValue("1.000.000");
   await monthlyTokens.fill("2500000");
   await expect(monthlyTokens).toHaveValue("2.500.000");
   await page.getByRole("button", { name: "Salvar limites e controles" }).click();
-  expect(adminActions.at(-1)).toMatchObject({ action: "save_limits", monthlyTokens: 2_500_000, circuitFailureThreshold: 3, circuitCooldownSeconds: 120 });
+  expect(adminActions.at(-1)).toMatchObject({ action: "save_limits", monthlyTokens: 2_500_000, monthlyCostHardLimitUsd: 10, fallbackEnabled: false, circuitFailureThreshold: 3, circuitCooldownSeconds: 120 });
   for (const width of [375, 390, 430, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -578,6 +580,6 @@ test("Central da Val limita chaves ao Master, bloqueia modelos pagos e mostra us
   await page.getByRole("button", { name: "Visão geral" }).click();
   await page.getByRole("button", { name: "Atualizar" }).last().click();
   await expect(page.getByText("Indisponível", { exact: true })).toBeVisible();
-  await expect(page.getByText("Nenhum modelo gratuito com ferramentas está pronto agora. Verifique chave, cota, catálogo e validação no provider.")).toBeVisible();
-  await expect(page.getByText("0 modelo(s) gratuito(s) pronto(s) para ferramentas")).toBeVisible();
+  await expect(page.getByText("A DeepSeek ainda não está pronta. Verifique chave, modelo, saúde, limite mensal e controles de ativação.")).toBeVisible();
+  await expect(page.getByText("0 modelo(s) habilitado(s) e pronto(s)")).toBeVisible();
 });
