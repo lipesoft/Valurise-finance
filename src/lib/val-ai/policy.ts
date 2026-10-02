@@ -1,4 +1,4 @@
-export type ValProvider = "groq" | "openrouter";
+export type ValProvider = "deepseek" | "groq" | "openrouter";
 export type ValHealth = "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "CIRCUIT_OPEN" | "HALF_OPEN" | "DISABLED" | "QUOTA_EXHAUSTED";
 export type ValModelCandidate = {
   provider: ValProvider;
@@ -19,6 +19,8 @@ export type ValModelCandidate = {
   quotaRemainingRatio: number | null;
   providerEnabled: boolean;
   freeTierConfirmed: boolean;
+  inputCostPerMillion?: number | null;
+  outputCostPerMillion?: number | null;
 };
 
 export type ValModelRequirements = {
@@ -81,6 +83,20 @@ export function isApprovedFreeModel(candidate: ValModelCandidate, requirements: 
   return true;
 }
 
+/** The central policy: a provider and model must both be explicitly enabled. */
+export function isApprovedValModel(candidate: ValModelCandidate, requirements: ValModelRequirements = {}) {
+  const now = requirements.now ?? Date.now();
+  if (!candidate.enabled || !candidate.providerEnabled || !candidate.supportsChat) return false;
+  if (candidate.health !== "HEALTHY" && candidate.health !== "DEGRADED") return false;
+  if (candidate.circuitOpenUntil && Date.parse(candidate.circuitOpenUntil) > now) return false;
+  if (candidate.quotaRemainingRatio !== null && candidate.quotaRemainingRatio <= 0) return false;
+  if (requirements.tools && !candidate.supportsTools) return false;
+  if (requirements.structuredOutput && !candidate.supportsStructuredOutput) return false;
+  if (requirements.reasoning && !candidate.supportsReasoning) return false;
+  if (requirements.contextTokens && (candidate.contextWindow === null || candidate.contextWindow < requirements.contextTokens)) return false;
+  return true;
+}
+
 /**
  * Reports whether the Val can answer a financial query right now.
  * Candidates that still need a half-open circuit probe are not yet ready;
@@ -95,10 +111,43 @@ export function getValServiceStatus(
   const ready = candidates.filter((candidate) =>
     !candidate.requiresProbe
     && !candidate.requiresProviderProbe
-    && isApprovedFreeModel(candidate, { tools: true, now }),
+    && isApprovedValModel(candidate, { tools: true, now }),
   );
   if (!ready.length) return "unavailable";
   return ready.some((candidate) => candidate.health === "HEALTHY") ? "operational" : "degraded";
+}
+
+export function selectValModels<TCandidate extends ValModelCandidate>(candidates: TCandidate[], requirements: ValModelRequirements = {}) {
+  return candidates.filter((candidate) => isApprovedValModel(candidate, requirements)).sort((a, b) => {
+    const healthRank = (value: ValHealth) => value === "HEALTHY" ? 2 : value === "DEGRADED" ? 1 : 0;
+    const healthDifference = healthRank(b.health) - healthRank(a.health);
+    if (healthDifference) return healthDifference;
+    const quotaDifference = (b.quotaRemainingRatio ?? 1) - (a.quotaRemainingRatio ?? 1);
+    if (quotaDifference) return quotaDifference;
+    const successDifference = (b.successRate ?? 0.5) - (a.successRate ?? 0.5);
+    if (successDifference) return successDifference;
+    const priorityDifference = a.priority - b.priority;
+    if (priorityDifference) return priorityDifference;
+    const latencyDifference = (a.latencyMs ?? Number.MAX_SAFE_INTEGER) - (b.latencyMs ?? Number.MAX_SAFE_INTEGER);
+    return latencyDifference || `${a.provider}/${a.modelId}`.localeCompare(`${b.provider}/${b.modelId}`);
+  });
+}
+
+export function estimateValRequestCostUsd(args: {
+  inputTokens: number;
+  outputTokens: number;
+  calls?: number;
+  inputCostPerMillion: number | null | undefined;
+  outputCostPerMillion: number | null | undefined;
+}) {
+  const inputRate = args.inputCostPerMillion;
+  const outputRate = args.outputCostPerMillion;
+  if (inputRate === null || inputRate === undefined || outputRate === null || outputRate === undefined
+    || !Number.isFinite(inputRate) || !Number.isFinite(outputRate) || inputRate < 0 || outputRate < 0) return null;
+  const calls = Math.max(1, Math.min(4, Math.trunc(args.calls ?? 1)));
+  const input = Math.max(0, Math.trunc(args.inputTokens));
+  const output = Math.max(0, Math.trunc(args.outputTokens));
+  return (input * inputRate + output * outputRate) * calls / 1_000_000;
 }
 
 export function selectFreeModels<TCandidate extends ValModelCandidate>(candidates: TCandidate[], requirements: ValModelRequirements = {}) {
@@ -121,7 +170,7 @@ export function isFallbackEligible(category: string) {
   return new Set([
     "RATE_LIMITED", "QUOTA_EXCEEDED", "PROVIDER_OVERLOADED", "MODEL_UNAVAILABLE",
     "PROVIDER_UNAVAILABLE", "TIMEOUT", "NETWORK_ERROR", "UNKNOWN_PROVIDER_ERROR",
-    "INVALID_API_KEY", "PERMISSION_DENIED", "BILLING_REQUIRED", "INSUFFICIENT_BALANCE",
+    "REGION_RESTRICTED",
   ]).has(category);
 }
 
@@ -149,6 +198,32 @@ export async function runFreeModelCandidates<TCandidate extends ValModelCandidat
     }
   }
   throw Object.assign(new Error("ALL_FREE_MODELS_UNAVAILABLE"), { code: "ALL_FREE_MODELS_UNAVAILABLE", valAttempts: attempts });
+}
+
+/** Executes only candidates already admitted by the explicit provider/model allowlist. */
+export async function runValModelCandidates<TCandidate extends ValModelCandidate, T>(
+  candidates: TCandidate[],
+  requirements: ValModelRequirements,
+  maxAttempts: number,
+  call: (candidate: TCandidate, attempt: number) => Promise<T>,
+) {
+  const eligible = selectValModels(candidates, requirements).slice(0, Math.max(1, Math.min(3, Math.trunc(maxAttempts))));
+  const attempts: Array<{ candidate: ValModelCandidate; error: unknown }> = [];
+  const unavailableProviders = new Set<string>();
+  for (const candidate of eligible) {
+    if (unavailableProviders.has(candidate.provider)) continue;
+    if (!isApprovedValModel(candidate, requirements)) continue;
+    try {
+      return { candidate, attempt: attempts.length + 1, attempts, result: await call(candidate, attempts.length + 1) };
+    } catch (error) {
+      attempts.push({ candidate, error });
+      if (error && typeof error === "object" && "noFallback" in error && error.noFallback === true) throw error;
+      const category = error && typeof error === "object" && "category" in error ? String(error.category) : "UNKNOWN_PROVIDER_ERROR";
+      if (!isFallbackEligible(category)) throw Object.assign(error instanceof Error ? error : new Error("Val provider request failed"), { valAttempts: attempts });
+      if (category !== "MODEL_UNAVAILABLE" && category !== "INVALID_MODEL") unavailableProviders.add(candidate.provider);
+    }
+  }
+  throw Object.assign(new Error("ALL_ENABLED_MODELS_UNAVAILABLE"), { code: "ALL_ENABLED_MODELS_UNAVAILABLE", valAttempts: attempts });
 }
 
 export function isFreeModelCatalogFresh(lastCheckedAt: string | null | undefined, now = Date.now(), maxAgeMs = 24 * 60 * 60 * 1000) {

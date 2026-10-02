@@ -16,7 +16,7 @@ export const AI_PROVIDER_METADATA: Record<AIProvider, {
 }> = {
   openai: { label: "OpenAI", defaultModel: "gpt-5-mini", supportsDynamicCatalog: true },
   gemini: { label: "Gemini", defaultModel: "gemini-2.5-flash-lite", supportsDynamicCatalog: false },
-  deepseek: { label: "DeepSeek", defaultModel: "deepseek-v4-flash", supportsDynamicCatalog: true },
+  deepseek: { label: "DeepSeek", defaultModel: "deepseek-flash", supportsDynamicCatalog: true },
   groq: { label: "Groq", defaultModel: "openai/gpt-oss-20b", supportsDynamicCatalog: true },
   openrouter: { label: "OpenRouter", defaultModel: "openrouter/free", supportsDynamicCatalog: true },
 };

@@ -14,14 +14,14 @@ export type CatalogEntry = {
 export type FreeCatalogDecision = "VERIFIED_FREE" | "MODEL_NOT_IN_CATALOG" | "MODEL_NOT_ZERO_PRICED" | "GROQ_FREE_TIER_NOT_CONFIRMED";
 
 /**
- * Rechecks persisted allowlist entries against the provider catalog immediately
- * before use. Groq's catalog has no pricing/plan field, so that provider needs
- * both this live model-presence check and the Super Admin's free-tier attestation.
+ * Catalog metadata is diagnostic. Routing authorization comes from the
+ * server-managed provider/model allowlist, not from a model name or price.
  */
 export function verifyCurrentFreeCatalogEntry(provider: ValProvider, modelId: string, entries: CatalogEntry[], groqFreeTierConfirmed: boolean): FreeCatalogDecision {
   const entry = entries.find((model) => model.provider_id === provider && model.model_id === modelId && model.supports_chat);
   if (!entry) return "MODEL_NOT_IN_CATALOG";
   if (provider === "groq") return groqFreeTierConfirmed ? "VERIFIED_FREE" : "GROQ_FREE_TIER_NOT_CONFIRMED";
+  if (provider === "deepseek") return "MODEL_NOT_ZERO_PRICED";
   return entry.is_free && entry.official_prompt_price === 0 && entry.official_completion_price === 0
     ? "VERIFIED_FREE"
     : "MODEL_NOT_ZERO_PRICED";
@@ -71,7 +71,7 @@ export function parseProviderModelCatalog(provider: ValProvider, payload: unknow
     const completion = provider === "openrouter" ? numericPrice(pricing.completion) : null;
     // Groq /models does not prove the account plan or per-model price.
     const isFree = provider === "openrouter" && prompt === 0 && completion === 0;
-    const context = Number(row.context_length ?? row.context_window ?? 0);
+    const context = Number(row.context_window ?? row.context_length ?? 0);
     return [{
       provider_id: provider,
       model_id: id,

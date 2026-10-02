@@ -22,6 +22,7 @@ export async function recordValAiAttempt(args: {
   latencyMs: number;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  estimatedCostUsd?: number | null;
   errorCategory?: AIErrorCategory | string | null;
   providerCode?: string | null;
   httpStatus?: number | null;
@@ -40,6 +41,7 @@ export async function recordValAiAttempt(args: {
     status: args.status,
     input_tokens: Number.isSafeInteger(args.inputTokens) && Number(args.inputTokens) >= 0 ? args.inputTokens : null,
     output_tokens: Number.isSafeInteger(args.outputTokens) && Number(args.outputTokens) >= 0 ? args.outputTokens : null,
+    estimated_cost_usd: typeof args.estimatedCostUsd === "number" && Number.isFinite(args.estimatedCostUsd) && args.estimatedCostUsd >= 0 ? args.estimatedCostUsd : null,
     latency_ms: Math.max(0, Math.min(120_000, Math.round(args.latencyMs))),
     error_category: safeCode(args.errorCategory),
     provider_code: safeCode(args.providerCode),

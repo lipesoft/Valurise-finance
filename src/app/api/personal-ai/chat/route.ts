@@ -8,9 +8,8 @@ import { createPersonalAiTransactionProposalTool, type PersonalAiTransactionDraf
 import { NO_FINANCIAL_CONTEXT_INSTRUCTION, requestsTransactionAction, requiresPersonalFinanceData, VAL_PERSONA } from "@/lib/personal-ai";
 import { AIProviderError, classifyAIError } from "@/lib/personal-ai/providers";
 import { createValModel } from "@/lib/val-ai/adapter";
-import { discoverFreeModelCatalog, readSafeQuotaHeaders } from "@/lib/val-ai/provider-catalog";
-import { verifyCurrentFreeCatalogEntry } from "@/lib/val-ai/catalog-policy";
-import { classifyValTask, runFreeModelCandidates, selectFreeModels, type ValProvider } from "@/lib/val-ai/policy";
+import { readSafeQuotaHeaders } from "@/lib/val-ai/provider-catalog";
+import { classifyValTask, estimateValRequestCostUsd, runValModelCandidates, selectValModels } from "@/lib/val-ai/policy";
 import { loadValRouterRuntime, valFeatureIsEnabled, type RoutedModel } from "@/lib/val-ai/router";
 import { recordValAiAttempt, recordValAiBlockedRequest, recordValAiModelHealth } from "@/lib/val-ai/telemetry";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -36,6 +35,7 @@ function unavailable() {
 
 function quotaMessage(reason: string) {
   if (reason === "USER_BLOCKED") return "O acesso à Val está temporariamente pausado para esta conta. Fale com o suporte.";
+  if (reason === "DAILY_REQUEST_LIMIT") return "Você atingiu o limite diário da Val. Seu acesso será renovado automaticamente amanhã.";
   if (reason === "TOKEN_LIMIT") return "Você atingiu o limite de uso da Val por hoje ou neste mês. Seu acesso será renovado automaticamente.";
   return "Você atingiu o limite de consultas da Val por hoje ou neste mês. Seu acesso será renovado automaticamente.";
 }
@@ -185,7 +185,8 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const maxAttempts = Number(runtime.settings.max_attempts || 2);
+  const fallbackEnabled = runtime.settings.val_fallback_enabled === true;
+  const maxAttempts = fallbackEnabled ? Number(runtime.settings.max_attempts || 2) : 1;
   const maxContextTokens = Math.min(Number(override?.max_context_tokens || runtime.settings.max_context_tokens || 12000), 1000000);
   const maxOutputTokens = Math.max(16, Math.min(Number(override?.max_output_tokens || runtime.settings.max_output_tokens || 700), 32000, maxContextTokens - 250));
   const reservedPromptTokens = Math.ceil((workspaceInstructions.length + VAL_PERSONA.length + 3000) / 4);
@@ -203,7 +204,7 @@ export async function POST(request: NextRequest) {
   const contextEstimate = Math.ceil((includedChars + workspaceInstructions.length + VAL_PERSONA.length + 3000) / 4);
   const needsTools = Object.keys(financialTools).length > 0 && (currentNeedsData || requestsAction);
   const requirements = { tools: needsTools, structuredOutput: taskType === "STRUCTURED_RESPONSE", contextTokens: contextEstimate + maxOutputTokens };
-  const orderedCandidates = selectFreeModels(runtime.candidates, requirements)
+  const orderedCandidates = selectValModels(runtime.candidates, requirements)
     .map((candidate) => runtime.candidates.find((row) => row.provider === candidate.provider && row.modelId === candidate.modelId))
     .filter((candidate): candidate is RoutedModel => Boolean(candidate));
   const candidates: RoutedModel[] = [];
@@ -221,7 +222,7 @@ export async function POST(request: NextRequest) {
     if (candidates.length >= Math.max(1, Math.min(3, maxAttempts))) break;
   }
   if (!candidates.length) {
-    await recordValAiBlockedRequest({ requestId, userId: user.id, workspaceId: workspace.id, taskType, reason: "ALL_FREE_MODELS_UNAVAILABLE" });
+    await recordValAiBlockedRequest({ requestId, userId: user.id, workspaceId: workspace.id, taskType, reason: "ALL_ENABLED_MODELS_UNAVAILABLE" });
     return unavailable();
   }
   if (override?.is_blocked) {
@@ -229,7 +230,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: quotaMessage("USER_BLOCKED") }, { status: 403 });
   }
 
-  const maxReservation = Math.max(1, requirements.contextTokens + maxOutputTokens) * Math.max(1, Math.min(3, maxAttempts));
+  const maxReservation = Math.max(1, requirements.contextTokens * (needsTools ? 4 : 1) * Math.max(1, Math.min(3, maxAttempts)));
   const { data: quota, error: quotaError } = await admin.rpc("reserve_val_ai_user_request", { p_user_id: user.id, p_request_id: requestId, p_reserved_tokens: maxReservation });
   if (quotaError) {
     console.error("Central Val AI user quota guard unavailable", JSON.stringify({ code: quotaError.code || "UNKNOWN" }));
@@ -242,38 +243,38 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: message, usage: { dailyRemaining: quota.daily_remaining ?? null, monthlyRemaining: quota.monthly_remaining ?? null } }, { status });
   }
 
+  const costReservations = candidates.map((candidate) => estimateValRequestCostUsd({
+    inputTokens: Math.max(0, requirements.contextTokens - maxOutputTokens),
+    outputTokens: maxOutputTokens,
+    calls: needsTools ? 4 : 1,
+    inputCostPerMillion: candidate.inputCostPerMillion,
+    outputCostPerMillion: candidate.outputCostPerMillion,
+  }));
+  const costReservation = costReservations.length && costReservations.every((estimate): estimate is number => estimate !== null)
+    ? costReservations.reduce<number>((total, estimate) => total + estimate, 0)
+    : null;
+  if (costReservation === null) {
+    await admin.rpc("finalize_val_ai_user_request", { p_user_id: user.id, p_request_id: requestId });
+    await recordValAiBlockedRequest({ requestId, userId: user.id, workspaceId: workspace.id, taskType, reason: "MODEL_PRICING_UNAVAILABLE" });
+    return unavailable();
+  }
+  const { data: costGuard, error: costGuardError } = await admin.rpc("reserve_val_ai_global_cost", {
+    p_request_id: requestId,
+    p_estimated_cost_usd: costReservation,
+  });
+  if (costGuardError || !costGuard?.allowed) {
+    await admin.rpc("finalize_val_ai_user_request", { p_user_id: user.id, p_request_id: requestId });
+    await recordValAiBlockedRequest({ requestId, userId: user.id, workspaceId: workspace.id, taskType, reason: costGuardError ? "GLOBAL_COST_GUARD_UNAVAILABLE" : String(costGuard?.reason || "GLOBAL_COST_LIMIT") });
+    return unavailable();
+  }
+
   const timeout = AbortSignal.timeout(27_000);
-  const verifiedCatalogs = new Map<ValProvider, Awaited<ReturnType<typeof discoverFreeModelCatalog>>["models"]>();
   try {
-    const result = await runFreeModelCandidates(candidates, requirements, maxAttempts, async (candidate, attempt) => {
+    const result = await runValModelCandidates(candidates, requirements, maxAttempts, async (candidate, attempt) => {
       const attemptStartedAt = Date.now();
       try {
-        let catalog = verifiedCatalogs.get(candidate.provider);
-        if (!catalog) {
-          const discovered = await discoverFreeModelCatalog(candidate.provider, candidate.apiKey, AbortSignal.timeout(8_000));
-          catalog = discovered.models;
-          verifiedCatalogs.set(candidate.provider, catalog);
-          await admin.from("val_ai_providers").update({ quota_headers: discovered.quotaHeaders, updated_at: new Date().toISOString() }).eq("id", candidate.provider);
-        }
-        const currentEntry = catalog.find((entry) => entry.model_id === candidate.modelId);
-        const decision = verifyCurrentFreeCatalogEntry(candidate.provider, candidate.modelId, catalog, candidate.freeTierConfirmed);
-        if (decision !== "VERIFIED_FREE") {
-          if (decision === "MODEL_NOT_IN_CATALOG" || decision === "MODEL_NOT_ZERO_PRICED") {
-            await admin.from("val_ai_models").update({ is_free: false, free_verified: false, free_evidence: null, is_enabled: false, health_status: "UNAVAILABLE", official_prompt_price: currentEntry?.official_prompt_price ?? null, official_completion_price: currentEntry?.official_completion_price ?? null, catalog_seen_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("provider_id", candidate.provider).eq("model_id", candidate.modelId);
-          }
-          throw new AIProviderError({ provider: candidate.provider, model: candidate.modelId, category: "MODEL_UNAVAILABLE", providerCode: decision });
-        }
-        if (candidate.provider === "groq") {
-          const { data: currentProvider } = await admin.from("val_ai_providers").select("enabled, free_tier_confirmed").eq("id", candidate.provider).maybeSingle();
-          if (!currentProvider?.enabled || !currentProvider.free_tier_confirmed) throw new AIProviderError({ provider: candidate.provider, model: candidate.modelId, category: "MODEL_UNAVAILABLE", providerCode: "GROQ_FREE_TIER_CONFIRMATION_REVOKED" });
-        }
-        const { error: catalogUpdateError } = await admin.from("val_ai_models").update({
-          catalog_seen_at: new Date().toISOString(),
-          ...(candidate.provider === "openrouter" ? { official_prompt_price: currentEntry?.official_prompt_price, official_completion_price: currentEntry?.official_completion_price } : {}),
-        }).eq("provider_id", candidate.provider).eq("model_id", candidate.modelId).eq("is_free", true).eq("free_verified", true).eq("is_enabled", true);
-        if (catalogUpdateError) throw new AIProviderError({ provider: candidate.provider, model: candidate.modelId, category: "PROVIDER_UNAVAILABLE", providerCode: "FREE_MODEL_REVALIDATION_SAVE_FAILED" });
         const agent = new ToolLoopAgent({
-          model: createValModel(candidate, needsTools),
+          model: await createValModel(candidate, needsTools),
           instructions: canUseFinancialContext
             ? actionsEnabled
           ? `${VAL_PERSONA}\n\n${workspaceInstructions}\n\nPERMISSÃO DE AÇÕES: Você pode somente preparar uma proposta de receita ou despesa comum quando o usuário pedir explicitamente para registrar. Use a ferramenta de proposta; ela não grava nada. Se faltar valor, tipo, data, conta ou categoria inequívocos, faça uma pergunta em vez de supor. Nunca diga que algo foi salvo: somente a pessoa pode confirmar ou descartar a proposta na interface. Não tente transferências, cartões/parcelas, investimentos, metas, edição ou exclusão.`
@@ -291,8 +292,14 @@ export async function POST(request: NextRequest) {
         if (!generated.text.trim()) throw new AIProviderError({ provider: candidate.provider, model: candidate.modelId, category: generated.finishReason === "content-filter" ? "CONTENT_BLOCKED" : "MALFORMED_RESPONSE", providerCode: generated.finishReason });
         const latencyMs = Date.now() - attemptStartedAt;
         const quotaHeaders = readSafeQuotaHeaders(new Headers(generated.response.headers));
+        const estimatedCostUsd = estimateValRequestCostUsd({
+          inputTokens: generated.usage.inputTokens ?? Math.max(0, requirements.contextTokens - maxOutputTokens),
+          outputTokens: generated.usage.outputTokens ?? maxOutputTokens,
+          inputCostPerMillion: candidate.inputCostPerMillion,
+          outputCostPerMillion: candidate.outputCostPerMillion,
+        }) ?? costReservation;
         await Promise.all([
-          recordValAiAttempt({ requestId, userId: user.id, workspaceId: workspace.id, taskType, attempt, provider: candidate.provider, model: candidate.modelId, status: "SUCCESS", latencyMs, inputTokens: generated.usage.inputTokens, outputTokens: generated.usage.outputTokens, quotaHeaders }),
+          recordValAiAttempt({ requestId, userId: user.id, workspaceId: workspace.id, taskType, attempt, provider: candidate.provider, model: candidate.modelId, status: "SUCCESS", latencyMs, inputTokens: generated.usage.inputTokens, outputTokens: generated.usage.outputTokens, estimatedCostUsd, quotaHeaders }),
           recordValAiModelHealth({ provider: candidate.provider, model: candidate.modelId, ok: true, latencyMs, quotaHeaders }),
         ]);
         return { generated, candidate, latencyMs };
@@ -326,10 +333,13 @@ export async function POST(request: NextRequest) {
     }
     const attempts = error && typeof error === "object" && "valAttempts" in error && Array.isArray(error.valAttempts) ? error.valAttempts : [];
     const category = errorCategory(error);
-    await recordValAiBlockedRequest({ requestId, userId: user.id, workspaceId: workspace.id, taskType, reason: category === "UNKNOWN_PROVIDER_ERROR" ? "ALL_FREE_MODELS_FAILED" : category });
+    await recordValAiBlockedRequest({ requestId, userId: user.id, workspaceId: workspace.id, taskType, reason: category === "UNKNOWN_PROVIDER_ERROR" ? "ALL_ENABLED_MODELS_FAILED" : category });
     if (attempts.length === 0) console.error("Central Val AI request failed before a provider attempt", JSON.stringify({ requestId, category }));
     return unavailable();
   } finally {
-    await admin.rpc("finalize_val_ai_user_request", { p_user_id: user.id, p_request_id: requestId });
+    await Promise.all([
+      admin.rpc("finalize_val_ai_user_request", { p_user_id: user.id, p_request_id: requestId }),
+      admin.rpc("finalize_val_ai_global_cost", { p_request_id: requestId }),
+    ]);
   }
 }

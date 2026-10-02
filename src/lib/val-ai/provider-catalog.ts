@@ -8,12 +8,13 @@ export { readSafeQuotaHeaders } from "./catalog-policy";
 export type { CatalogEntry } from "./catalog-policy";
 
 const baseUrls: Record<ValProvider, string> = {
+  deepseek: "https://api.deepseek.com",
   groq: "https://api.groq.com/openai/v1",
   openrouter: "https://openrouter.ai/api/v1",
 };
 
 export function providerDisplayName(provider: ValProvider) {
-  return provider === "groq" ? "Groq" : "OpenRouter";
+  return provider === "deepseek" ? "DeepSeek" : provider === "groq" ? "Groq" : "OpenRouter";
 }
 
 function openRouterReferer() {
@@ -26,7 +27,7 @@ function openRouterReferer() {
   } catch { return undefined; }
 }
 
-export async function discoverFreeModelCatalog(provider: ValProvider, apiKey: string, signal?: AbortSignal): Promise<{ models: CatalogEntry[]; quotaHeaders: Record<string, string> }> {
+export async function discoverModelCatalog(provider: ValProvider, apiKey: string, signal?: AbortSignal): Promise<{ models: CatalogEntry[]; quotaHeaders: Record<string, string> }> {
   const url = provider === "openrouter" ? `${baseUrls[provider]}/models?output_modalities=text` : `${baseUrls[provider]}/models`;
   const referer = provider === "openrouter" ? openRouterReferer() : undefined;
   let response: Response;
@@ -53,6 +54,9 @@ export async function discoverFreeModelCatalog(provider: ValProvider, apiKey: st
   catch { throw new AIProviderError({ provider, model: "catalog", category: "MALFORMED_RESPONSE", httpStatus: response.status }); }
   return { models: parseProviderModelCatalog(provider, payload), quotaHeaders };
 }
+
+/** @deprecated Kept as a compatibility alias for older admin integrations. */
+export const discoverFreeModelCatalog = discoverModelCatalog;
 
 export function providerApiBaseUrl(provider: ValProvider) {
   return baseUrls[provider];

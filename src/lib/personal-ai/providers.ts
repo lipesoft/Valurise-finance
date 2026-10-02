@@ -10,7 +10,7 @@ import { AI_MODEL_ID_PATTERN, AI_PROVIDER_METADATA, type AIModelOption, type AIP
 export { AI_PROVIDERS, AI_PROVIDER_METADATA, type AIModelOption, type AIProvider } from "./provider-config";
 
 const OPENAI_COMPATIBLE_BASE_URLS = {
-  deepseek: "https://api.deepseek.com/v1",
+  deepseek: "https://api.deepseek.com",
   groq: "https://api.groq.com/openai/v1",
   openrouter: "https://openrouter.ai/api/v1",
 } as const satisfies Record<Exclude<AIProvider, "openai" | "gemini">, string>;

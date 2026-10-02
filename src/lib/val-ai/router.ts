@@ -2,7 +2,8 @@ import "server-only";
 
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
-import { indexValModelQuotaUsage, isFreeModelCatalogFresh, isProviderQuotaCoolingDown, providerCircuitDecision, providerQuotaUtilizationPercent, selectFreeModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
+import { indexValModelQuotaUsage, isProviderQuotaCoolingDown, providerCircuitDecision, providerQuotaUtilizationPercent, selectValModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
+import { getValUsagePeriodStarts } from "./periods";
 
 export type RoutedModel = ValModelCandidate & { apiKey: string; displayName: string; requiresProbe?: boolean; requiresProviderProbe?: boolean };
 export type ValRouterRuntime = {
@@ -17,7 +18,7 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
   const [settingsResult, providersResult, modelsResult, keysResult] = await Promise.all([
     admin.from("val_ai_runtime_settings").select("*").eq("id", 1).maybeSingle(),
     admin.from("val_ai_providers").select("id, enabled, free_tier_confirmed, health_status, failure_count, circuit_open_until, priority, quota_headers, last_health_check, updated_at"),
-    admin.from("val_ai_models").select("*").eq("is_free", true).eq("free_verified", true).eq("is_enabled", true),
+    admin.from("val_ai_models").select("*").eq("is_enabled", true),
     admin.from("val_ai_provider_keys").select("provider_id, encrypted_api_key").eq("is_active", true),
   ]);
   if (settingsResult.error || providersResult.error || modelsResult.error || keysResult.error || !settingsResult.data) {
@@ -31,9 +32,8 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
     try { activeKeys.set(String(item.provider_id), decryptPersonalAiKey(String(item.encrypted_api_key))); }
     catch { /* A missing/invalid server encryption key fails closed for this provider. */ }
   }
+  const { day: dailyStart, month: monthlyStart } = getValUsagePeriodStarts();
   const now = new Date();
-  const dailyStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
-  const monthlyStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
   const usageResult = await admin.from("val_ai_usage_rollups").select("period_kind, period_start, provider_id, model_id, requests, attempts, input_tokens, output_tokens")
     .in("period_kind", ["day", "month"]).in("period_start", [dailyStart, monthlyStart]);
   if (usageResult.error) return { enabled: false, settings: null, candidates: [], error: "QUOTA_USAGE_UNAVAILABLE" };
@@ -43,13 +43,17 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
   }>);
   const rows: RoutedModel[] = [];
   for (const row of modelsResult.data || []) {
-    // A free price/catalog assertion expires; stale discovery fails closed until Master refreshes it.
-    if (!isFreeModelCatalogFresh(row.catalog_seen_at ? String(row.catalog_seen_at) : null)) continue;
     const providerId = String(row.provider_id) as ValProvider;
     const provider = providers.get(providerId);
     const apiKey = activeKeys.get(providerId);
-    const providerGlobalFlag = providerId === "groq" ? settings.val_groq_enabled === true : settings.val_openrouter_enabled === true;
+    const providerGlobalFlag = providerId === "deepseek"
+      ? settings.val_deepseek_enabled === true
+      : providerId === "groq" ? settings.val_groq_enabled === true : settings.val_openrouter_enabled === true;
+    if (providerId !== "deepseek" && settings.val_fallback_enabled !== true) continue;
     if (!provider || !apiKey || !provider.enabled || !providerGlobalFlag) continue;
+    if (settings.monthly_cost_hard_limit_usd !== null && settings.monthly_cost_hard_limit_usd !== undefined
+      && (row.input_cost_per_million === null || row.input_cost_per_million === undefined
+        || row.output_cost_per_million === null || row.output_cost_per_million === undefined)) continue;
     const providerCircuit = providerCircuitDecision(
       String(provider.health_status) as ValModelCandidate["health"],
       provider.circuit_open_until ? String(provider.circuit_open_until) : null,
@@ -115,12 +119,14 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
       quotaRemainingRatio: quotaRemainingRatio === 1 && !requestLimits.length && !tokenLimits.length ? null : quotaRemainingRatio,
       providerEnabled: provider.enabled === true,
       freeTierConfirmed: provider.free_tier_confirmed === true,
+      inputCostPerMillion: row.input_cost_per_million === null ? null : Number(row.input_cost_per_million),
+      outputCostPerMillion: row.output_cost_per_million === null ? null : Number(row.output_cost_per_million),
       apiKey,
       requiresProbe,
       requiresProviderProbe: providerCircuit === "probe",
     });
   }
-  const ordered = selectFreeModels(rows, requirements).map((candidate) => rows.find((row) => row.provider === candidate.provider && row.modelId === candidate.modelId)!).filter(Boolean);
+  const ordered = selectValModels(rows, requirements).map((candidate) => rows.find((row) => row.provider === candidate.provider && row.modelId === candidate.modelId)!).filter(Boolean);
   return { enabled: globallyEnabled, settings, candidates: ordered };
 }
 

@@ -7,7 +7,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type ValUsage = {
   today: { requests: number; limit: number; remaining: number };
-  month: { requests: number; limit: number; remaining: number; tokens: number };
+  month: { requests: number; limit: number; remaining: number };
 };
 
 export function ValAISettings({ toast, workspaceId }: { toast: (text: string) => void; workspaceId: string }) {
@@ -117,7 +117,7 @@ export function ValAISettings({ toast, workspaceId }: { toast: (text: string) =>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2"><b>Val · sua assistente financeira</b><HelpHint label="Privacidade e funcionamento da Val">
           <p>A Val é administrada pela Valurise. Você não precisa cadastrar chaves nem escolher modelos.</p>
-          <p>Quando você autorizar, somente a pergunta e os dados necessários podem ser enviados aos provedores de IA identificados na Política de Privacidade. A Valurise só habilita modelos gratuitos verificados; se não houver um modelo gratuito compatível, a Val pausa sem usar um modelo pago.</p>
+          <p>Quando você autorizar, somente a pergunta e os dados necessários podem ser processados pelo provedor configurado pela Valurise, inicialmente a DeepSeek. Se o serviço estiver indisponível, a Val pausa sem trocar automaticamente para outro provedor.</p>
           <p>Se permitir propostas financeiras, a Val poderá preparar apenas uma receita ou despesa comum. Nada é registrado até você revisar e confirmar no aplicativo.</p>
         </HelpHint></div>
         <p className="muted mt-1 text-sm">Clareza para decidir hoje. Constância para prosperar amanhã.</p>
@@ -145,9 +145,9 @@ export function ValAISettings({ toast, workspaceId }: { toast: (text: string) =>
 
     <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="rounded-xl border border-[var(--border)] px-3 py-2.5">
-        <div className="flex items-center gap-2"><ShieldCheck size={15} className="text-[var(--accent)]"/><b className="text-xs">Uso hoje</b><HelpHint label="Limite de uso"><p>O limite de consultas da Val é definido pelo Valurise e renovado automaticamente; tokens são medidos separadamente para controle operacional.</p><p>Mesmo com consultas disponíveis, a Val pode aguardar a renovação de um limite temporário do serviço. A disponibilidade é atualizada automaticamente e a Val nunca troca para um modelo pago.</p></HelpHint></div>
+        <div className="flex items-center gap-2"><ShieldCheck size={15} className="text-[var(--accent)]"/><b className="text-xs">Uso hoje</b><HelpHint label="Limite de uso"><p>O limite de consultas da Val é definido pelo Valurise e renovado automaticamente no início do dia.</p><p>Uma consulta só conta quando a Val consegue preparar uma resposta válida. Se o serviço estiver indisponível, tente novamente mais tarde.</p></HelpHint></div>
         <p className="muted mt-1 text-xs">{usage ? `${remaining} de ${dailyLimit} consultas disponíveis` : "O limite será exibido quando o serviço estiver configurado."}</p>
-        {usage && <p className="muted mt-1 text-[11px]">Neste mês: {usage.month.requests.toLocaleString("pt-BR")} consultas</p>}
+        {usage && <p className="muted mt-1 text-[11px]">Neste mês: {usage.month.requests.toLocaleString("pt-BR")} de {usage.month.limit.toLocaleString("pt-BR")} consultas</p>}
       </div>
       <button type="button" disabled={saving} onClick={() => void save()} className="primary inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold disabled:opacity-60">{saving ? "Salvando…" : <><Check size={16}/>Salvar preferências</>}</button>
     </div>
