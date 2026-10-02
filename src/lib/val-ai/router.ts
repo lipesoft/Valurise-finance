@@ -2,7 +2,7 @@ import "server-only";
 
 import { decryptPersonalAiKey } from "@/lib/personal-ai-crypto";
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
-import { indexValModelQuotaUsage, isProviderQuotaCoolingDown, providerCircuitDecision, providerQuotaUtilizationPercent, selectValModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
+import { indexValModelQuotaUsage, isProviderQuotaCoolingDown, isValProviderAllowed, providerCircuitDecision, providerQuotaUtilizationPercent, selectValModels, type ValModelCandidate, type ValModelRequirements, type ValProvider } from "./policy";
 import { getValUsagePeriodStarts } from "./periods";
 
 export type RoutedModel = ValModelCandidate & { apiKey: string; displayName: string; requiresProbe?: boolean; requiresProviderProbe?: boolean };
@@ -17,9 +17,9 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
   const admin = getSupabaseAdminClient();
   const [settingsResult, providersResult, modelsResult, keysResult] = await Promise.all([
     admin.from("val_ai_runtime_settings").select("*").eq("id", 1).maybeSingle(),
-    admin.from("val_ai_providers").select("id, enabled, free_tier_confirmed, health_status, failure_count, circuit_open_until, priority, quota_headers, last_health_check, updated_at"),
-    admin.from("val_ai_models").select("*").eq("is_enabled", true),
-    admin.from("val_ai_provider_keys").select("provider_id, encrypted_api_key").eq("is_active", true),
+    admin.from("val_ai_providers").select("id, enabled, health_status, failure_count, circuit_open_until, priority, quota_headers, last_health_check, updated_at").eq("id", "deepseek"),
+    admin.from("val_ai_models").select("*").eq("is_enabled", true).eq("provider_id", "deepseek"),
+    admin.from("val_ai_provider_keys").select("provider_id, encrypted_api_key").eq("is_active", true).eq("provider_id", "deepseek"),
   ]);
   if (settingsResult.error || providersResult.error || modelsResult.error || keysResult.error || !settingsResult.data) {
     return { enabled: false, settings: null, candidates: [], error: "CONFIGURATION_UNAVAILABLE" };
@@ -44,12 +44,10 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
   const rows: RoutedModel[] = [];
   for (const row of modelsResult.data || []) {
     const providerId = String(row.provider_id) as ValProvider;
+    if (!isValProviderAllowed(providerId)) continue;
     const provider = providers.get(providerId);
     const apiKey = activeKeys.get(providerId);
-    const providerGlobalFlag = providerId === "deepseek"
-      ? settings.val_deepseek_enabled === true
-      : providerId === "groq" ? settings.val_groq_enabled === true : settings.val_openrouter_enabled === true;
-    if (providerId !== "deepseek" && settings.val_fallback_enabled !== true) continue;
+    const providerGlobalFlag = settings.val_deepseek_enabled === true;
     if (!provider || !apiKey || !provider.enabled || !providerGlobalFlag) continue;
     if (settings.monthly_cost_hard_limit_usd !== null && settings.monthly_cost_hard_limit_usd !== undefined
       && (row.input_cost_per_million === null || row.input_cost_per_million === undefined
@@ -118,7 +116,6 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
       successRate: null,
       quotaRemainingRatio: quotaRemainingRatio === 1 && !requestLimits.length && !tokenLimits.length ? null : quotaRemainingRatio,
       providerEnabled: provider.enabled === true,
-      freeTierConfirmed: provider.free_tier_confirmed === true,
       inputCostPerMillion: row.input_cost_per_million === null ? null : Number(row.input_cost_per_million),
       outputCostPerMillion: row.output_cost_per_million === null ? null : Number(row.output_cost_per_million),
       apiKey,
@@ -131,6 +128,7 @@ export async function loadValRouterRuntime(requirements: ValModelRequirements): 
 }
 
 export async function loadValProviderKey(provider: ValProvider) {
+  if (!isValProviderAllowed(provider)) return null;
   const admin = getSupabaseAdminClient();
   const { data, error } = await admin.from("val_ai_provider_keys").select("encrypted_api_key").eq("provider_id", provider).eq("is_active", true).maybeSingle();
   if (error || !data) return null;

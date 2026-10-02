@@ -1,7 +1,5 @@
-import type { ValProvider } from "./policy";
-
 export type CatalogEntry = {
-  provider_id: ValProvider;
+  provider_id: "deepseek";
   model_id: string;
   display_name: string;
   is_free: boolean;
@@ -10,22 +8,6 @@ export type CatalogEntry = {
   context_window: number | null;
   supports_chat: boolean;
 };
-
-export type FreeCatalogDecision = "VERIFIED_FREE" | "MODEL_NOT_IN_CATALOG" | "MODEL_NOT_ZERO_PRICED" | "GROQ_FREE_TIER_NOT_CONFIRMED";
-
-/**
- * Catalog metadata is diagnostic. Routing authorization comes from the
- * server-managed provider/model allowlist, not from a model name or price.
- */
-export function verifyCurrentFreeCatalogEntry(provider: ValProvider, modelId: string, entries: CatalogEntry[], groqFreeTierConfirmed: boolean): FreeCatalogDecision {
-  const entry = entries.find((model) => model.provider_id === provider && model.model_id === modelId && model.supports_chat);
-  if (!entry) return "MODEL_NOT_IN_CATALOG";
-  if (provider === "groq") return groqFreeTierConfirmed ? "VERIFIED_FREE" : "GROQ_FREE_TIER_NOT_CONFIRMED";
-  if (provider === "deepseek") return "MODEL_NOT_ZERO_PRICED";
-  return entry.is_free && entry.official_prompt_price === 0 && entry.official_completion_price === 0
-    ? "VERIFIED_FREE"
-    : "MODEL_NOT_ZERO_PRICED";
-}
 
 export function readSafeQuotaHeaders(headers: Headers) {
   const allow = [
@@ -56,8 +38,8 @@ function chatSuitable(row: Record<string, unknown>, id: string) {
   return true;
 }
 
-/** Parses the public model catalog; no provider is called from this pure policy function. */
-export function parseProviderModelCatalog(provider: ValProvider, payload: unknown): CatalogEntry[] {
+/** Parses only DeepSeek's public catalog; DeepSeek models are never marked free by inference. */
+export function parseDeepseekModelCatalog(payload: unknown): CatalogEntry[] {
   if (!payload || typeof payload !== "object") return [];
   const rows = (payload as Record<string, unknown>).data;
   if (!Array.isArray(rows)) return [];
@@ -67,16 +49,14 @@ export function parseProviderModelCatalog(provider: ValProvider, payload: unknow
     const id = String(row.id || "").trim();
     if (!/^(?=.{2,150}$)(?!.*(?:^|\/)\.{1,2}(?:\/|$))[A-Za-z0-9._:/-]+$/.test(id) || !chatSuitable(row, id)) return [];
     const pricing = row.pricing && typeof row.pricing === "object" ? row.pricing as Record<string, unknown> : {};
-    const prompt = provider === "openrouter" ? numericPrice(pricing.prompt) : null;
-    const completion = provider === "openrouter" ? numericPrice(pricing.completion) : null;
-    // Groq /models does not prove the account plan or per-model price.
-    const isFree = provider === "openrouter" && prompt === 0 && completion === 0;
+    const prompt = numericPrice(pricing.prompt);
+    const completion = numericPrice(pricing.completion);
     const context = Number(row.context_window ?? row.context_length ?? 0);
     return [{
-      provider_id: provider,
+      provider_id: "deepseek",
       model_id: id,
       display_name: String(row.name || row.display_name || id).slice(0, 160),
-      is_free: isFree,
+      is_free: false,
       official_prompt_price: prompt,
       official_completion_price: completion,
       context_window: Number.isSafeInteger(context) && context > 0 ? Math.min(context, 2_000_000) : null,
@@ -84,6 +64,6 @@ export function parseProviderModelCatalog(provider: ValProvider, payload: unknow
     }];
   });
   return [...new Map(models.map((model) => [model.model_id, model])).values()]
-    .sort((a, b) => Number(b.is_free) - Number(a.is_free) || a.model_id.localeCompare(b.model_id))
+    .sort((a, b) => a.model_id.localeCompare(b.model_id))
     .slice(0, 500);
 }

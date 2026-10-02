@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { classifyValTask, estimateValRequestCostUsd, getValServiceStatus, hasKnownZeroProviderQuota, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, isProviderQuotaCoolingDown, isApprovedValModel, providerCircuitDecision, providerQuotaUtilizationPercent, runFreeModelCandidates, runValModelCandidates, selectFreeModels, selectValModels, type ValReadinessCandidate } from "./policy";
+import { classifyValTask, estimateValRequestCostUsd, getValServiceStatus, hasKnownZeroProviderQuota, indexValModelQuotaUsage, isApprovedFreeModel, isFallbackEligible, isFreeModelCatalogFresh, isProviderQuotaCoolingDown, isApprovedValModel, isValProviderAllowed, providerCircuitDecision, providerQuotaUtilizationPercent, runFreeModelCandidates, runValModelCandidates, selectFreeModels, selectValModels, type ValReadinessCandidate, type ValProvider } from "./policy";
 
 const model = (overrides: Partial<ValReadinessCandidate> = {}): ValReadinessCandidate => ({
-  provider: "groq", modelId: "openai/gpt-oss-20b", isFree: true, freeVerified: true,
+  provider: "deepseek", modelId: "deepseek-chat", isFree: true, freeVerified: true,
   enabled: true, supportsChat: true, supportsTools: true, supportsStructuredOutput: false,
   supportsReasoning: false, contextWindow: 8192, health: "HEALTHY", circuitOpenUntil: null,
   priority: 1, latencyMs: 300, successRate: 0.99, quotaRemainingRatio: 1,
-  providerEnabled: true, freeTierConfirmed: true, ...overrides,
+  providerEnabled: true, ...overrides,
 });
 
 describe("Val model routing policy", () => {
+  it("allows only DeepSeek as the central provider", () => {
+    expect(isValProviderAllowed("deepseek")).toBe(true);
+    expect(isValProviderAllowed("groq")).toBe(false);
+    expect(isValProviderAllowed("openrouter")).toBe(false);
+    expect(isValProviderAllowed("openai")).toBe(false);
+  });
+
   it("só informa Val operacional se houver modelo habilitado com ferramentas pronto agora", () => {
     expect(getValServiceStatus(true, [model()])).toBe("operational");
     expect(getValServiceStatus(false, [model()])).toBe("unavailable");
@@ -82,12 +89,12 @@ describe("Val model routing policy", () => {
 
   it("conta cada tentativa do provider, inclusive fallback, para as cotas por modelo", () => {
     const usage = indexValModelQuotaUsage([
-      { period_kind: "day", provider_id: "groq", model_id: "vendor/model-a", requests: 1, attempts: 2, input_tokens: 100, output_tokens: 40 },
-      { period_kind: "day", provider_id: "groq", model_id: "vendor/model-a", requests: 1, attempts: 1, input_tokens: 80, output_tokens: 30 },
+      { period_kind: "day", provider_id: "deepseek", model_id: "deepseek-chat", requests: 1, attempts: 2, input_tokens: 100, output_tokens: 40 },
+      { period_kind: "day", provider_id: "deepseek", model_id: "deepseek-chat", requests: 1, attempts: 1, input_tokens: 80, output_tokens: 30 },
       { period_kind: "month", provider_id: null, model_id: null, requests: 1, attempts: 1, input_tokens: 20, output_tokens: 10 },
     ]);
-    expect(usage.get("day:groq/vendor/model-a")).toEqual({ requests: 3, tokens: 250 });
-    expect([...usage.keys()]).toEqual(["day:groq/vendor/model-a"]);
+    expect(usage.get("day:deepseek/deepseek-chat")).toEqual({ requests: 3, tokens: 250 });
+    expect([...usage.keys()]).toEqual(["day:deepseek/deepseek-chat"]);
   });
 
   it("abre circuito do provider, bloqueia tentativas concorrentes e permite uma sonda após o cooldown", () => {
@@ -98,11 +105,10 @@ describe("Val model routing policy", () => {
     expect(providerCircuitDecision("DEGRADED", null, now)).toBe("ready");
   });
 
-  it("escolhe o próximo modelo somente dentro da allowlist gratuita", () => {
-    const first = model({ modelId: "groq/a", priority: 1 });
-    const second = model({ provider: "openrouter", modelId: "qwen/b", priority: 2, freeTierConfirmed: false });
-    const paid = model({ provider: "openrouter", modelId: "paid/c", isFree: false, priority: 0 });
-    expect(selectFreeModels([paid, second, first]).map(({ modelId }) => modelId)).toEqual(["groq/a", "qwen/b"]);
+  it("rejeita providers legados mesmo quando aparecem como candidatos saudáveis", () => {
+    const legacy = model({ provider: "openrouter" as unknown as ValProvider, modelId: "legacy/model" });
+    expect(isApprovedValModel(legacy)).toBe(false);
+    expect(selectValModels([legacy])).toEqual([]);
   });
 
   it("exclui candidatos que não suportam tools, quota, health ou circuit breaker", () => {
@@ -115,8 +121,8 @@ describe("Val model routing policy", () => {
     expect(selectFreeModels(candidates, { tools: true }).map(({ modelId }) => modelId)).toEqual(["valid"]);
   });
 
-  it("falha fechado quando a conta Groq não está explicitamente atestada como tier gratuito", () => {
-    expect(selectFreeModels([model({ freeTierConfirmed: false })])).toEqual([]);
+  it("mantém o caminho de seleção gratuito fechado para modelos DeepSeek pagos", () => {
+    expect(selectFreeModels([model({ isFree: false, freeVerified: false })])).toEqual([]);
   });
 
   it("classifica tarefas localmente e não repete erros determinísticos", () => {
@@ -126,21 +132,21 @@ describe("Val model routing policy", () => {
     expect(isFallbackEligible("INVALID_REQUEST")).toBe(false);
   });
 
-  it("faz fallback no máximo três vezes e nunca chama um modelo pago, inclusive se todos os gratuitos falham", async () => {
+  it("faz fallback gratuito entre modelos DeepSeek e nunca chama um modelo pago", async () => {
     const calls: string[] = [];
-    const freeA = model({ modelId: "free/a", priority: 1 });
-    const freeB = model({ provider: "openrouter", modelId: "free/b", priority: 2, freeTierConfirmed: false });
-    const paid = model({ provider: "openrouter", modelId: "paid/c", isFree: false, priority: 0 });
+    const freeA = model({ modelId: "deepseek/free-a", priority: 1 });
+    const freeB = model({ modelId: "deepseek/free-b", priority: 2 });
+    const paid = model({ modelId: "deepseek/paid-c", isFree: false, priority: 0 });
     await expect(runFreeModelCandidates([freeA, freeB, paid], {}, 3, async (candidate) => {
       calls.push(candidate.modelId);
-      throw Object.assign(new Error("unavailable"), { category: "PROVIDER_UNAVAILABLE" });
+      throw Object.assign(new Error("model unavailable"), { category: "MODEL_UNAVAILABLE" });
     })).rejects.toMatchObject({ code: "ALL_FREE_MODELS_UNAVAILABLE" });
-    expect(calls).toEqual(["free/a", "free/b"]);
+    expect(calls).toEqual(["deepseek/free-a", "deepseek/free-b"]);
   });
 
   it("não repete uma solicitação inválida em outros modelos", async () => {
     const calls: string[] = [];
-    await expect(runFreeModelCandidates([model(), model({ provider: "openrouter", modelId: "free/2", freeTierConfirmed: false })], {}, 3, async (candidate) => {
+    await expect(runFreeModelCandidates([model(), model({ modelId: "deepseek/free-2" })], {}, 3, async (candidate) => {
       calls.push(candidate.modelId);
       throw Object.assign(new Error("bad request"), { category: "INVALID_REQUEST" });
     })).rejects.toThrow("bad request");
@@ -150,24 +156,34 @@ describe("Val model routing policy", () => {
   it("só tenta fallback se o roteador entregar outro modelo explicitamente habilitado", async () => {
     const calls: string[] = [];
     const primary = model({ provider: "deepseek", modelId: "deepseek-flash", isFree: false, freeVerified: false, priority: 1 });
-    const disabledBackup = model({ provider: "groq", modelId: "groq/backup", enabled: false, priority: 2 });
+    const disabledBackup = model({ provider: "deepseek", modelId: "deepseek-backup", enabled: false, priority: 2 });
     await expect(runValModelCandidates([primary, disabledBackup], {}, 3, async (candidate) => {
       calls.push(candidate.modelId);
-      throw Object.assign(new Error("unavailable"), { category: "PROVIDER_UNAVAILABLE" });
+      throw Object.assign(new Error("model unavailable"), { category: "MODEL_UNAVAILABLE" });
     })).rejects.toMatchObject({ code: "ALL_ENABLED_MODELS_UNAVAILABLE" });
     expect(calls).toEqual(["deepseek-flash"]);
   });
 
-  it("usa o próximo modelo habilitado só quando o fallback foi liberado pelo roteador", async () => {
+  it("usa somente o próximo modelo DeepSeek habilitado quando o fallback é liberado", async () => {
     const calls: string[] = [];
     const primary = model({ provider: "deepseek", modelId: "deepseek-flash", isFree: false, freeVerified: false, priority: 1 });
-    const backup = model({ provider: "openrouter", modelId: "backup/paid", isFree: false, freeVerified: false, priority: 2 });
+    const backup = model({ provider: "deepseek", modelId: "deepseek-backup", isFree: false, freeVerified: false, priority: 2 });
     const result = await runValModelCandidates([primary, backup], {}, 2, async (candidate) => {
       calls.push(candidate.modelId);
-      if (candidate.provider === "deepseek") throw Object.assign(new Error("rate limited"), { category: "RATE_LIMITED" });
+      if (candidate.modelId === "deepseek-flash") throw Object.assign(new Error("model unavailable"), { category: "MODEL_UNAVAILABLE" });
       return "resposta simulada";
     });
-    expect(result.candidate.modelId).toBe("backup/paid");
-    expect(calls).toEqual(["deepseek-flash", "backup/paid"]);
+    expect(result.candidate.modelId).toBe("deepseek-backup");
+    expect(calls).toEqual(["deepseek-flash", "deepseek-backup"]);
+  });
+
+  it("never calls a legacy provider even if inserted directly into fallback candidates", async () => {
+    const legacy = model({ provider: "groq" as unknown as ValProvider, modelId: "legacy/paid" });
+    const calls: string[] = [];
+    await expect(runValModelCandidates([legacy], {}, 3, async (candidate) => {
+      calls.push(candidate.modelId);
+      return "must not run";
+    })).rejects.toMatchObject({ code: "ALL_ENABLED_MODELS_UNAVAILABLE" });
+    expect(calls).toEqual([]);
   });
 });

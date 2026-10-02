@@ -504,21 +504,14 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
     input_cost_per_million: 0.3, output_cost_per_million: 1.2, pricing_source: "official peak price", price_verified_at: now,
     daily_request_limit: 100, monthly_request_limit: 1000, daily_token_limit: 20000, monthly_token_limit: 200000, catalog_seen_at: now,
   };
-  const paidModel = {
-    ...deepseekModel, id: "model-paid", provider_id: "openrouter", model_id: "paid/vendor-model", display_name: "Paid model",
-    is_free: false, free_verified: false, free_evidence: null, is_enabled: false, priority: 100,
-    health_status: "UNAVAILABLE", official_prompt_price: 0.000001, official_completion_price: 0.000002,
-  };
   const responseData = {
     providers: [
-      { id: "deepseek", enabled: true, free_tier_confirmed: false, health_status: "HEALTHY", priority: 1, last_health_check: now, last_latency_ms: 86, last_error_category: null, quota_headers: {}, updated_at: now },
-      { id: "groq", enabled: false, free_tier_confirmed: false, health_status: "DISABLED", priority: 1, last_health_check: null, last_latency_ms: null, last_error_category: null, quota_headers: {}, updated_at: now },
-      { id: "openrouter", enabled: false, free_tier_confirmed: false, health_status: "DISABLED", priority: 2, last_health_check: null, last_latency_ms: null, last_error_category: null, quota_headers: {}, updated_at: now },
+      { id: "deepseek", enabled: true, health_status: "HEALTHY", priority: 1, last_health_check: now, last_latency_ms: 86, last_error_category: null, quota_headers: {}, updated_at: now },
     ],
     keys: [{ id: "key-deepseek", provider_id: "deepseek", key_suffix: "D4F3", is_active: true, updated_at: now }],
-    models: [deepseekModel, paidModel],
-    settings: { daily_requests: 10, monthly_requests: 200, daily_tokens: 50000, monthly_tokens: 1000000, max_context_tokens: 12000, max_output_tokens: 700, max_attempts: 1, monthly_cost_soft_limit_usd: 8, monthly_cost_hard_limit_usd: 10, reference_balance_usd: null, val_enabled: true, val_router_enabled: true, val_deepseek_enabled: true, val_fallback_enabled: false, val_groq_enabled: false, val_openrouter_enabled: false, val_actions_enabled: true, val_insights_enabled: true },
-    overview: { status: "operational", requestsToday: 14, requestsMonth: 82, tokensToday: 4200, tokensMonth: 35000, estimatedCostTodayUsd: 0.04, estimatedCostMonthUsd: 1.2, successRate: 96, failuresToday: 1, fallbacksToday: 0, activeProviders: 1, freeModels: 1, averageLatencyMs: 430, uniqueUsersToday: 4 },
+    models: [deepseekModel],
+    settings: { daily_requests: 10, monthly_requests: 200, daily_tokens: 50000, monthly_tokens: 1000000, max_context_tokens: 12000, max_output_tokens: 700, max_attempts: 1, monthly_cost_soft_limit_usd: 8, monthly_cost_hard_limit_usd: 10, reference_balance_usd: null, val_enabled: true, val_router_enabled: true, val_deepseek_enabled: true, val_fallback_enabled: false, val_actions_enabled: true, val_insights_enabled: true },
+    overview: { status: "operational", requestsToday: 14, requestsMonth: 82, tokensToday: 4200, tokensMonth: 35000, estimatedCostTodayUsd: 0.04, estimatedCostMonthUsd: 1.2, successRate: 96, failuresToday: 1, fallbacksToday: 0, activeProviders: 1, readyModels: 1, averageLatencyMs: 430, uniqueUsersToday: 4 },
     usageByModel: [{ period: "day", provider: "deepseek", model: "deepseek-flash", requests: 14, attempts: 14, tokens: 4200, estimatedCostUsd: 0.04 }],
     recentErrors: [], users: [], audit: [],
   };
@@ -535,7 +528,7 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
   await expect(page.getByRole("heading", { name: "Central da Val" })).toBeVisible();
   const keyInput = page.getByPlaceholder("Cole a chave do provider").first();
   await expect(keyInput).toBeVisible();
-  await expect(page.getByPlaceholder("Cole a chave do provider")).toHaveCount(3);
+  await expect(page.getByPlaceholder("Cole a chave do provider")).toHaveCount(1);
   await page.getByRole("button", { name: "Visão geral" }).click();
   await expect(page.getByText("Operacional", { exact: true })).toBeVisible();
   await expect(page.getByText("Há modelo habilitado, com saúde e capacidade compatíveis para a Val.")).toBeVisible();
@@ -543,6 +536,8 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
   await expect(page.getByText("14", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Provedores" }).click();
   await expect(keyInput).toBeVisible();
+  await expect(page.getByText("Groq", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("OpenRouter", { exact: true })).toHaveCount(0);
   await keyInput.fill(keySentinel);
   await page.getByRole("button", { name: "Salvar chave protegida" }).first().click();
   await expect(page.getByText("Chave guardada de forma criptografada.").first()).toBeVisible();
@@ -550,9 +545,8 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
   expect(adminActions[0]).toMatchObject({ action: "save_key", provider: "deepseek", apiKey: keySentinel });
 
   await page.getByRole("button", { name: "Modelos" }).click();
-  const paidCard = page.getByRole("article").filter({ hasText: "paid/vendor-model" }).first();
-  await expect(paidCard.getByText("PAGO/SEM PREÇO · estimativa controlada")).toBeVisible();
-  await expect(paidCard.getByRole("button", { name: "Testar conexão" })).toBeDisabled();
+  await expect(page.getByText("Groq", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("OpenRouter", { exact: true })).toHaveCount(0);
   const deepseekCard = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "DeepSeek V4.1 Flash" }) }).first();
   await deepseekCard.getByRole("button", { name: "Testar conexão" }).click();
   await expect(page.getByText("Conexão validada · deepseek-flash · 86 ms · ferramenta validada.")).toBeVisible();
@@ -576,10 +570,31 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
   }
 
   responseData.overview.status = "unavailable";
-  responseData.overview.freeModels = 0;
+  responseData.overview.readyModels = 0;
   await page.getByRole("button", { name: "Visão geral" }).click();
   await page.getByRole("button", { name: "Atualizar" }).last().click();
   await expect(page.getByText("Indisponível", { exact: true })).toBeVisible();
   await expect(page.getByText("A DeepSeek ainda não está pronta. Verifique chave, modelo, saúde, limite mensal e controles de ativação.")).toBeVisible();
   await expect(page.getByText("0 modelo(s) habilitado(s) e pronto(s)")).toBeVisible();
+});
+
+test("Central da Val diferencia Supabase indisponível de migration ausente", async ({ page }) => {
+  await signInAsMaster(page);
+  await page.route("**/api/admin/val-ai", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({
+      code: "VAL_AI_DATABASE_UNAVAILABLE",
+      error: "O banco da Central da Val não está respondendo. Confira se o projeto Supabase está ativo e tente novamente.",
+      technical: "PGRST000: connection timeout",
+    }),
+  }));
+
+  await page.getByRole("button", { name: "IA da Val" }).click();
+  await expect(page.getByRole("button", { name: "IA da Val" })).toHaveAttribute("aria-current", "page");
+  const unavailableMessage = "O banco da Central da Val não está respondendo. Confira se o projeto Supabase está ativo e tente novamente.";
+  await expect(page.getByText(unavailableMessage, { exact: true })).toHaveCount(1);
+  await expect(page.getByText(/central_val_ai_router/)).toHaveCount(0);
+  await page.getByText("Diagnóstico técnico").click();
+  await expect(page.getByText("PGRST000: connection timeout", { exact: true })).toBeVisible();
 });

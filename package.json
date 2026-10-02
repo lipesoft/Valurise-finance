@@ -15,8 +15,6 @@
     "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
-    "@ai-sdk/google": "^4.0.79",
-    "@ai-sdk/openai": "^4.0.74",
     "@ai-sdk/openai-compatible": "^3.0.55",
     "@hookform/resolvers": "^5.9.1",
     "@supabase/ssr": "^0.12.7",

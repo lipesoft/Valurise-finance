@@ -1,19 +1,10 @@
 import "server-only";
 
-import { createGoogle } from "@ai-sdk/google";
-import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
-import { isSupportedGeminiModel } from "./model-options";
-import { AI_MODEL_ID_PATTERN, AI_PROVIDER_METADATA, type AIModelOption, type AIProvider } from "./provider-config";
+import { AI_PROVIDER_METADATA, type AIProvider } from "./provider-config";
 
-export { AI_PROVIDERS, AI_PROVIDER_METADATA, type AIModelOption, type AIProvider } from "./provider-config";
-
-const OPENAI_COMPATIBLE_BASE_URLS = {
-  deepseek: "https://api.deepseek.com",
-  groq: "https://api.groq.com/openai/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-} as const satisfies Record<Exclude<AIProvider, "openai" | "gemini">, string>;
+export { AI_PROVIDERS, AI_PROVIDER_METADATA, type AIProvider } from "./provider-config";
 
 export type AIErrorCategory =
   | "INVALID_API_KEY" | "INVALID_MODEL" | "MODEL_UNAVAILABLE" | "INVALID_REQUEST"
@@ -23,26 +14,32 @@ export type AIErrorCategory =
   | "TOOL_CALL_UNSUPPORTED" | "UNKNOWN_PROVIDER_ERROR";
 
 const messages: Record<AIErrorCategory, (provider: string) => string> = {
-  INVALID_API_KEY: (p) => `A chave da ${p} é inválida, foi revogada ou não tem permissão para usar a API.`,
-  INVALID_MODEL: (p) => `O modelo selecionado não existe ou não está disponível para esta chave da ${p}. Atualize o catálogo e escolha outro modelo.`,
-  MODEL_UNAVAILABLE: (p) => `Este modelo da ${p} não está disponível para sua conta ou região.`,
-  INVALID_REQUEST: () => "O provedor não aceitou esta solicitação. Revise o modelo e tente novamente.",
+  INVALID_API_KEY: (p) => `A chave central da ${p} é inválida ou não tem permissão para usar a API.`,
+  INVALID_MODEL: (p) => `O modelo selecionado não existe ou não está disponível na ${p}.`,
+  MODEL_UNAVAILABLE: (p) => `Este modelo da ${p} está temporariamente indisponível.`,
+  INVALID_REQUEST: () => "A solicitação não foi aceita. Tente novamente em instantes.",
   RATE_LIMITED: (p) => `A ${p} limitou temporariamente as solicitações. Aguarde um pouco antes de tentar novamente.`,
-  QUOTA_EXCEEDED: (p) => `O limite de uso da ${p} foi atingido. Confira a cota e os limites do projeto do provedor.`,
-  INSUFFICIENT_BALANCE: (p) => `O saldo da conta da ${p} é insuficiente para esta solicitação.`,
-  BILLING_REQUIRED: (p) => `O provedor informou uma exigência de faturamento ou pré-condição da conta ${p}. Confira o projeto e o modelo selecionado.`,
-  PERMISSION_DENIED: (p) => `A chave da ${p} não tem permissão para usar esta API ou este modelo. Confira o escopo da chave, a organização e o acesso ao modelo.`,
-  REGION_RESTRICTED: (p) => `Este modelo da ${p} não está disponível na região configurada para sua conta.`,
-  CONTENT_BLOCKED: () => "O provedor bloqueou a resposta por uma política de segurança. Reformule a pergunta e tente novamente.",
-  TIMEOUT: () => "O provedor demorou demais para responder. Tente novamente em instantes.",
+  QUOTA_EXCEEDED: (p) => `A cota central da ${p} foi atingida.`,
+  INSUFFICIENT_BALANCE: (p) => `O saldo central da ${p} é insuficiente para esta solicitação.`,
+  BILLING_REQUIRED: (p) => `A ${p} informou uma exigência de faturamento para a conta central.`,
+  PERMISSION_DENIED: (p) => `A chave central da ${p} não tem permissão para usar esta API ou este modelo.`,
+  REGION_RESTRICTED: (p) => `Este modelo da ${p} não está disponível na região da conta central.`,
+  CONTENT_BLOCKED: () => "A resposta foi bloqueada por uma política de segurança. Reformule a pergunta e tente novamente.",
+  TIMEOUT: () => "A Val demorou demais para responder. Tente novamente em instantes.",
   PROVIDER_OVERLOADED: (p) => `A ${p} está temporariamente sobrecarregada. Tente novamente em instantes.`,
   PROVIDER_UNAVAILABLE: (p) => `O serviço da ${p} está temporariamente indisponível.`,
-  NETWORK_ERROR: () => "Não foi possível alcançar o provedor. Verifique sua conexão e tente novamente.",
-  MALFORMED_RESPONSE: (p) => `A ${p} respondeu em um formato inesperado. Tente novamente ou escolha outro modelo.`,
+  NETWORK_ERROR: () => "Não foi possível alcançar o serviço da Val. Tente novamente em instantes.",
+  MALFORMED_RESPONSE: (p) => `A ${p} respondeu em um formato inesperado.`,
   TOOL_CALL_ERROR: () => "Não foi possível consultar os dados solicitados com segurança. Tente reformular a pergunta.",
-  TOOL_CALL_UNSUPPORTED: (p) => `A conexão com ${p} funcionou, mas este modelo não oferece chamadas de ferramentas compatíveis com a Val. Escolha outro modelo e teste novamente.`,
-  UNKNOWN_PROVIDER_ERROR: (p) => `A solicitação à ${p} falhou. Teste a conexão para ver um diagnóstico seguro.`,
+  TOOL_CALL_UNSUPPORTED: (p) => `O modelo atual da ${p} não oferece as ferramentas necessárias para esta solicitação.`,
+  UNKNOWN_PROVIDER_ERROR: (p) => `A solicitação à ${p} falhou. Consulte o diagnóstico no Super Admin.`,
 };
+
+const SAFE_QUOTA_HEADERS = [
+  "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests",
+  "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens",
+  "retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+] as const;
 
 export class AIProviderError extends Error {
   readonly provider: AIProvider;
@@ -84,12 +81,6 @@ export class AIProviderError extends Error {
   }
 }
 
-const SAFE_QUOTA_HEADERS = [
-  "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests",
-  "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens",
-  "retry-after", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
-] as const;
-
 function safeQuotaHeaders(headers: unknown) {
   const values = new Map<string, unknown>();
   if (typeof Headers !== "undefined" && headers instanceof Headers) {
@@ -101,9 +92,7 @@ function safeQuotaHeaders(headers: unknown) {
     const value = values.get(name);
     if (name === "retry-after" && typeof value === "string" && value.length <= 80) {
       const retryAfterMs = parseRetryAfterMs(value);
-      return retryAfterMs !== null
-        ? [[name, String(Math.ceil(retryAfterMs / 100) / 10)]]
-        : [];
+      return retryAfterMs !== null ? [[name, String(Math.ceil(retryAfterMs / 100) / 10)]] : [];
     }
     return typeof value === "string" && value.length <= 80 && /^[0-9][A-Za-z0-9 .:+-]*$/.test(value)
       ? [[name, value]]
@@ -115,7 +104,6 @@ function parseRetryAfterMs(value: string | undefined, now = Date.now()) {
   if (!value) return null;
   const numeric = Number(value);
   if (Number.isFinite(numeric) && numeric >= 0) {
-    // Retry-After is expressed in seconds; provider reset headers may be epoch seconds.
     return numeric > 1_000_000_000 ? Math.max(0, numeric * 1000 - now) : numeric * 1000;
   }
   const duration = value.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/i);
@@ -174,7 +162,7 @@ function bodyDetails(body: unknown) {
     const quota = detailValues.find((value) => /quota|perminute|perday|tokensper/i.test(value)) || "";
     const bodyStatus = Number(error.code || error.status);
     return {
-      text: String(error?.message || error?.status || "").slice(0, 1000),
+      text: String(error.message || error.status || "").slice(0, 1000),
       code: String(typeof error.code === "string" || typeof error.code === "number" ? error.code : error.type || "").slice(0, 100),
       status: String(error.status || "").slice(0, 100),
       reason: String(detailValues.find((value) => /permission|api_key|rate|quota|billing|service_disabled/i.test(value)) || "").slice(0, 100),
@@ -192,9 +180,6 @@ export function classifyAIError(error: unknown, provider: AIProvider, model: str
   const rawStatus = Number(value.statusCode || value.status || 0);
   const transportStatus = Number.isFinite(rawStatus) && rawStatus > 0 ? rawStatus : null;
   const details = bodyDetails(value.responseBody);
-  // Some OpenAI-compatible gateways return HTTP 200 while embedding an
-  // upstream provider failure in the error envelope. Prefer that status only
-  // when the transport itself succeeded; otherwise the real HTTP status wins.
   const status = transportStatus !== null && (transportStatus < 200 || transportStatus >= 300)
     ? transportStatus
     : details.providerHttpStatus ?? transportStatus;
@@ -205,14 +190,12 @@ export function classifyAIError(error: unknown, provider: AIProvider, model: str
   const rawHeaders = value.responseHeaders;
   const headers = safeQuotaHeaders(rawHeaders);
   const headerEntries = rawHeaders instanceof Headers
-    ? [...rawHeaders.entries()].map(([name, value]) => [name.toLowerCase(), value] as const)
-    : Object.entries(rawHeaders && typeof rawHeaders === "object" ? rawHeaders : {}).map(([name, value]) => [name.toLowerCase(), String(value)] as const);
-  const requestId = headerEntries.find(([name]) => ["x-request-id", "request-id", "x-goog-request-id"].includes(name))?.[1];
+    ? [...rawHeaders.entries()].map(([name, headerValue]) => [name.toLowerCase(), headerValue] as const)
+    : Object.entries(rawHeaders && typeof rawHeaders === "object" ? rawHeaders : {}).map(([name, headerValue]) => [name.toLowerCase(), String(headerValue)] as const);
+  const requestId = headerEntries.find(([name]) => ["x-request-id", "request-id"].includes(name))?.[1];
   const resetHeader = headers["retry-after"] || headers["x-ratelimit-reset-tokens"] || headers["x-ratelimit-reset-requests"] || headers["x-ratelimit-reset"];
-  const retryAfterMs = parseRetryAfterMs(resetHeader)
-    ?? retryAfterFromProviderMessage(details.text);
+  const retryAfterMs = parseRetryAfterMs(resetHeader) ?? retryAfterFromProviderMessage(details.text);
   if (retryAfterMs && !headers["retry-after"] && !headers["x-ratelimit-reset-tokens"] && !headers["x-ratelimit-reset-requests"] && !headers["x-ratelimit-reset"]) {
-    // Groq commonly reports its reset in the structured error message instead of a header.
     headers["retry-after"] = String(Math.ceil(retryAfterMs / 100) / 10);
   }
   let category: AIErrorCategory = "UNKNOWN_PROVIDER_ERROR";
@@ -243,7 +226,7 @@ export function classifyAIError(error: unknown, provider: AIProvider, model: str
 }
 
 export function logAIError(error: AIProviderError, latencyMs: number) {
-  // Intentionally log diagnostics only: never provider response bodies, prompts, keys, or finance data.
+  // Log diagnostics only: never provider response bodies, prompts, keys, or financial data.
   console.error("Val AI provider failure", JSON.stringify({
     provider: error.provider,
     model: error.model,
@@ -257,163 +240,7 @@ export function logAIError(error: AIProviderError, latencyMs: number) {
   }));
 }
 
-export function createProviderModel(provider: AIProvider, apiKey: string, model: string): LanguageModel {
-  switch (provider) {
-    case "openai":
-      return createOpenAI({ apiKey }).chat(model);
-    case "gemini":
-      return createGoogle({ apiKey, fetch: createSingle503RetryFetch() })(model);
-    case "deepseek":
-    case "groq":
-      return createOpenAICompatible({ name: provider, apiKey, baseURL: OPENAI_COMPATIBLE_BASE_URLS[provider] })(model);
-    case "openrouter":
-      return createOpenAICompatible({
-        name: provider,
-        apiKey,
-        baseURL: OPENAI_COMPATIBLE_BASE_URLS.openrouter,
-        headers: openRouterHeaders(),
-      })(model);
-    default: {
-      const unsupportedProvider: never = provider;
-      throw new Error(`Unsupported AI provider: ${unsupportedProvider}`);
-    }
-  }
-}
-
-function openRouterHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { "X-OpenRouter-Title": "Valurise" };
-  const configuredUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL;
-  if (configuredUrl) {
-    try {
-      const url = new URL(configuredUrl);
-      if (url.protocol === "https:" && !url.username && !url.password) headers["HTTP-Referer"] = url.origin;
-    } catch {
-      // Attribution headers are optional; an invalid or absent site URL is simply omitted.
-    }
-  }
-  return headers;
-}
-
-/** Retries one Gemini 503 only. Billing, quota and invalid-model errors are never replayed. */
-export function createSingle503RetryFetch(fetchImplementation: typeof fetch = fetch, retryDelayMs = 500): typeof fetch {
-  return async (input, init) => {
-    const retryInput = input instanceof Request ? input.clone() : input;
-    const signal = init?.signal || (input instanceof Request ? input.signal : undefined);
-    const firstResponse = await fetchImplementation(input, init);
-    if (firstResponse.status !== 503 || signal?.aborted) return firstResponse;
-
-    await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
-    if (signal?.aborted) return firstResponse;
-    await firstResponse.body?.cancel().catch(() => undefined);
-    return fetchImplementation(retryInput, init);
-  };
-}
-
-async function fetchJSON(provider: AIProvider, model: string, url: string, apiKey: string, signal?: AbortSignal) {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      signal,
-      headers: provider === "gemini"
-        ? { "x-goog-api-key": apiKey }
-        : { Authorization: `Bearer ${apiKey}`, ...(provider === "openrouter" ? openRouterHeaders() : {}) },
-      cache: "no-store",
-    });
-  } catch (error) {
-    throw classifyAIError(error, provider, model);
-  }
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    const wrapped = Object.assign(new Error("Provider catalog request failed"), {
-      statusCode: response.status,
-      responseBody: text,
-      responseHeaders: Object.fromEntries(response.headers.entries()),
-    });
-    throw classifyAIError(wrapped, provider, model);
-  }
-  try { return await response.json() as Record<string, unknown>; }
-  catch { throw new AIProviderError({ provider, model, category: "MALFORMED_RESPONSE", httpStatus: response.status }); }
-}
-
-function modelTier(provider: AIProvider, id: string, free = false): AIModelOption["tier"] {
-  const value = id.toLowerCase();
-  if (value === AI_PROVIDER_METADATA[provider].defaultModel || (provider === "openrouter" && value === "openrouter/free")) return "recommended";
-  if (free) return "economical";
-  if (provider === "gemini" && value === "gemini-2.5-flash") return "economical";
-  if (/mini|nano|flash-lite|flash$/.test(value)) return "economical";
-  if (/pro|reason|o[134]/.test(value)) return "advanced";
-  return "other";
-}
-
-function isZeroPrice(value: unknown) {
-  return (typeof value === "string" || typeof value === "number") && Number.isFinite(Number(value)) && Number(value) === 0;
-}
-
-function isClearlyNonChatModel(id: string, label: string) {
-  return /(speech|whisper|tts|transcri|audio|moderation|prompt.?guard|safeguard|embedding|embed)/i.test(`${id} ${label}`);
-}
-
-function hasTextOutput(row: Record<string, unknown>) {
-  const architecture = row.architecture;
-  if (!architecture || typeof architecture !== "object") return true;
-  const outputModalities = (architecture as Record<string, unknown>).output_modalities;
-  return !Array.isArray(outputModalities) || outputModalities.includes("text");
-}
-
-export async function listProviderModels(provider: AIProvider, apiKey: string, signal?: AbortSignal): Promise<AIModelOption[]> {
-  const baseModel = "catalog";
-  let payload: Record<string, unknown>;
-  if (provider === "openai") payload = await fetchJSON(provider, baseModel, "https://api.openai.com/v1/models", apiKey, signal);
-  else if (provider === "gemini") payload = await fetchJSON(provider, baseModel, "https://generativelanguage.googleapis.com/v1beta/models", apiKey, signal);
-  else if (provider === "deepseek") payload = await fetchJSON(provider, baseModel, "https://api.deepseek.com/models", apiKey, signal);
-  else if (provider === "groq") payload = await fetchJSON(provider, baseModel, "https://api.groq.com/openai/v1/models", apiKey, signal);
-  else payload = await fetchJSON(provider, baseModel, "https://openrouter.ai/api/v1/models?output_modalities=text", apiKey, signal);
-
-  const rows = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : [];
-  const models = rows.flatMap((item) => {
-    if (!item || typeof item !== "object") return [];
-    const row = item as Record<string, unknown>;
-    const rawId = String(row.id || row.name || "");
-    const id = provider === "gemini" ? rawId.replace(/^models\//, "") : rawId;
-    const supported = row.supportedGenerationMethods;
-    const label = String(row.displayName || row.name || id).replace(/^models\//, "").slice(0, 120);
-    const active = typeof row.active !== "boolean" || row.active;
-    const textModel = provider === "gemini"
-      ? Array.isArray(supported) && supported.includes("generateContent") && isSupportedGeminiModel(id)
-      : provider === "openai"
-        ? /^(gpt-|chatgpt-|o[134](?:-|$))/i.test(id) && !/(embedding|whisper|tts|transcri|image|realtime|moderation|search-preview)/i.test(id)
-        : provider === "deepseek"
-          ? /^deepseek-/i.test(id) && !isClearlyNonChatModel(id, label)
-          : (provider === "groq" || provider === "openrouter") && active && hasTextOutput(row) && !isClearlyNonChatModel(id, label);
-    if (!textModel || !AI_MODEL_ID_PATTERN.test(id)) return [];
-    const pricing = row.pricing && typeof row.pricing === "object" ? row.pricing as Record<string, unknown> : {};
-    const free = provider === "openrouter" && (id.endsWith(":free") || id === "openrouter/free"
-      || isZeroPrice(pricing.prompt) && isZeroPrice(pricing.completion));
-    return [{
-      id,
-      label: provider === "openrouter" && id === "openrouter/free" ? "OpenRouter Free · Recomendado" : label,
-      tier: modelTier(provider, id, free),
-      ...(provider === "openrouter" ? { free } : {}),
-      provider,
-    } satisfies AIModelOption];
-  });
-  const uniqueModels = [...new Map(models.map((item) => [item.id, item])).values()];
-  if (provider === "openrouter" && !uniqueModels.some((item) => item.id === "openrouter/free")) {
-    uniqueModels.push({ id: "openrouter/free", label: "OpenRouter Free · Recomendado", tier: "recommended", free: true, provider });
-  }
-  return uniqueModels.sort((a, b) => {
-    if (provider === "openrouter") {
-      const priority = (item: AIModelOption) => item.id === "openrouter/free" ? 0 : item.free ? 1 : 2;
-      const freeDifference = priority(a) - priority(b);
-      if (freeDifference) return freeDifference;
-    }
-    if (provider === "gemini") {
-      const priority = (id: string) => id === "gemini-2.5-flash-lite" ? 0 : id === "gemini-2.5-flash" ? 1 : 2;
-      const difference = priority(a.id) - priority(b.id);
-      if (difference) return difference;
-    }
-    const order = { recommended: 0, economical: 1, advanced: 2, other: 3 };
-    return order[a.tier] - order[b.tier] || a.label.localeCompare(b.label);
-  }).slice(0, 120);
+export function createProviderModel(provider: string, apiKey: string, model: string): LanguageModel {
+  if (provider !== "deepseek") throw new Error("Somente o provider central DeepSeek está habilitado.");
+  return createOpenAICompatible({ name: "deepseek", apiKey, baseURL: "https://api.deepseek.com" })(model);
 }

@@ -1,40 +1,26 @@
 import "server-only";
 
 import { AIProviderError, classifyAIError } from "@/lib/personal-ai/providers";
-import { parseProviderModelCatalog, readSafeQuotaHeaders, type CatalogEntry } from "./catalog-policy";
-import type { ValProvider } from "./policy";
+import { parseDeepseekModelCatalog, readSafeQuotaHeaders, type CatalogEntry } from "./catalog-policy";
+import { isValProviderAllowed, type ValProvider } from "./policy";
 
 export { readSafeQuotaHeaders } from "./catalog-policy";
 export type { CatalogEntry } from "./catalog-policy";
 
-const baseUrls: Record<ValProvider, string> = {
-  deepseek: "https://api.deepseek.com",
-  groq: "https://api.groq.com/openai/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-};
+const baseUrls: Record<ValProvider, string> = { deepseek: "https://api.deepseek.com" };
 
 export function providerDisplayName(provider: ValProvider) {
-  return provider === "deepseek" ? "DeepSeek" : provider === "groq" ? "Groq" : "OpenRouter";
-}
-
-function openRouterReferer() {
-  const configured = process.env.NEXT_PUBLIC_SITE_URL;
-  if (!configured) return undefined;
-  try {
-    const url = new URL(configured);
-    if (url.protocol !== "https:" || url.username || url.password) return undefined;
-    return url.origin;
-  } catch { return undefined; }
+  if (!isValProviderAllowed(provider)) throw Object.assign(new Error("VAL_PROVIDER_DISABLED"), { code: "VAL_PROVIDER_DISABLED" });
+  return "DeepSeek";
 }
 
 export async function discoverModelCatalog(provider: ValProvider, apiKey: string, signal?: AbortSignal): Promise<{ models: CatalogEntry[]; quotaHeaders: Record<string, string> }> {
-  const url = provider === "openrouter" ? `${baseUrls[provider]}/models?output_modalities=text` : `${baseUrls[provider]}/models`;
-  const referer = provider === "openrouter" ? openRouterReferer() : undefined;
+  if (!isValProviderAllowed(provider)) throw Object.assign(new Error("VAL_PROVIDER_DISABLED"), { code: "VAL_PROVIDER_DISABLED" });
+  const url = `${baseUrls[provider]}/models`;
   let response: Response;
   try {
     response = await fetch(url, { method: "GET", cache: "no-store", signal, headers: {
       Authorization: `Bearer ${apiKey}`,
-      ...(provider === "openrouter" ? { "X-OpenRouter-Title": "Valurise", ...(referer ? { "HTTP-Referer": referer } : {}) } : {}),
     } });
   } catch (error) {
     throw classifyAIError(error, provider, "catalog");
@@ -52,11 +38,8 @@ export async function discoverModelCatalog(provider: ValProvider, apiKey: string
   let payload: unknown;
   try { payload = JSON.parse(bodyText) as Record<string, unknown>; }
   catch { throw new AIProviderError({ provider, model: "catalog", category: "MALFORMED_RESPONSE", httpStatus: response.status }); }
-  return { models: parseProviderModelCatalog(provider, payload), quotaHeaders };
+  return { models: parseDeepseekModelCatalog(payload), quotaHeaders };
 }
-
-/** @deprecated Kept as a compatibility alias for older admin integrations. */
-export const discoverFreeModelCatalog = discoverModelCatalog;
 
 export function providerApiBaseUrl(provider: ValProvider) {
   return baseUrls[provider];

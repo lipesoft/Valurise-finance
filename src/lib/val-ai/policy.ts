@@ -1,4 +1,5 @@
-export type ValProvider = "deepseek" | "groq" | "openrouter";
+export type ValProvider = "deepseek";
+export const isValProviderAllowed = (provider: unknown): provider is ValProvider => provider === "deepseek";
 export type ValHealth = "HEALTHY" | "DEGRADED" | "UNAVAILABLE" | "CIRCUIT_OPEN" | "HALF_OPEN" | "DISABLED" | "QUOTA_EXHAUSTED";
 export type ValModelCandidate = {
   provider: ValProvider;
@@ -18,7 +19,6 @@ export type ValModelCandidate = {
   successRate: number | null;
   quotaRemainingRatio: number | null;
   providerEnabled: boolean;
-  freeTierConfirmed: boolean;
   inputCostPerMillion?: number | null;
   outputCostPerMillion?: number | null;
 };
@@ -72,7 +72,7 @@ export function indexValModelQuotaUsage(rows: Array<{
 export function isApprovedFreeModel(candidate: ValModelCandidate, requirements: ValModelRequirements = {}) {
   const now = requirements.now ?? Date.now();
   if (!candidate.isFree || !candidate.freeVerified || !candidate.enabled || !candidate.supportsChat) return false;
-  if (!candidate.providerEnabled || candidate.provider === "groq" && !candidate.freeTierConfirmed) return false;
+  if (!isValProviderAllowed(candidate.provider) || !candidate.providerEnabled) return false;
   if (candidate.health !== "HEALTHY" && candidate.health !== "DEGRADED") return false;
   if (candidate.circuitOpenUntil && Date.parse(candidate.circuitOpenUntil) > now) return false;
   if (candidate.quotaRemainingRatio !== null && candidate.quotaRemainingRatio <= 0) return false;
@@ -86,7 +86,7 @@ export function isApprovedFreeModel(candidate: ValModelCandidate, requirements: 
 /** The central policy: a provider and model must both be explicitly enabled. */
 export function isApprovedValModel(candidate: ValModelCandidate, requirements: ValModelRequirements = {}) {
   const now = requirements.now ?? Date.now();
-  if (!candidate.enabled || !candidate.providerEnabled || !candidate.supportsChat) return false;
+  if (!isValProviderAllowed(candidate.provider) || !candidate.enabled || !candidate.providerEnabled || !candidate.supportsChat) return false;
   if (candidate.health !== "HEALTHY" && candidate.health !== "DEGRADED") return false;
   if (candidate.circuitOpenUntil && Date.parse(candidate.circuitOpenUntil) > now) return false;
   if (candidate.quotaRemainingRatio !== null && candidate.quotaRemainingRatio <= 0) return false;

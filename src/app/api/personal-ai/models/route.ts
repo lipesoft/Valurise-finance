@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getVerifiedWorkspaceContext } from "@/lib/workspaces/server";
 
-/** Personal catalog discovery is retired; only the Master server route can manage catalogs. */
+/** Personal catalog discovery is retired; the Central da Val manages DeepSeek models. */
 export async function POST(request: NextRequest) {
   const active = await getVerifiedWorkspaceContext(request.headers.get("authorization"), request.headers.get("x-valurise-workspace-id"));
   if (!active.ok) return NextResponse.json({ error: active.error }, { status: active.status });
