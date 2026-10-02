@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
   const [providers, keys, models, settings, dayRows, monthRows, adminTestCosts, recentErrors, userUsage, users, overrides, auditRows, routerRuntime] = await Promise.all([
     admin.from("val_ai_providers").select("id, enabled, health_status, failure_count, circuit_open_until, priority, last_health_check, last_latency_ms, last_error_category, quota_headers, updated_at").eq("id", "deepseek"),
     admin.from("val_ai_provider_keys").select("id, provider_id, key_suffix, is_active, created_at, updated_at").eq("is_active", true).eq("provider_id", "deepseek"),
-    admin.from("val_ai_models").select("id, provider_id, model_id, display_name, is_free, free_verified, free_evidence, is_enabled, priority, supports_chat, supports_tools, supports_structured_output, supports_reasoning, supports_streaming, context_window, health_status, last_health_check, last_success_at, last_failure_at, last_latency_ms, failure_count, circuit_open_until, official_prompt_price, official_completion_price, input_cost_per_million, output_cost_per_million, pricing_source, price_verified_at, daily_request_limit, monthly_request_limit, daily_token_limit, monthly_token_limit, catalog_seen_at").eq("provider_id", "deepseek"),
+    admin.from("val_ai_models").select("id, provider_id, model_id, display_name, is_free, free_verified, free_evidence, is_enabled, priority, supports_chat, supports_tools, supports_structured_output, supports_reasoning, supports_streaming, context_window, health_status, last_health_check, last_success_at, last_failure_at, last_latency_ms, last_error_category, failure_count, circuit_open_until, official_prompt_price, official_completion_price, input_cost_per_million, output_cost_per_million, pricing_source, price_verified_at, daily_request_limit, monthly_request_limit, daily_token_limit, monthly_token_limit, catalog_seen_at").eq("provider_id", "deepseek"),
     admin.from("val_ai_runtime_settings").select("*").eq("id", 1).maybeSingle(),
     admin.from("val_ai_usage_rollups").select("period_kind, period_start, provider_id, model_id, user_id, requests, attempts, successes, failures, fallbacks, input_tokens, output_tokens, latency_total_ms, estimated_cost_usd").eq("period_kind", "day").eq("period_start", today).eq("provider_id", "deepseek"),
     admin.from("val_ai_usage_rollups").select("period_kind, period_start, provider_id, model_id, user_id, requests, attempts, successes, failures, fallbacks, input_tokens, output_tokens, latency_total_ms, estimated_cost_usd").eq("period_kind", "month").eq("period_start", month).eq("provider_id", "deepseek"),
@@ -193,8 +193,8 @@ export async function POST(request: NextRequest) {
       if (previousKeyError) throw new Error("Não foi possível validar a chave ativa.");
       const disabledAt = new Date().toISOString();
       const [{ error: disableProviderError }, { error: disableModelsError }] = await Promise.all([
-        admin.from("val_ai_providers").update({ enabled: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, quota_headers: {}, updated_at: disabledAt }).eq("id", action.provider),
-        admin.from("val_ai_models").update({ is_enabled: false, health_status: "DISABLED", updated_at: disabledAt }).eq("provider_id", action.provider),
+        admin.from("val_ai_providers").update({ enabled: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, last_health_check: null, last_latency_ms: null, last_error_category: null, last_error_code: null, quota_headers: {}, updated_at: disabledAt }).eq("id", action.provider),
+        admin.from("val_ai_models").update({ is_enabled: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, last_health_check: null, last_success_at: null, last_failure_at: null, last_latency_ms: null, last_error_category: null, last_error_code: null, updated_at: disabledAt }).eq("provider_id", action.provider),
       ]);
       if (disableProviderError || disableModelsError) throw new Error("O provedor foi mantido bloqueado porque não foi possível preparar uma rotação segura da chave.");
       const { data: created, error: insertError } = await admin.from("val_ai_provider_keys").insert({
@@ -217,8 +217,9 @@ export async function POST(request: NextRequest) {
     if (action.action === "remove_key") {
       const { error } = await admin.from("val_ai_provider_keys").delete().eq("provider_id", action.provider);
       if (error) throw new Error("Não foi possível remover a chave protegida.");
-      await admin.from("val_ai_providers").update({ enabled: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, updated_at: new Date().toISOString() }).eq("id", action.provider);
-      await admin.from("val_ai_models").update({ is_enabled: false, health_status: "DISABLED", updated_at: new Date().toISOString() }).eq("provider_id", action.provider);
+      const disabledAt = new Date().toISOString();
+      await admin.from("val_ai_providers").update({ enabled: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, last_health_check: null, last_latency_ms: null, last_error_category: null, last_error_code: null, updated_at: disabledAt }).eq("id", action.provider);
+      await admin.from("val_ai_models").update({ is_enabled: false, health_status: "DISABLED", failure_count: 0, circuit_open_until: null, last_health_check: null, last_success_at: null, last_failure_at: null, last_latency_ms: null, last_error_category: null, last_error_code: null, updated_at: disabledAt }).eq("provider_id", action.provider);
       auditMetadata = { removed: true };
     } else if (action.action === "set_provider") {
       if (action.enabled) {
@@ -227,10 +228,14 @@ export async function POST(request: NextRequest) {
       const patch = {
         id: action.provider, enabled: action.enabled,
         health_status: action.enabled ? "DEGRADED" : "DISABLED", failure_count: 0, circuit_open_until: null, updated_at: new Date().toISOString(),
+        ...(action.enabled ? { last_health_check: null, last_latency_ms: null, last_error_category: null, last_error_code: null } : {}),
       };
       const { error } = await admin.from("val_ai_providers").upsert(patch, { onConflict: "id" });
       if (error) throw new Error("Não foi possível atualizar o estado do provedor.");
-      const { error: modelHealthError } = await admin.from("val_ai_models").update({ health_status: action.enabled ? "DEGRADED" : "DISABLED", updated_at: new Date().toISOString() }).eq("provider_id", action.provider).eq("is_enabled", true);
+      const modelHealthPatch = action.enabled
+        ? { health_status: "DEGRADED", failure_count: 0, circuit_open_until: null, last_health_check: null, last_success_at: null, last_failure_at: null, last_latency_ms: null, last_error_category: null, last_error_code: null, updated_at: new Date().toISOString() }
+        : { health_status: "DISABLED", updated_at: new Date().toISOString() };
+      const { error: modelHealthError } = await admin.from("val_ai_models").update(modelHealthPatch).eq("provider_id", action.provider).eq("is_enabled", true);
       if (modelHealthError) throw new Error("O estado do provedor mudou, mas não foi possível atualizar a saúde dos modelos.");
       auditMetadata = { enabled: action.enabled };
     } else if (action.action === "refresh_catalog") {
@@ -288,7 +293,7 @@ export async function POST(request: NextRequest) {
         price_verified_at: action.inputCostPerMillion !== null && action.outputCostPerMillion !== null ? new Date().toISOString() : null,
         daily_request_limit: action.dailyRequestLimit, monthly_request_limit: action.monthlyRequestLimit,
         daily_token_limit: action.dailyTokenLimit, monthly_token_limit: action.monthlyTokenLimit,
-        health_status: action.enabled ? "DEGRADED" : "DISABLED", updated_at: new Date().toISOString(),
+        health_status: action.enabled ? "DEGRADED" : "DISABLED", last_health_check: null, last_success_at: null, last_failure_at: null, last_latency_ms: null, last_error_category: null, last_error_code: null, failure_count: 0, circuit_open_until: null, updated_at: new Date().toISOString(),
       }).eq("id", current.model.id);
       if (error) throw new Error("O modelo não foi atualizado.");
       auditMetadata = { isFree: action.isFree, enabled: action.enabled, priority: action.priority, tools: action.supportsTools, inputCostPerMillion: action.inputCostPerMillion, outputCostPerMillion: action.outputCostPerMillion };

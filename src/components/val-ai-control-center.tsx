@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GroupedIntegerInput } from "@/components/numeric-inputs";
 import { Activity, Check, CircleAlert, KeyRound, RefreshCw, ShieldCheck, Users, Zap } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -9,7 +9,7 @@ import { parseGroupedInteger } from "@/lib/numeric-input";
 
 type Provider = { id: "deepseek"; enabled: boolean; health_status: string; failure_count: number; circuit_open_until: string | null; priority: number; last_health_check: string | null; last_latency_ms: number | null; last_error_category: string | null; quota_headers: Record<string, string>; updated_at: string };
 type KeyInfo = { id: string; provider_id: "deepseek"; key_suffix: string; is_active: boolean; updated_at: string };
-type Model = { id: string; provider_id: "deepseek"; model_id: string; display_name: string; is_free: boolean; free_verified: boolean; free_evidence: string | null; is_enabled: boolean; priority: number; supports_chat: boolean; supports_tools: boolean; supports_structured_output: boolean; supports_reasoning: boolean; supports_streaming: boolean; context_window: number | null; health_status: string; last_health_check: string | null; last_success_at: string | null; last_failure_at: string | null; last_latency_ms: number | null; failure_count: number; circuit_open_until: string | null; official_prompt_price: number | null; official_completion_price: number | null; input_cost_per_million: number | null; output_cost_per_million: number | null; pricing_source: string | null; price_verified_at: string | null; daily_request_limit: number | null; monthly_request_limit: number | null; daily_token_limit: number | null; monthly_token_limit: number | null; catalog_seen_at: string | null };
+type Model = { id: string; provider_id: "deepseek"; model_id: string; display_name: string; is_free: boolean; free_verified: boolean; free_evidence: string | null; is_enabled: boolean; priority: number; supports_chat: boolean; supports_tools: boolean; supports_structured_output: boolean; supports_reasoning: boolean; supports_streaming: boolean; context_window: number | null; health_status: string; last_health_check: string | null; last_success_at: string | null; last_failure_at: string | null; last_latency_ms: number | null; last_error_category: string | null; failure_count: number; circuit_open_until: string | null; official_prompt_price: number | null; official_completion_price: number | null; input_cost_per_million: number | null; output_cost_per_million: number | null; pricing_source: string | null; price_verified_at: string | null; daily_request_limit: number | null; monthly_request_limit: number | null; daily_token_limit: number | null; monthly_token_limit: number | null; catalog_seen_at: string | null };
 type ValAIData = {
   providers: Provider[]; keys: KeyInfo[]; models: Model[]; settings: Record<string, unknown>;
   overview: { status: string; requestsToday: number; requestsMonth: number; tokensToday: number; tokensMonth: number; estimatedCostTodayUsd: number; estimatedCostMonthUsd: number; successRate: number | null; failuresToday: number; fallbacksToday: number; activeProviders: number; readyModels: number; averageLatencyMs: number | null; uniqueUsersToday: number };
@@ -32,6 +32,56 @@ const numberField = (value: unknown, fallback: number) => Number.isSafeInteger(N
 const decimalField = (value: unknown, fallback: number) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const dateTime = (value: unknown) => typeof value === "string" ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value)) : "—";
 const usd = (value: unknown) => value === null || value === undefined ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 }).format(Number(value));
+
+function healthLabel(health: string | null | undefined, lastCheck?: string | null) {
+  if (health === "DEGRADED" && !lastCheck) return "Aguardando validação";
+  switch (health) {
+    case "HEALTHY": return "Conexão validada";
+    case "DEGRADED": return "Atenção · teste com falha";
+    case "CIRCUIT_OPEN": return "Pausado temporariamente";
+    case "HALF_OPEN": return "Em verificação";
+    case "QUOTA_EXHAUSTED": return "Cota esgotada";
+    case "UNAVAILABLE": return "Indisponível";
+    case "DISABLED": return "Desativado";
+    default: return "Não verificado";
+  }
+}
+
+function errorCategoryLabel(category: string | null | undefined) {
+  if (!category) return null;
+  const labels: Record<string, string> = {
+    INVALID_API_KEY: "chave recusada pelo provider",
+    INSUFFICIENT_BALANCE: "saldo insuficiente na conta do provider",
+    BALANCE_REQUIRED: "saldo insuficiente na conta do provider",
+    RATE_LIMITED: "limite temporário de chamadas atingido",
+    QUOTA_EXCEEDED: "cota do provider esgotada",
+    BILLING_REQUIRED: "a conta do provider precisa de créditos/faturamento ativo",
+    PERMISSION_DENIED: "a chave não tem permissão para este modelo",
+    PROVIDER_UNAVAILABLE: "serviço do provider indisponível no momento",
+    REGION_RESTRICTED: "modelo não disponível nesta região",
+    MODEL_UNAVAILABLE: "modelo indisponível no provider",
+    INVALID_MODEL: "identificador do modelo não reconhecido",
+    TOOL_CALL_UNSUPPORTED: "o modelo não confirmou a ferramenta exigida pela Val",
+    TIMEOUT: "o provider demorou além do limite de conexão",
+    NETWORK_ERROR: "falha de rede ao conectar ao provider",
+    GLOBAL_COST_LIMIT: "limite global de custo bloqueou a chamada",
+    MODEL_PRICING_REQUIRED: "custos do modelo não foram configurados",
+    VAL_ROUTER_DISABLED: "Val ou roteador desativado em Cotas e limites",
+    PROVIDER_DISABLED: "provider desativado no roteamento",
+    MODEL_NOT_ENABLED: "modelo de chat ainda não habilitado",
+    PROVIDER_KEY_MISSING: "nenhuma chave ativa encontrada",
+    VAL_MODEL_POLICY_BLOCKED: "o modelo não passou pelas regras de capacidade/saúde",
+  };
+  return labels[category] || category.toLowerCase().replaceAll("_", " ");
+}
+
+function connectionSuccessMessage(modelId: string, result: unknown) {
+  if (!result || typeof result !== "object") return `Conexão validada · ${modelId}.`;
+  const details = result as Record<string, unknown>;
+  const latency = Number.isFinite(Number(details.latencyMs)) ? ` · ${Number(details.latencyMs)} ms` : "";
+  const tools = details.toolCallValidated === true ? " · ferramenta validada" : "";
+  return `Conexão validada · ${modelId}${latency}${tools}.`;
+}
 
 export function ValAIControlCenter({ toast }: { toast: (message: string) => void }) {
   const [tab, setTab] = useState<Tab>("providers");
@@ -77,7 +127,20 @@ export function ValAIControlCenter({ toast }: { toast: (message: string) => void
     if (!headers) throw new Error("Sua sessão expirou. Entre novamente no Super Admin.");
     const response = await fetch("/api/admin/val-ai", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "A operação não foi concluída.");
+    if (!response.ok) {
+      const message = typeof result.error === "string" ? result.error : "A operação não foi concluída.";
+      if (payload.action === "test_model") {
+        await refresh();
+        const categoryCode = typeof result.category === "string" ? result.category : typeof result.code === "string" ? result.code : null;
+        const diagnostics = [
+          categoryCode && /^[A-Z0-9_.-]{1,80}$/.test(categoryCode) ? `categoria: ${errorCategoryLabel(categoryCode)}` : null,
+          Number.isInteger(result.httpStatus) ? `HTTP ${result.httpStatus}` : null,
+          typeof result.providerCode === "string" && /^[A-Z0-9_.-]{1,80}$/.test(result.providerCode) ? `código: ${result.providerCode}` : null,
+        ].filter(Boolean);
+        throw new Error(diagnostics.length ? `${message} (${diagnostics.join(" · ")})` : message);
+      }
+      throw new Error(message);
+    }
     if (successMessage) toast(successMessage);
     await refresh();
     return result;
@@ -90,7 +153,10 @@ export function ValAIControlCenter({ toast }: { toast: (message: string) => void
   if (!data) return <div role="alert" className="panel mt-5 rounded-2xl p-6"><p className="text-sm">{loadError || "A Central da Val ainda não conseguiu carregar os dados."}</p>{loadDiagnostic && <details className="muted mt-3 text-xs"><summary className="cursor-pointer">Diagnóstico técnico</summary><p className="mt-2 break-all">{loadDiagnostic}</p></details>}<button type="button" disabled={refreshing} onClick={() => void refresh()} className="mt-3 min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">{refreshing ? "Verificando…" : "Tentar novamente"}</button></div>;
 
   const overview = data.overview;
-  const statusLabel = overview.status === "operational" ? "Operacional" : overview.status === "degraded" ? "Degradado" : "Indisponível";
+  const awaitingFirstTest = overview.status === "degraded"
+    && data.providers.some((provider) => provider.enabled && provider.health_status === "DEGRADED" && !provider.last_health_check)
+    && data.models.some((model) => model.is_enabled && model.supports_chat && model.health_status === "DEGRADED" && !model.last_health_check);
+  const statusLabel = overview.status === "operational" ? "Operacional" : awaitingFirstTest ? "Aguardando validação" : overview.status === "degraded" ? "Degradado" : "Indisponível";
   const setting = (key: string, fallback: unknown) => settings[key] ?? fallback;
 
   return <section className="mt-5 space-y-4">
@@ -104,7 +170,7 @@ export function ValAIControlCenter({ toast }: { toast: (message: string) => void
     </nav>
 
     {tab === "overview" && <div className="space-y-4">
-      <section className="panel rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="muted text-xs">Status geral · DeepSeek</p><h2 className="mt-1 text-xl font-semibold">{statusLabel}</h2></div><span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${overview.status === "operational" ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--danger)]"}`}>{overview.readyModels} modelo(s) habilitado(s) e pronto(s)</span></div><p className="muted mt-3 text-xs leading-5">{overview.status === "operational" ? "Há modelo habilitado, com saúde e capacidade compatíveis para a Val." : overview.status === "degraded" ? "A Val pode responder, mas o provider ou modelo está degradado." : "A DeepSeek ainda não está pronta. Verifique chave, modelo, saúde, limite mensal e controles de ativação."}</p></section>
+      <section className="panel rounded-2xl p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="muted text-xs">Status geral · DeepSeek</p><h2 className="mt-1 text-xl font-semibold">{statusLabel}</h2></div><span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${overview.status === "operational" ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--danger)]"}`}>{overview.readyModels} modelo(s) habilitado(s) e pronto(s)</span></div><p className="muted mt-3 text-xs leading-5">{overview.status === "operational" ? "Há modelo habilitado, com saúde e capacidade compatíveis para a Val." : awaitingFirstTest ? "O provedor e o modelo estão habilitados, mas a primeira chamada ainda não foi validada. Vá a Provedores e selecione “Validar conexão agora”." : overview.status === "degraded" ? "O último teste registrou uma falha. Confira o motivo em Provedores e execute uma nova validação." : "A DeepSeek ainda não está pronta. Verifique chave, modelo, saúde, limite mensal e controles de ativação."}</p></section>
       <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">{[
         ["Consultas hoje", overview.requestsToday], ["Consultas no mês", overview.requestsMonth], ["Tokens hoje · medidos", overview.tokensToday], ["Tokens no mês · medidos", overview.tokensMonth],
         ["Custo estimado hoje", usd(overview.estimatedCostTodayUsd)], ["Custo estimado no mês", usd(overview.estimatedCostMonthUsd)], ["Usuários hoje", overview.uniqueUsersToday], ["Taxa de sucesso", overview.successRate === null ? "—" : `${overview.successRate}%`], ["Fallbacks hoje", overview.fallbacksToday], ["Latência média", overview.averageLatencyMs === null ? "—" : `${overview.averageLatencyMs} ms`],
@@ -112,11 +178,11 @@ export function ValAIControlCenter({ toast }: { toast: (message: string) => void
       <div className="grid gap-3 lg:grid-cols-1">{(["deepseek"] as ProviderId[]).map((id) => {
         const provider = providers.get(id); const key = data.keys.find((item) => item.provider_id === id);
         const headers = provider?.quota_headers || {};
-        return <article key={id} className="panel min-w-0 rounded-2xl p-4"><div className="flex items-center justify-between gap-2"><h3 className="font-semibold">{names[id]}</h3><span className="muted text-xs">{provider?.enabled ? provider.health_status : "DESATIVADO"}</span></div><p className="muted mt-1 text-xs">{key ? `Chave protegida · •••• ${key.key_suffix}` : "Nenhuma chave cadastrada"}</p><p className="muted mt-2 text-xs">Uso medido hoje: {overview.requestsToday.toLocaleString("pt-BR")} solicitações · {overview.tokensToday.toLocaleString("pt-BR")} tokens.</p><p className="muted mt-1 break-all text-[11px]">Metadados oficiais de cota: {Object.keys(headers).length ? Object.entries(headers).map(([name, value]) => `${name}: ${value}`).join(" · ") : "não informados pelo provider"}</p></article>;
+        return <article key={id} className="panel min-w-0 rounded-2xl p-4"><div className="flex items-center justify-between gap-2"><h3 className="font-semibold">{names[id]}</h3><span className="muted text-xs">{provider?.enabled ? healthLabel(provider.health_status, provider.last_health_check) : "Desativado"}</span></div><p className="muted mt-1 text-xs">{key ? `Chave protegida · •••• ${key.key_suffix}` : "Nenhuma chave cadastrada"}</p><p className="muted mt-2 text-xs">Uso medido hoje: {overview.requestsToday.toLocaleString("pt-BR")} solicitações · {overview.tokensToday.toLocaleString("pt-BR")} tokens.</p><p className="muted mt-1 break-all text-[11px]">Metadados oficiais de cota: {Object.keys(headers).length ? Object.entries(headers).map(([name, value]) => `${name}: ${value}`).join(" · ") : "não informados pelo provider"}</p></article>;
       })}</div>
     </div>}
 
-    {tab === "providers" && <div className="grid gap-3 xl:grid-cols-1">{(["deepseek"] as ProviderId[]).map((id) => <ProviderCard key={id} id={id} provider={providers.get(id)} keyInfo={data.keys.find((item) => item.provider_id === id)} models={data.models.filter((model) => model.provider_id === id)} thresholds={{ soft: numberField(settings.soft_quota_percent, 80), deprioritize: numberField(settings.deprioritize_quota_percent, 90), hard: numberField(settings.hard_quota_percent, 98) }} onPost={post} run={run}/> )}</div>}
+    {tab === "providers" && <div className="grid gap-3 xl:grid-cols-1">{(["deepseek"] as ProviderId[]).map((id) => <ProviderCard key={id} id={id} provider={providers.get(id)} keyInfo={data.keys.find((item) => item.provider_id === id)} models={data.models.filter((model) => model.provider_id === id)} thresholds={{ soft: numberField(settings.soft_quota_percent, 80), deprioritize: numberField(settings.deprioritize_quota_percent, 90), hard: numberField(settings.hard_quota_percent, 98) }} runtimeReady={settings.val_enabled === true && settings.val_router_enabled === true && settings.val_deepseek_enabled === true} onPost={post} run={run} toast={toast}/> )}</div>}
 
     {tab === "models" && <div className="space-y-3">
       {data.usageByModel.length > 0 && <section className="panel rounded-2xl p-4"><h2 className="text-sm font-semibold">Uso medido por modelo</h2><p className="muted mt-1 text-[11px]">Métricas calculadas pelo Valurise; os limites dos providers, quando existentes, aparecem separadamente.</p><div className="mt-3 space-y-2">{data.usageByModel.map((row, index) => <article key={`${String(row.period)}:${String(row.provider)}:${String(row.model)}:${index}`} className="flex flex-wrap justify-between gap-2 rounded-xl bg-[var(--panel2)] p-3"><span className="min-w-0 break-all text-xs">{String(row.provider)} / {String(row.model)} · {row.period === "day" ? "hoje" : "mês"}</span><span className="text-right text-[11px]">{Number(row.attempts ?? row.requests ?? 0).toLocaleString("pt-BR")} chamadas ao modelo · {Number(row.tokens || 0).toLocaleString("pt-BR")} tokens medidos</span></article>)}</div></section>}
@@ -161,9 +227,11 @@ export function ValAIControlCenter({ toast }: { toast: (message: string) => void
   </section>;
 }
 
-function ProviderCard({ id, provider, keyInfo, models, thresholds, onPost, run }: { id: ProviderId; provider?: Provider; keyInfo?: KeyInfo; models: Model[]; thresholds: { soft: number; deprioritize: number; hard: number }; onPost: (payload: Record<string, unknown>, message?: string) => Promise<unknown>; run: (operation: () => Promise<unknown>) => void }) {
+function ProviderCard({ id, provider, keyInfo, models, thresholds, runtimeReady, onPost, run, toast }: { id: ProviderId; provider?: Provider; keyInfo?: KeyInfo; models: Model[]; thresholds: { soft: number; deprioritize: number; hard: number }; runtimeReady: boolean; onPost: (payload: Record<string, unknown>, message?: string) => Promise<unknown>; run: (operation: () => Promise<unknown>) => void; toast: (message: string) => void }) {
   const [apiKey, setApiKey] = useState("");
   const [enabled, setEnabled] = useState(provider?.enabled || false);
+  const [testing, setTesting] = useState(false);
+  const testInFlight = useRef(false);
   useEffect(() => { setEnabled(provider?.enabled || false); }, [provider?.enabled]);
   const saveKey = () => run(async () => { if (apiKey.trim().length < 16) throw new Error("A chave está incompleta."); await onPost({ action: "save_key", provider: id, apiKey: apiKey.trim() }, "Chave guardada de forma criptografada."); setApiKey(""); });
   const setProvider = () => run(() => onPost({ action: "set_provider", provider: id, enabled }, enabled ? "Estado do provedor atualizado." : "Provedor desativado."));
@@ -171,15 +239,55 @@ function ProviderCard({ id, provider, keyInfo, models, thresholds, onPost, run }
   const testModel = models.find((model) => model.is_enabled && model.supports_chat);
   const quotaUsage = providerQuotaUtilizationPercent(provider?.quota_headers || {});
   const quotaStatus = quotaUsage === null ? "sem cota oficial reportada" : quotaUsage >= thresholds.hard ? "bloqueio preventivo" : quotaUsage >= thresholds.deprioritize ? "prioridade reduzida" : quotaUsage >= thresholds.soft ? "atenção" : "dentro do limite";
-  const testConnection = () => testModel && run(() => onPost({ action: "test_model", provider: id, modelId: testModel.model_id }, `Conexão testada com ${testModel.model_id}.`));
+  const canTest = Boolean(keyInfo && testModel && provider?.enabled && runtimeReady && testModel.input_cost_per_million !== null && testModel.input_cost_per_million !== undefined && testModel.output_cost_per_million !== null && testModel.output_cost_per_million !== undefined);
+  const hasCheckedConnection = Boolean(testModel?.last_health_check);
+  const waitingForValidation = Boolean(provider?.enabled && keyInfo && testModel && !hasCheckedConnection);
+  const testConnection = () => {
+    if (!testModel || !canTest || testInFlight.current) return;
+    testInFlight.current = true;
+    setTesting(true);
+    run(async () => {
+      try {
+        const result = await onPost({ action: "test_model", provider: id, modelId: testModel.model_id });
+        toast(connectionSuccessMessage(testModel.model_id, result));
+      } finally {
+        testInFlight.current = false;
+        setTesting(false);
+      }
+    });
+  };
+  const nextStep = !keyInfo
+    ? "Cadastre a chave protegida para começar."
+    : !provider?.enabled
+      ? "Marque “Permitir este provider no roteamento” e salve a ativação."
+      : !runtimeReady
+        ? "Ative a Val, o roteador e a DeepSeek em “Cotas e limites”."
+        : !testModel
+          ? models.some((model) => model.supports_chat)
+            ? "Habilite um modelo de chat e salve os custos na seção Modelos."
+            : "Atualize o catálogo para localizar modelos de chat disponíveis."
+          : testModel.input_cost_per_million == null || testModel.output_cost_per_million == null
+            ? "Informe os custos de entrada e saída do modelo em Modelos para liberar a validação."
+            : waitingForValidation
+              ? "A chave foi salva, mas ainda não houve uma chamada de teste. “Degradada” é apenas o estado provisório até essa validação."
+              : provider?.health_status === "DEGRADED" || testModel.health_status === "DEGRADED"
+                ? `O último teste registrou: ${errorCategoryLabel(provider?.last_error_category) || errorCategoryLabel(testModel.last_error_category) || "falha sem categoria detalhada"}. Valide novamente após corrigir.`
+                : "Conexão validada. Se a Val continuar indisponível, confira os limites e logs de uso.";
+  const statusLabel = !provider?.enabled ? "Desativado" : waitingForValidation ? "Aguardando validação" : healthLabel(provider.health_status, provider.last_health_check);
   return <article className="panel min-w-0 rounded-2xl p-4 sm:p-5">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{names[id]}{id === "deepseek" ? " · principal" : ""}</h2><p className="muted mt-1 text-xs">{provider?.enabled ? `Ativo · ${provider.health_status}` : "Desativado"}{provider?.last_latency_ms !== null && provider?.last_latency_ms !== undefined ? ` · ${provider.last_latency_ms} ms` : ""}</p>{provider?.health_status === "CIRCUIT_OPEN" && <p className="mt-1 text-[11px] text-amber-500">Pausado até {dateTime(provider.circuit_open_until)} · {provider.failure_count} falhas</p>}</div><span className={`rounded-full px-2.5 py-1 text-[11px] ${keyInfo ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--muted)]"}`}>{keyInfo ? `Chave protegida · •••• ${keyInfo.key_suffix}` : "Sem chave"}</span></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{names[id]}{id === "deepseek" ? " · principal" : ""}</h2><p className="muted mt-1 text-xs">{statusLabel}{provider?.last_latency_ms !== null && provider?.last_latency_ms !== undefined ? ` · ${provider.last_latency_ms} ms` : ""}</p>{provider?.health_status === "CIRCUIT_OPEN" && <p className="mt-1 text-[11px] text-amber-500">Pausado até {dateTime(provider.circuit_open_until)} · {provider.failure_count} falhas</p>}</div><span className={`rounded-full px-2.5 py-1 text-[11px] ${keyInfo ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--muted)]"}`}>{keyInfo ? `Chave protegida · •••• ${keyInfo.key_suffix}` : "Sem chave"}</span></div>
     <label className="mt-4 block text-xs font-medium">{keyInfo ? "Substituir chave central" : "Cadastrar chave central"}<input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" autoComplete="new-password" spellCheck={false} className="field mt-1 min-h-11 w-full" placeholder="Cole a chave do provider" /></label>
-    <div className="mt-2 flex flex-wrap gap-2"><button type="button" disabled={apiKey.trim().length < 16} onClick={saveKey} className="primary min-h-10 rounded-xl px-3 text-xs font-semibold disabled:opacity-50">Salvar chave protegida</button><button type="button" disabled={!keyInfo} onClick={removeKey} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">Remover chave</button><button type="button" disabled={!keyInfo || !testModel || !provider?.enabled} onClick={testConnection} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">Testar conexão</button></div>
+    <div className="mt-2 flex flex-wrap gap-2"><button type="button" disabled={apiKey.trim().length < 16} onClick={saveKey} className="primary min-h-10 rounded-xl px-3 text-xs font-semibold disabled:opacity-50">Salvar chave protegida</button><button type="button" disabled={!keyInfo} onClick={removeKey} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">Remover chave</button></div>
     <p className="muted mt-2 text-[11px] leading-5">A chave fica criptografada no servidor e nunca é devolvida à interface. O teste manual faz uma chamada mínima e pode consumir poucos tokens.</p>
+    <section aria-live="polite" className={`mt-3 rounded-xl border p-3 ${waitingForValidation ? "border-amber-500/40 bg-amber-500/5" : "border-[var(--border)] bg-[var(--panel2)]"}`}>
+      <p className="text-xs font-semibold">{waitingForValidation ? "Próximo passo: validar a conexão" : `Status: ${statusLabel}`}</p>
+      <p className="muted mt-1 text-xs leading-5">{nextStep}</p>
+      {canTest && <button type="button" disabled={testing} onClick={testConnection} className="primary mt-3 inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 text-xs font-semibold disabled:cursor-wait disabled:opacity-60">{testing ? <><RefreshCw size={14} className="animate-spin"/>Testando conexão…</> : <><Check size={14}/>{hasCheckedConnection ? "Validar conexão novamente" : "Validar conexão agora"}</>}</button>}
+      {canTest && <p className="muted mt-2 text-[11px]">Envia somente uma chamada técnica curta; não usa dados financeiros de usuários.</p>}
+    </section>
     <label className="mt-4 flex min-h-11 items-center gap-2 rounded-xl bg-[var(--panel2)] px-3 text-xs"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 accent-[var(--accent)]"/>Permitir este provider no roteamento</label>
-    <div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={setProvider} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs">Salvar ativação do provider</button><button type="button" disabled={!keyInfo} onClick={() => run(() => onPost({ action: "refresh_catalog", provider: id }, "Catálogo atualizado."))} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">Atualizar catálogo</button></div>
-    <p className="muted mt-3 text-[11px]">Último teste: {dateTime(provider?.last_health_check)}{provider?.last_error_category ? ` · erro ${provider.last_error_category}` : ""}</p>
+    <div className="mt-2 flex flex-wrap gap-2"><button type="button" disabled={enabled === Boolean(provider?.enabled)} onClick={setProvider} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">{enabled === Boolean(provider?.enabled) ? "Ativação salva" : "Salvar ativação do provider"}</button><button type="button" disabled={!keyInfo} onClick={() => run(() => onPost({ action: "refresh_catalog", provider: id }, "Catálogo atualizado."))} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">Atualizar catálogo</button></div>
+    <p className="muted mt-3 text-[11px]">Última validação: {provider?.last_health_check ? dateTime(provider.last_health_check) : "nenhuma executada ainda"}{provider?.last_error_category ? ` · ${errorCategoryLabel(provider.last_error_category)}` : ""}</p>
     <p className="muted mt-2 text-[11px]">Cota oficial reportada: {quotaUsage === null ? quotaStatus : `${quotaUsage.toFixed(0)}% utilizada · ${quotaStatus}`}</p>
     {provider?.quota_headers && Object.keys(provider.quota_headers).length > 0 && <p className="muted mt-1 break-all text-[11px]">Metadados oficiais de cota: {Object.entries(provider.quota_headers).map(([key, value]) => `${key}=${value}`).join(" · ")}</p>}
   </article>;
@@ -208,10 +316,25 @@ function ModelCard({ model, provider, usage, onPost, run, toast }: { model: Mode
   }, [model]);
   const numberOrNull = (value: string) => value === "" ? null : Number(value);
   const save = () => run(() => onPost({ action: "update_model", provider: model.provider_id, modelId: model.model_id, isFree: model.is_free, enabled, priority: Number(priority), supportsTools, supportsStructuredOutput: structured, supportsReasoning: reasoning, inputCostPerMillion: numberOrNull(inputRate), outputCostPerMillion: numberOrNull(outputRate), dailyRequestLimit: numberOrNull(dailyRequestLimit), monthlyRequestLimit: numberOrNull(monthlyRequestLimit), dailyTokenLimit: numberOrNull(dailyTokenLimit), monthlyTokenLimit: numberOrNull(monthlyTokenLimit) }, "Configuração do modelo atualizada."));
-  const test = () => run(async () => { const result = await onPost({ action: "test_model", provider: model.provider_id, modelId: model.model_id }); const latency = result && typeof result === "object" && "latencyMs" in result ? ` · ${Number(result.latencyMs)} ms` : ""; const tools = result && typeof result === "object" && "toolCallValidated" in result && result.toolCallValidated ? " · ferramenta validada" : ""; toast(`Conexão validada · ${model.model_id}${latency}${tools}.`); });
+  const [testing, setTesting] = useState(false);
+  const testInFlight = useRef(false);
+  const test = () => {
+    if (!model.is_enabled || !provider?.enabled || model.provider_id !== "deepseek" || testInFlight.current) return;
+    testInFlight.current = true;
+    setTesting(true);
+    run(async () => {
+      try {
+        const result = await onPost({ action: "test_model", provider: model.provider_id, modelId: model.model_id });
+        toast(connectionSuccessMessage(model.model_id, result));
+      } finally {
+        testInFlight.current = false;
+        setTesting(false);
+      }
+    });
+  };
   return <article className="panel min-w-0 rounded-2xl p-4">
     <div className="flex flex-wrap items-start justify-between gap-2"><div className="min-w-0"><p className="muted text-[10px] uppercase">{names[model.provider_id]}</p><h3 className="mt-1 break-all text-sm font-semibold">{model.display_name}</h3><p className="muted mt-1 break-all text-xs">{model.model_id}</p></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${model.is_enabled ? "bg-[var(--accent)]/15 text-[var(--accent)]" : "bg-[var(--panel2)] text-[var(--muted)]"}`}>{model.is_free && model.free_verified ? "GRATUITO · metadado confirmado" : "PAGO/SEM PREÇO · estimativa controlada"}</span></div>
-    <div className="mt-3 grid gap-1 text-[11px] sm:grid-cols-2 xl:grid-cols-3"><p className="muted">Saúde: {model.health_status} · {model.last_latency_ms === null ? "latência —" : `${model.last_latency_ms} ms`}</p><p className="muted">Contexto: {model.context_window?.toLocaleString("pt-BR") || "não informado"}</p><p className="muted">Custo configurado por 1M: entrada {usd(model.input_cost_per_million)} · saída {usd(model.output_cost_per_million)}</p><p className="muted">Última verificação: {dateTime(model.last_health_check)}</p><p className="muted">Falhas consecutivas: {model.failure_count}</p><p className="muted">Último catálogo: {dateTime(model.catalog_seen_at)}</p></div>
+    <div className="mt-3 grid gap-1 text-[11px] sm:grid-cols-2 xl:grid-cols-3"><p className="muted">Saúde: {healthLabel(model.health_status, model.last_health_check)} · {model.last_latency_ms === null ? "latência —" : `${model.last_latency_ms} ms`}</p><p className="muted">Contexto: {model.context_window?.toLocaleString("pt-BR") || "não informado"}</p><p className="muted">Custo configurado por 1M: entrada {usd(model.input_cost_per_million)} · saída {usd(model.output_cost_per_million)}</p><p className="muted">Última verificação: {model.last_health_check ? dateTime(model.last_health_check) : "nenhuma executada ainda"}</p><p className="muted">Falhas consecutivas: {model.failure_count}{model.last_error_category ? ` · ${errorCategoryLabel(model.last_error_category)}` : ""}</p><p className="muted">Último catálogo: {dateTime(model.catalog_seen_at)}</p></div>
     <div className="mt-2 flex flex-wrap gap-3 text-[11px]">{usage.map((row) => <span key={String(row.period)} className="muted">Uso {row.period === "day" ? "hoje" : "no mês"}: {Number(row.attempts ?? row.requests ?? 0).toLocaleString("pt-BR")} chamadas · {Number(row.tokens || 0).toLocaleString("pt-BR")} tokens · {usd(row.estimatedCostUsd)} estimados</span>)}</div>
     <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
       <label className="flex min-h-10 items-center gap-2 rounded-lg bg-[var(--panel2)] px-2 text-[11px]"><input type="checkbox" checked={enabled} disabled={!model.supports_chat || (!enabled && (inputRate === "" || outputRate === ""))} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 accent-[var(--accent)]"/>Habilitado no roteador</label>
@@ -223,7 +346,7 @@ function ModelCard({ model, provider, usage, onPost, run, toast }: { model: Mode
     <div className="mt-3 grid gap-2 sm:grid-cols-2"><DecimalInput label="Custo de entrada por 1M tokens (USD)" value={inputRate} onChange={(value) => setInputRate(value === null ? "" : String(value))}/><DecimalInput label="Custo de saída por 1M tokens (USD)" value={outputRate} onChange={(value) => setOutputRate(value === null ? "" : String(value))}/></div>
     <p className="muted mt-2 text-[11px]">Preços oficiais variam. Configure o valor máximo aplicável e atualize quando a tabela do provider mudar; a métrica permanece identificada como estimativa.</p>
     <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4"><NumberInput label="Limite diário · chamadas (vazio sem limite interno)" value={dailyRequestLimit} nullable onChange={(value) => setDailyRequestLimit(value === null ? "" : String(value))}/><NumberInput label="Limite mensal · chamadas" value={monthlyRequestLimit} nullable onChange={(value) => setMonthlyRequestLimit(value === null ? "" : String(value))}/><NumberInput label="Limite diário · tokens" value={dailyTokenLimit} nullable onChange={(value) => setDailyTokenLimit(value === null ? "" : String(value))}/><NumberInput label="Limite mensal · tokens" value={monthlyTokenLimit} nullable onChange={(value) => setMonthlyTokenLimit(value === null ? "" : String(value))}/></div>
-    <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={save} className="primary min-h-10 rounded-xl px-3 text-xs font-semibold">Salvar modelo</button><button type="button" disabled={!model.is_enabled || !provider?.enabled || model.provider_id !== "deepseek"} onClick={test} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">Testar conexão</button></div>
+    <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={save} className="primary min-h-10 rounded-xl px-3 text-xs font-semibold">Salvar modelo</button><button type="button" disabled={!model.is_enabled || !provider?.enabled || model.provider_id !== "deepseek" || testing} onClick={test} className="min-h-10 rounded-xl bg-[var(--panel2)] px-3 text-xs disabled:opacity-50">{testing ? "Testando conexão…" : "Testar conexão"}</button></div>
   </article>;
 }
 

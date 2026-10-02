@@ -494,24 +494,25 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
   if (await necessaryCookies.isVisible().catch(() => false)) await necessaryCookies.click();
   const keySentinel = "e2e-central-key-fake-never-real-0001";
   const adminActions: Array<Record<string, unknown>> = [];
+  let testAttempts = 0;
   const now = new Date().toISOString();
   const deepseekModel = {
     id: "model-deepseek", provider_id: "deepseek", model_id: "deepseek-flash", display_name: "DeepSeek V4.1 Flash",
     is_free: false, free_verified: false, free_evidence: null, is_enabled: true, priority: 1,
     supports_chat: true, supports_tools: true, supports_structured_output: false, supports_reasoning: false, supports_streaming: true,
-    context_window: 8192, health_status: "HEALTHY", last_health_check: now, last_success_at: now, last_failure_at: null,
+    context_window: 8192, health_status: "DEGRADED", last_health_check: null, last_success_at: null, last_failure_at: null,
     last_latency_ms: 86, failure_count: 0, circuit_open_until: null, official_prompt_price: 0.0000003, official_completion_price: 0.0000012,
     input_cost_per_million: 0.3, output_cost_per_million: 1.2, pricing_source: "official peak price", price_verified_at: now,
     daily_request_limit: 100, monthly_request_limit: 1000, daily_token_limit: 20000, monthly_token_limit: 200000, catalog_seen_at: now,
   };
   const responseData = {
     providers: [
-      { id: "deepseek", enabled: true, health_status: "HEALTHY", priority: 1, last_health_check: now, last_latency_ms: 86, last_error_category: null, quota_headers: {}, updated_at: now },
+      { id: "deepseek", enabled: true, health_status: "DEGRADED", priority: 1, last_health_check: null, last_latency_ms: null, last_error_category: null, quota_headers: {}, updated_at: now },
     ],
     keys: [{ id: "key-deepseek", provider_id: "deepseek", key_suffix: "D4F3", is_active: true, updated_at: now }],
     models: [deepseekModel],
     settings: { daily_requests: 10, monthly_requests: 200, daily_tokens: 50000, monthly_tokens: 1000000, max_context_tokens: 12000, max_output_tokens: 700, max_attempts: 1, monthly_cost_soft_limit_usd: 8, monthly_cost_hard_limit_usd: 10, reference_balance_usd: null, val_enabled: true, val_router_enabled: true, val_deepseek_enabled: true, val_fallback_enabled: false, val_actions_enabled: true, val_insights_enabled: true },
-    overview: { status: "operational", requestsToday: 14, requestsMonth: 82, tokensToday: 4200, tokensMonth: 35000, estimatedCostTodayUsd: 0.04, estimatedCostMonthUsd: 1.2, successRate: 96, failuresToday: 1, fallbacksToday: 0, activeProviders: 1, readyModels: 1, averageLatencyMs: 430, uniqueUsersToday: 4 },
+    overview: { status: "degraded", requestsToday: 14, requestsMonth: 82, tokensToday: 4200, tokensMonth: 35000, estimatedCostTodayUsd: 0.04, estimatedCostMonthUsd: 1.2, successRate: 96, failuresToday: 1, fallbacksToday: 0, activeProviders: 1, readyModels: 1, averageLatencyMs: 430, uniqueUsersToday: 4 },
     usageByModel: [{ period: "day", provider: "deepseek", model: "deepseek-flash", requests: 14, attempts: 14, tokens: 4200, estimatedCostUsd: 0.04 }],
     recentErrors: [], users: [], audit: [],
   };
@@ -519,7 +520,19 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
     if (route.request().method() === "GET") return route.fulfill({ status: 200, json: responseData });
     const body = route.request().postDataJSON() as Record<string, unknown>;
     adminActions.push(body);
-    if (body.action === "test_model") return route.fulfill({ status: 200, json: { ok: true, latencyMs: 86, toolCallValidated: true } });
+    if (body.action === "test_model") {
+      testAttempts += 1;
+      if (testAttempts > 1) {
+        Object.assign(responseData.providers[0], { health_status: "DEGRADED", last_error_category: "INSUFFICIENT_BALANCE" });
+        Object.assign(responseData.models[0], { health_status: "DEGRADED", last_error_category: "INSUFFICIENT_BALANCE" });
+        responseData.overview.status = "degraded";
+        return route.fulfill({ status: 502, json: { ok: false, error: "A conexão não foi validada. Consulte a categoria e o código seguros abaixo.", category: "INSUFFICIENT_BALANCE", httpStatus: 402, providerCode: "BALANCE_REQUIRED", providerMessage: "do not expose this raw message" } });
+      }
+      Object.assign(responseData.providers[0], { health_status: "HEALTHY", last_health_check: now });
+      Object.assign(responseData.models[0], { health_status: "HEALTHY", last_health_check: now });
+      responseData.overview.status = "operational";
+      return route.fulfill({ status: 200, json: { ok: true, latencyMs: 86, toolCallValidated: true } });
+    }
     if (body.action === "save_key") return route.fulfill({ status: 200, json: { ok: true, key: { configured: true, suffix: "0001" } } });
     return route.fulfill({ status: 200, json: { ok: true } });
   });
@@ -530,8 +543,8 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
   await expect(keyInput).toBeVisible();
   await expect(page.getByPlaceholder("Cole a chave do provider")).toHaveCount(1);
   await page.getByRole("button", { name: "Visão geral" }).click();
-  await expect(page.getByText("Operacional", { exact: true })).toBeVisible();
-  await expect(page.getByText("Há modelo habilitado, com saúde e capacidade compatíveis para a Val.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Aguardando validação" })).toBeVisible();
+  await expect(page.getByText("O provedor e o modelo estão habilitados, mas a primeira chamada ainda não foi validada. Vá a Provedores e selecione “Validar conexão agora”.")).toBeVisible();
   await expect(page.getByText("1 modelo(s) habilitado(s) e pronto(s)")).toBeVisible();
   await expect(page.getByText("14", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Provedores" }).click();
@@ -543,14 +556,21 @@ test("Central da Val limita chaves ao Master, controla custo DeepSeek e não cau
   await expect(page.getByText("Chave guardada de forma criptografada.").first()).toBeVisible();
   await expect(keyInput).toHaveValue("");
   expect(adminActions[0]).toMatchObject({ action: "save_key", provider: "deepseek", apiKey: keySentinel });
+  const providerCard = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "DeepSeek · principal" }) });
+  await expect(providerCard.getByText("Aguardando validação").first()).toBeVisible();
+  await expect(providerCard.getByText("A chave foi salva, mas ainda não houve uma chamada de teste. “Degradada” é apenas o estado provisório até essa validação.")).toBeVisible();
+  await providerCard.getByRole("button", { name: "Validar conexão agora" }).click();
+  await expect(page.getByText("Conexão validada · deepseek-flash · 86 ms · ferramenta validada.")).toBeVisible();
+  await expect(providerCard.getByText("Conexão validada").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Modelos" }).click();
   await expect(page.getByText("Groq", { exact: true })).toHaveCount(0);
   await expect(page.getByText("OpenRouter", { exact: true })).toHaveCount(0);
   const deepseekCard = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "DeepSeek V4.1 Flash" }) }).first();
   await deepseekCard.getByRole("button", { name: "Testar conexão" }).click();
-  await expect(page.getByText("Conexão validada · deepseek-flash · 86 ms · ferramenta validada.")).toBeVisible();
-  expect(adminActions.some((action) => action.action === "test_model" && action.provider === "deepseek" && action.modelId === "deepseek-flash")).toBe(true);
+  await expect(page.getByText(/A conexão não foi validada\..*categoria: saldo insuficiente na conta do provider.*HTTP 402.*BALANCE_REQUIRED/)).toBeVisible();
+  expect(adminActions.filter((action) => action.action === "test_model" && action.provider === "deepseek" && action.modelId === "deepseek-flash")).toHaveLength(2);
+  await expect(page.getByText("do not expose this raw message", { exact: true })).toHaveCount(0);
 
   const visibleText = await page.locator("body").innerText();
   expect(visibleText).not.toContain(keySentinel);
