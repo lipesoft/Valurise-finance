@@ -4,6 +4,7 @@ import { generateText, tool } from "ai";
 import { z } from "zod";
 import { createValModel } from "@/lib/val-ai/adapter";
 import { getValHealthCheckPrompt, isValHealthCheckSuccessful, VAL_HEALTH_CHECK_TOOL_DESCRIPTION, VAL_HEALTH_CHECK_TOOL_NAME } from "@/lib/val-ai/health-check";
+import { getValProviderOptions } from "@/lib/val-ai/provider-options";
 import { discoverModelCatalog, readSafeQuotaHeaders } from "@/lib/val-ai/provider-catalog";
 import { estimateValRequestCostUsd, getValServiceStatus, isApprovedValModel, type ValModelCandidate, type ValProvider } from "@/lib/val-ai/policy";
 import { loadValProviderKey, loadValRouterRuntime } from "@/lib/val-ai/router";
@@ -327,6 +328,7 @@ export async function POST(request: NextRequest) {
         const generated = await generateText({
           model: await createValModel(candidate, requiresTools),
           prompt: getValHealthCheckPrompt(requiresTools),
+          providerOptions: getValProviderOptions(requiresTools),
           ...(requiresTools ? { tools: { [VAL_HEALTH_CHECK_TOOL_NAME]: tool({ description: VAL_HEALTH_CHECK_TOOL_DESCRIPTION, inputSchema: z.object({}).strict(), execute: async () => ({ ok: true }) }) }, toolChoice: "required" as const } : {}),
           maxOutputTokens: requiresTools ? 32 : 8, temperature: 0, maxRetries: 0, timeout: 12_000, abortSignal: AbortSignal.timeout(13_000),
         });

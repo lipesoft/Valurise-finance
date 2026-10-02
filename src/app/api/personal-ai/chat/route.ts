@@ -8,6 +8,7 @@ import { createPersonalAiTransactionProposalTool, type PersonalAiTransactionDraf
 import { NO_FINANCIAL_CONTEXT_INSTRUCTION, requestsTransactionAction, requiresPersonalFinanceData, VAL_PERSONA } from "@/lib/personal-ai";
 import { AIProviderError, classifyAIError } from "@/lib/personal-ai/providers";
 import { createValModel } from "@/lib/val-ai/adapter";
+import { getValProviderOptions } from "@/lib/val-ai/provider-options";
 import { readSafeQuotaHeaders } from "@/lib/val-ai/provider-catalog";
 import { classifyValTask, estimateValRequestCostUsd, runValModelCandidates, selectValModels } from "@/lib/val-ai/policy";
 import { loadValRouterRuntime, valFeatureIsEnabled, type RoutedModel } from "@/lib/val-ai/router";
@@ -283,6 +284,7 @@ export async function POST(request: NextRequest) {
           tools: financialTools,
           stopWhen: isStepCount(4),
           toolChoice: needsTools ? "required" : "auto",
+          providerOptions: getValProviderOptions(needsTools),
           maxOutputTokens,
           maxRetries: 0,
           temperature: 0.2,
